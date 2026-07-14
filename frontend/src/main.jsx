@@ -128,11 +128,19 @@ function App() {
 
   const selectedProject = projects.find((project) => project.id === selectedProjectId) || null;
 
-  async function loadProjects(nextProjectId) {
-    const list = await request('/api/projects');
+  async function loadProjects(nextProjectId, teamId = currentTeam?.team_id) {
+    if (!teamId) {
+      setProjects([]);
+      setSelectedProjectId(null);
+      return null;
+    }
+    const list = await request(`/api/teams/${teamId}/timeline-projects`);
     setProjects(list);
-    const id = nextProjectId !== undefined ? nextProjectId : selectedProjectId || list[0]?.id || null;
+    const fallbackId = list[0]?.id || null;
+    const currentStillExists = selectedProjectId && list.some((project) => project.id === selectedProjectId);
+    const id = nextProjectId !== undefined ? nextProjectId : currentStillExists ? selectedProjectId : fallbackId;
     setSelectedProjectId(id);
+    if (!id) setMilestones([]);
     return id;
   }
 
@@ -182,7 +190,7 @@ function App() {
 
   async function refresh(projectId) {
     setError('');
-    const id = await loadProjects(projectId);
+    const id = await loadProjects(projectId, currentTeam?.team_id);
     await Promise.all([
       loadMilestones(id),
       loadTeams(),
@@ -209,7 +217,11 @@ function App() {
 
   useEffect(() => {
     if (!currentTeam?.team_id) return;
-    Promise.all([loadMembers(currentTeam.team_id), loadTeamProjects(currentTeam.team_id)]).catch((err) => setError(err.message));
+    Promise.all([
+      loadMembers(currentTeam.team_id),
+      loadTeamProjects(currentTeam.team_id),
+      loadProjects(undefined, currentTeam.team_id).then((projectId) => loadMilestones(projectId)),
+    ]).catch((err) => setError(err.message));
   }, [currentTeam?.team_id]);
 
   async function login() {
@@ -321,6 +333,8 @@ function App() {
       setEditingTeamProjectId(null);
       setIsProjectModalOpen(false);
       await loadTeamProjects(currentTeam.team_id);
+      const projectId = await loadProjects(undefined, currentTeam.team_id);
+      await loadMilestones(projectId);
     } catch (err) {
       setError(err.message);
     }
@@ -345,6 +359,8 @@ function App() {
         body: JSON.stringify({ status }),
       });
       await loadTeamProjects(currentTeam.team_id);
+      const nextProjectId = await loadProjects(undefined, currentTeam.team_id);
+      await loadMilestones(nextProjectId);
     } catch (err) {
       setError(err.message);
     }
@@ -382,6 +398,8 @@ function App() {
         setIsProjectModalOpen(false);
       }
       await loadTeamProjects(currentTeam.team_id);
+      const nextProjectId = await loadProjects(undefined, currentTeam.team_id);
+      await loadMilestones(nextProjectId);
     } catch (err) {
       setError(err.message);
     }
@@ -562,7 +580,7 @@ function App() {
               </div>
               <div className="project-toolbar">
                 <label htmlFor="project-select">프로젝트</label>
-                <select id="project-select" className="project-select" value={selectedProjectId || ''} onChange={(e) => setSelectedProjectId(Number(e.target.value) || null)}>
+                <select id="project-select" className="project-select" value={selectedProjectId || ''} onChange={(e) => setSelectedProjectId(e.target.value || null)}>
                   {projects.map((project) => <option key={project.id} value={project.id}>{project.title}</option>)}
                 </select>
               </div>

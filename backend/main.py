@@ -31,6 +31,11 @@ def has_column(conn, table, column):
     return any(row["name"] == column for row in rows)
 
 
+def has_table(conn, table):
+    row = conn.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)).fetchone()
+    return row is not None
+
+
 def hash_password(password: str, salt: str | None = None) -> str:
     salt = salt or secrets.token_hex(16)
     digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 120_000)
@@ -67,46 +72,12 @@ def public_user(row):
 
 def init_db():
     with get_conn() as conn:
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS projects (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                title TEXT NOT NULL,
-                description TEXT NOT NULL DEFAULT '',
-                created_at TEXT NOT NULL
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS milestones (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                project_id INTEGER,
-                title TEXT NOT NULL,
-                description TEXT NOT NULL DEFAULT '',
-                start_date TEXT NOT NULL,
-                end_date TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS epics (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                milestone_id INTEGER NOT NULL,
-                title TEXT NOT NULL,
-                owner TEXT NOT NULL DEFAULT '',
-                status TEXT NOT NULL DEFAULT 'planned',
-                color TEXT NOT NULL DEFAULT '#0ea5b7',
-                start_date TEXT NOT NULL,
-                end_date TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                FOREIGN KEY (milestone_id) REFERENCES milestones(id) ON DELETE CASCADE
-            )
-            """
-        )
+        if has_table(conn, "milestones") and not has_column(conn, "milestones", "milestone_id"):
+            conn.execute("DROP TABLE IF EXISTS epics")
+            conn.execute("DROP TABLE IF EXISTS milestones")
+        if has_table(conn, "epics") and not has_column(conn, "epics", "epic_id"):
+            conn.execute("DROP TABLE IF EXISTS epics")
+        conn.execute("DROP TABLE IF EXISTS projects")
 
         conn.execute(
             """
@@ -149,6 +120,35 @@ def init_db():
         )
         conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS milestones (
+                milestone_id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                start_date TEXT NOT NULL,
+                end_date TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (project_id) REFERENCES project(project_id) ON DELETE CASCADE
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS epics (
+                epic_id TEXT PRIMARY KEY,
+                milestone_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                owner TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'planned',
+                color TEXT NOT NULL DEFAULT '#0ea5b7',
+                start_date TEXT NOT NULL,
+                end_date TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (milestone_id) REFERENCES milestones(milestone_id) ON DELETE CASCADE
+            )
+            """
+        )
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS project_members (
                 project_id TEXT NOT NULL,
                 user_id TEXT NOT NULL,
@@ -163,12 +163,6 @@ def init_db():
         if not has_column(conn, "project", "status"):
             conn.execute("ALTER TABLE project ADD COLUMN status TEXT NOT NULL DEFAULT 'in_progress'")
 
-        if not has_column(conn, "milestones", "project_id"):
-            conn.execute("ALTER TABLE milestones ADD COLUMN project_id INTEGER")
-
-        project = conn.execute("SELECT id FROM projects ORDER BY id LIMIT 1").fetchone()
-        if project:
-            conn.execute("UPDATE milestones SET project_id = ? WHERE project_id IS NULL", (project["id"],))
 
 
 @asynccontextmanager
@@ -263,11 +257,33 @@ def ensure_range(start_date: date, end_date: date):
     raise HTTPException(status_code=422, detail="date range must include at least one weekday")
 
 
-def ensure_project(conn, project_id: int):
-    project = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-    return project
+def public_timeline_project(row):
+    data = row_to_dict(row)
+    if not data:
+        return None
+    data["id"] = data["project_id"]
+    data["title"] = data["project_name"]
+    data.setdefault("milestone_count", 0)
+    data.setdefault("epic_count", 0)
+    return data
+
+
+def public_milestone(row, epics=None):
+    data = row_to_dict(row)
+    if not data:
+        return None
+    data["id"] = data["milestone_id"]
+    if epics is not None:
+        data["epics"] = epics
+    return data
+
+
+def public_epic(row):
+    data = row_to_dict(row)
+    if not data:
+        return None
+    data["id"] = data["epic_id"]
+    return data
 
 
 def ensure_team(conn, team_id: str):
@@ -311,10 +327,15 @@ def project_with_members(conn, project_row):
     return data
 
 
-def ensure_epic_inside_milestone(conn, milestone_id: int, payload: EpicIn):
-    milestone = conn.execute("SELECT * FROM milestones WHERE id = ?", (milestone_id,)).fetchone()
+def ensure_milestone(conn, milestone_id: str):
+    milestone = conn.execute("SELECT * FROM milestones WHERE milestone_id = ?", (milestone_id,)).fetchone()
     if not milestone:
         raise HTTPException(status_code=404, detail="Milestone not found")
+    return milestone
+
+
+def ensure_epic_inside_milestone(conn, milestone_id: str, payload: EpicIn):
+    milestone = ensure_milestone(conn, milestone_id)
     if str(payload.start_date) < milestone["start_date"] or str(payload.end_date) > milestone["end_date"]:
         raise HTTPException(status_code=422, detail="epic dates must stay inside the milestone range")
     return milestone
@@ -567,83 +588,64 @@ def delete_user(user_id: str):
             raise HTTPException(status_code=404, detail="User not found")
 
 
-@app.get("/api/projects")
-def list_projects():
+@app.get("/api/teams/{team_id}/timeline-projects")
+def list_team_timeline_projects(team_id: str):
     with get_conn() as conn:
+        ensure_team(conn, team_id)
         rows = conn.execute(
             """
             SELECT p.*,
-                COUNT(DISTINCT m.id) AS milestone_count,
-                COUNT(e.id) AS epic_count
-            FROM projects p
-            LEFT JOIN milestones m ON m.project_id = p.id
-            LEFT JOIN epics e ON e.milestone_id = m.id
-            GROUP BY p.id
-            ORDER BY p.id
-            """
+                COUNT(DISTINCT m.milestone_id) AS milestone_count,
+                COUNT(e.epic_id) AS epic_count
+            FROM project p
+            LEFT JOIN milestones m ON m.project_id = p.project_id
+            LEFT JOIN epics e ON e.milestone_id = m.milestone_id
+            WHERE p.team_id = ? AND p.status = 'in_progress'
+            GROUP BY p.project_id
+            ORDER BY p.created_at DESC, p.project_name
+            """,
+            (team_id,),
         ).fetchall()
-        return [row_to_dict(row) for row in rows]
-
-
-@app.post("/api/projects", status_code=201)
-def create_project(payload: ProjectIn):
-    now = datetime.utcnow().isoformat()
-    with get_conn() as conn:
-        cursor = conn.execute(
-            "INSERT INTO projects (title, description, created_at) VALUES (?, ?, ?)",
-            (payload.title, payload.description, now),
-        )
-        row = conn.execute("SELECT * FROM projects WHERE id = ?", (cursor.lastrowid,)).fetchone()
-        return row_to_dict(row)
-
-
-@app.delete("/api/projects/{project_id}", status_code=204)
-def delete_project(project_id: int):
-    with get_conn() as conn:
-        ensure_project(conn, project_id)
-        milestone_ids = [row["id"] for row in conn.execute("SELECT id FROM milestones WHERE project_id = ?", (project_id,)).fetchall()]
-        for milestone_id in milestone_ids:
-            conn.execute("DELETE FROM epics WHERE milestone_id = ?", (milestone_id,))
-        conn.execute("DELETE FROM milestones WHERE project_id = ?", (project_id,))
-        conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+        return [public_timeline_project(row) for row in rows]
 
 
 @app.get("/api/projects/{project_id}/milestones")
-def list_project_milestones(project_id: int):
+def list_project_milestones(project_id: str):
     with get_conn() as conn:
-        ensure_project(conn, project_id)
+        ensure_team_project(conn, project_id)
         rows = conn.execute(
             """
             SELECT m.*,
-                COUNT(e.id) AS epic_count,
+                COUNT(e.epic_id) AS epic_count,
                 MIN(e.start_date) AS first_epic_date,
                 MAX(e.end_date) AS last_epic_date
             FROM milestones m
-            LEFT JOIN epics e ON e.milestone_id = m.id
+            LEFT JOIN epics e ON e.milestone_id = m.milestone_id
             WHERE m.project_id = ?
-            GROUP BY m.id
-            ORDER BY m.start_date, m.id
+            GROUP BY m.milestone_id
+            ORDER BY m.start_date, m.created_at
             """,
             (project_id,),
         ).fetchall()
-        return [row_to_dict(row) for row in rows]
+        return [public_milestone(row) for row in rows]
 
 
 @app.post("/api/projects/{project_id}/milestones", status_code=201)
-def create_milestone(project_id: int, payload: MilestoneIn):
+def create_milestone(project_id: str, payload: MilestoneIn):
     ensure_range(payload.start_date, payload.end_date)
     now = datetime.utcnow().isoformat()
+    milestone_id = str(uuid.uuid4())
     with get_conn() as conn:
-        ensure_project(conn, project_id)
-        cursor = conn.execute(
+        ensure_team_project(conn, project_id)
+        conn.execute(
             """
-            INSERT INTO milestones (project_id, title, description, start_date, end_date, created_at)
+            INSERT INTO milestones (milestone_id, project_id, title, start_date, end_date, created_at)
             VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (project_id, payload.title, payload.description, str(payload.start_date), str(payload.end_date), now),
+            (milestone_id, project_id, payload.title, str(payload.start_date), str(payload.end_date), now),
         )
-        row = conn.execute("SELECT * FROM milestones WHERE id = ?", (cursor.lastrowid,)).fetchone()
-        return row_to_dict(row)
+        row = conn.execute("SELECT * FROM milestones WHERE milestone_id = ?", (milestone_id,)).fetchone()
+        return public_milestone(row)
 
 
 @app.get("/api/milestones")
@@ -652,71 +654,67 @@ def list_milestones():
         rows = conn.execute(
             """
             SELECT m.*,
-                COUNT(e.id) AS epic_count,
+                COUNT(e.epic_id) AS epic_count,
                 MIN(e.start_date) AS first_epic_date,
                 MAX(e.end_date) AS last_epic_date
             FROM milestones m
-            LEFT JOIN epics e ON e.milestone_id = m.id
-            GROUP BY m.id
-            ORDER BY m.start_date, m.id
+            LEFT JOIN epics e ON e.milestone_id = m.milestone_id
+            GROUP BY m.milestone_id
+            ORDER BY m.start_date, m.created_at
             """
         ).fetchall()
-        return [row_to_dict(row) for row in rows]
+        return [public_milestone(row) for row in rows]
 
 
 @app.get("/api/milestones/{milestone_id}")
-def get_milestone(milestone_id: int):
+def get_milestone(milestone_id: str):
     with get_conn() as conn:
-        milestone = conn.execute("SELECT * FROM milestones WHERE id = ?", (milestone_id,)).fetchone()
-        if not milestone:
-            raise HTTPException(status_code=404, detail="Milestone not found")
+        milestone = ensure_milestone(conn, milestone_id)
         epics = conn.execute(
-            "SELECT * FROM epics WHERE milestone_id = ? ORDER BY start_date, id",
+            "SELECT * FROM epics WHERE milestone_id = ? ORDER BY start_date, created_at",
             (milestone_id,),
         ).fetchall()
-        data = row_to_dict(milestone)
-        data["epics"] = [row_to_dict(row) for row in epics]
-        return data
+        return public_milestone(milestone, [public_epic(row) for row in epics])
 
 
 @app.put("/api/milestones/{milestone_id}")
-def update_milestone(milestone_id: int, payload: MilestoneIn):
+def update_milestone(milestone_id: str, payload: MilestoneIn):
     ensure_range(payload.start_date, payload.end_date)
     with get_conn() as conn:
-        existing = conn.execute("SELECT id FROM milestones WHERE id = ?", (milestone_id,)).fetchone()
-        if not existing:
-            raise HTTPException(status_code=404, detail="Milestone not found")
+        ensure_milestone(conn, milestone_id)
         conn.execute(
             """
             UPDATE milestones
-            SET title = ?, description = ?, start_date = ?, end_date = ?
-            WHERE id = ?
+            SET title = ?, start_date = ?, end_date = ?
+            WHERE milestone_id = ?
             """,
-            (payload.title, payload.description, str(payload.start_date), str(payload.end_date), milestone_id),
+            (payload.title, str(payload.start_date), str(payload.end_date), milestone_id),
         )
-        return get_milestone(milestone_id)
+    return get_milestone(milestone_id)
 
 
 @app.delete("/api/milestones/{milestone_id}", status_code=204)
-def delete_milestone(milestone_id: int):
+def delete_milestone(milestone_id: str):
     with get_conn() as conn:
-        cursor = conn.execute("DELETE FROM milestones WHERE id = ?", (milestone_id,))
+        cursor = conn.execute("DELETE FROM milestones WHERE milestone_id = ?", (milestone_id,))
         if cursor.rowcount == 0:
             raise HTTPException(status_code=404, detail="Milestone not found")
 
 
 @app.post("/api/milestones/{milestone_id}/epics", status_code=201)
-def create_epic(milestone_id: int, payload: EpicIn):
+def create_epic(milestone_id: str, payload: EpicIn):
     ensure_range(payload.start_date, payload.end_date)
     now = datetime.utcnow().isoformat()
+    epic_id = str(uuid.uuid4())
     with get_conn() as conn:
         ensure_epic_inside_milestone(conn, milestone_id, payload)
-        cursor = conn.execute(
+        conn.execute(
             """
-            INSERT INTO epics (milestone_id, title, owner, status, color, start_date, end_date, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO epics (epic_id, milestone_id, title, owner, status, color, start_date, end_date, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
+                epic_id,
                 milestone_id,
                 payload.title,
                 payload.owner,
@@ -727,15 +725,15 @@ def create_epic(milestone_id: int, payload: EpicIn):
                 now,
             ),
         )
-        row = conn.execute("SELECT * FROM epics WHERE id = ?", (cursor.lastrowid,)).fetchone()
-        return row_to_dict(row)
+        row = conn.execute("SELECT * FROM epics WHERE epic_id = ?", (epic_id,)).fetchone()
+        return public_epic(row)
 
 
 @app.put("/api/epics/{epic_id}")
-def update_epic(epic_id: int, payload: EpicIn):
+def update_epic(epic_id: str, payload: EpicIn):
     ensure_range(payload.start_date, payload.end_date)
     with get_conn() as conn:
-        existing = conn.execute("SELECT * FROM epics WHERE id = ?", (epic_id,)).fetchone()
+        existing = conn.execute("SELECT * FROM epics WHERE epic_id = ?", (epic_id,)).fetchone()
         if not existing:
             raise HTTPException(status_code=404, detail="Epic not found")
         ensure_epic_inside_milestone(conn, existing["milestone_id"], payload)
@@ -743,7 +741,7 @@ def update_epic(epic_id: int, payload: EpicIn):
             """
             UPDATE epics
             SET title = ?, owner = ?, status = ?, color = ?, start_date = ?, end_date = ?
-            WHERE id = ?
+            WHERE epic_id = ?
             """,
             (
                 payload.title,
@@ -755,13 +753,13 @@ def update_epic(epic_id: int, payload: EpicIn):
                 epic_id,
             ),
         )
-        row = conn.execute("SELECT * FROM epics WHERE id = ?", (epic_id,)).fetchone()
-        return row_to_dict(row)
+        row = conn.execute("SELECT * FROM epics WHERE epic_id = ?", (epic_id,)).fetchone()
+        return public_epic(row)
 
 
 @app.delete("/api/epics/{epic_id}", status_code=204)
-def delete_epic(epic_id: int):
+def delete_epic(epic_id: str):
     with get_conn() as conn:
-        cursor = conn.execute("DELETE FROM epics WHERE id = ?", (epic_id,))
+        cursor = conn.execute("DELETE FROM epics WHERE epic_id = ?", (epic_id,))
         if cursor.rowcount == 0:
             raise HTTPException(status_code=404, detail="Epic not found")
