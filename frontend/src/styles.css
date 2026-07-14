@@ -105,8 +105,19 @@ input:focus, textarea:focus, select:focus { border-color: #4f46e5; box-shadow: 0
 .page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; }
 .page-head h1 { margin: 0; font-size: 22px; font-weight: 750; }
 .page-head p { margin: 4px 0 0; font-size: 13px; }
-.project-toolbar { display: flex; align-items: center; gap: 10px; min-width: 280px; }
-.project-toolbar label { color: var(--ink-faint); font-size: 12px; font-weight: 700; }
+.project-toolbar {
+  display: grid;
+  grid-template-columns: auto minmax(220px, 1fr);
+  gap: 12px;
+  align-items: center;
+  min-width: min(420px, 42vw);
+  border: 1px solid rgba(255,255,255,.26);
+  background: rgba(255,255,255,.1);
+  padding: 10px 12px;
+}
+.project-toolbar-meta { display: grid; gap: 2px; min-width: 92px; }
+.project-toolbar-meta span { color: rgba(255,255,255,.68); font-size: 11px; font-weight: 850; }
+.project-toolbar-meta b { color: #fff; font-size: 13px; font-weight: 950; }
 .project-toolbar .project-select { min-width: 220px; }
 .mono { font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 
@@ -226,7 +237,7 @@ input:focus, textarea:focus, select:focus { border-color: #4f46e5; box-shadow: 0
 @media (max-width: 720px) {
   .workspace, .sidebar { padding: 16px; }
   .page-head { flex-direction: column; align-items: stretch; }
-  .project-toolbar { align-items: stretch; min-width: 0; flex-direction: column; gap: 6px; }
+  .project-toolbar { grid-template-columns: 1fr; align-items: stretch; min-width: 0; gap: 8px; }
   .project-toolbar .project-select { min-width: 0; }
   .mt-card-titlebar, .mt-card-head { flex-direction: column; align-items: stretch; }
   .mt-actions, .mt-date-inputs, .add-milestone-form { align-items: stretch; flex-direction: column; }
@@ -347,6 +358,25 @@ input:focus, textarea:focus, select:focus { border-color: #4f46e5; box-shadow: 0
 
 .mt-icon-action.save:hover {
   background: #e4f5ec;
+}
+.mt-icon-action.always { opacity: 1; }
+.milestone-edit-fields {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  width: 100%;
+}
+.milestone-edit-fields input {
+  min-height: 28px;
+  padding: 4px 7px;
+  font-size: 12px;
+  font-weight: 800;
+}
+.milestone-edit-track input {
+  width: auto;
+  min-height: 30px;
+  padding: 4px 6px;
+  font-size: 11.5px;
 }
 
 .epic-edit-fields {
@@ -635,8 +665,13 @@ button, input, select, textarea { border-radius: 0; }
 .page-head > * { position: relative; z-index: 1; }
 .page-head h1 { margin: 0 0 8px; color: #fff; font-size: 28px; font-weight: 950; }
 .page-head p { margin: 0; color: rgba(255,255,255,.78); font-size: 13px; line-height: 1.55; }
-.project-toolbar label { color: rgba(255,255,255,.72); }
-.project-toolbar .project-select { border-color: rgba(255,255,255,.34); background: rgba(255,255,255,.1); color: #fff; }
+.project-toolbar .project-select {
+  border-color: rgba(255,255,255,.36);
+  background: rgba(255,255,255,.92);
+  color: #172033;
+  font-weight: 850;
+}
+.project-toolbar .project-select:focus { border-color: #fff; box-shadow: 0 0 0 3px rgba(255,255,255,.18); }
 .project-toolbar .project-select option { color: #171b24; }
 
 .mt-card, .account-card, .error, .empty { border: 1px solid #dfe6f1; border-radius: 0; background: #fff; box-shadow: var(--shadow-soft); }

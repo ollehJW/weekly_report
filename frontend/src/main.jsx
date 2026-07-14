@@ -468,6 +468,24 @@ function App() {
     }
   }
 
+  async function updateMilestone(milestone, draft) {
+    if (!draft.title.trim()) return;
+    try {
+      await request(`/api/milestones/${milestone.id}`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          title: draft.title.trim(),
+          description: '',
+          start_date: draft.start_date,
+          end_date: draft.end_date,
+        }),
+      });
+      await refresh(selectedProjectId);
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
   async function deleteMilestone(id) {
     try {
       await request(`/api/milestones/${id}`, { method: 'DELETE' });
@@ -578,9 +596,13 @@ function App() {
                 <h1>과제 현황</h1>
                 <p>{selectedProject ? `${milestones.length}개의 마일스톤 · ${selectedProject.title}` : '프로젝트를 선택하세요'}</p>
               </div>
-              <div className="project-toolbar">
-                <label htmlFor="project-select">프로젝트</label>
-                <select id="project-select" className="project-select" value={selectedProjectId || ''} onChange={(e) => setSelectedProjectId(e.target.value || null)}>
+              <div className="project-toolbar" aria-label="과제 선택">
+                <div className="project-toolbar-meta">
+                  <span>진행중 과제</span>
+                  <b>{projects.length}개</b>
+                </div>
+                <select id="project-select" className="project-select" value={selectedProjectId || ''} onChange={(e) => setSelectedProjectId(e.target.value || null)} aria-label="과제 선택">
+                  {projects.length === 0 && <option value="">선택 가능한 과제 없음</option>}
                   {projects.map((project) => <option key={project.id} value={project.id}>{project.title}</option>)}
                 </select>
               </div>
@@ -596,6 +618,7 @@ function App() {
                 milestoneDraft={milestoneDraft}
                 setMilestoneDraft={setMilestoneDraft}
                 onAddMilestone={createMilestone}
+                onUpdateMilestone={updateMilestone}
                 onRemoveMilestone={deleteMilestone}
                 onAddEpic={createEpic}
                 onUpdateEpic={updateEpic}
@@ -976,6 +999,7 @@ function ProjectTimeline({
   milestoneDraft,
   setMilestoneDraft,
   onAddMilestone,
+  onUpdateMilestone,
   onRemoveMilestone,
   onAddEpic,
   onUpdateEpic,
@@ -984,6 +1008,8 @@ function ProjectTimeline({
   const [addingEpicId, setAddingEpicId] = useState(null);
   const [epicDraft, setEpicDraft] = useState({ name: '', owner: '', status: 'planned', start_date: todayIso(), end_date: todayIso() });
   const [editingEpicId, setEditingEpicId] = useState(null);
+  const [editingMilestoneId, setEditingMilestoneId] = useState(null);
+  const [milestoneEditDraft, setMilestoneEditDraft] = useState({ title: '', start_date: todayIso(), end_date: todayIso() });
   const [editDraft, setEditDraft] = useState({ name: '', owner: '', status: 'planned', start_date: todayIso(), end_date: todayIso() });
 
   const range = useMemo(() => {
@@ -1013,6 +1039,7 @@ function ProjectTimeline({
   function startAddEpic(milestone) {
     setAddingEpicId(milestone.id);
     setEditingEpicId(null);
+    setEditingMilestoneId(null);
     setEpicDraft({ name: '', owner: '', status: 'planned', start_date: milestone.start_date, end_date: milestone.start_date });
   }
 
@@ -1028,6 +1055,7 @@ function ProjectTimeline({
 
   function startEditEpic(epic) {
     setAddingEpicId(null);
+    setEditingMilestoneId(null);
     setEditingEpicId(epic.id);
     setEditDraft({
       name: epic.title,
@@ -1045,6 +1073,22 @@ function ProjectTimeline({
     }
     onUpdateEpic(epic, editDraft);
     setEditingEpicId(null);
+  }
+
+  function startEditMilestone(milestone) {
+    setAddingEpicId(null);
+    setEditingEpicId(null);
+    setEditingMilestoneId(milestone.id);
+    setMilestoneEditDraft({ title: milestone.title, start_date: milestone.start_date, end_date: milestone.end_date });
+  }
+
+  function commitEditMilestone(milestone) {
+    if (!milestoneEditDraft.title.trim()) {
+      setEditingMilestoneId(null);
+      return;
+    }
+    onUpdateMilestone(milestone, milestoneEditDraft);
+    setEditingMilestoneId(null);
   }
 
   return (
@@ -1073,22 +1117,50 @@ function ProjectTimeline({
           {milestones.map((milestone) => {
             const milestoneSpan = spanFor(milestone.start_date, milestone.end_date);
             const isAddingEpic = addingEpicId === milestone.id;
+            const isEditingMilestone = editingMilestoneId === milestone.id;
             return (
               <React.Fragment key={milestone.id}>
-                <div className="mt-row-label milestone-label">
-                  <div>
-                    <div className="name">{milestone.title}</div>
-                    <div className="meta">{milestone.start_date} → {milestone.end_date}</div>
+                <div className={`mt-row-label milestone-label${isEditingMilestone ? ' editing' : ''}`}>
+                  {isEditingMilestone ? (
+                    <div className="milestone-edit-fields">
+                      <input value={milestoneEditDraft.title} autoFocus onChange={(e) => setMilestoneEditDraft({ ...milestoneEditDraft, title: e.target.value })} onKeyDown={(e) => e.key === 'Enter' && commitEditMilestone(milestone)} />
+                      <div className="meta">{milestone.start_date} → {milestone.end_date}</div>
+                    </div>
+                  ) : (
+                    <div>
+                      <div className="name">{milestone.title}</div>
+                      <div className="meta">{milestone.start_date} → {milestone.end_date}</div>
+                    </div>
+                  )}
+                  <div className="row-actions">
+                    {isEditingMilestone ? (
+                      <>
+                        <button className="mt-icon-action save" onClick={() => commitEditMilestone(milestone)} aria-label="마일스톤 저장"><Save size={13} /></button>
+                        <button className="mt-icon-action" onClick={() => setEditingMilestoneId(null)} aria-label="마일스톤 편집 취소"><X size={13} /></button>
+                      </>
+                    ) : (
+                      <>
+                        <button className="mt-icon-action always" onClick={() => startEditMilestone(milestone)} aria-label="마일스톤 편집"><Pencil size={13} /></button>
+                        <button className="mt-delete always" onClick={() => onRemoveMilestone(milestone.id)} aria-label="마일스톤 삭제"><Trash2 size={13} /></button>
+                      </>
+                    )}
                   </div>
-                  <button className="mt-delete always" onClick={() => onRemoveMilestone(milestone.id)} aria-label="마일스톤 삭제"><Trash2 size={13} /></button>
                 </div>
-                <div className="mt-track milestone-track" style={{ gridColumn: `2 / span ${colCount}`, gridTemplateColumns: `repeat(${colCount}, 1fr)` }}>
+                <div className={`mt-track milestone-track${isEditingMilestone ? ' editing' : ''}`} style={{ gridColumn: `2 / span ${colCount}`, gridTemplateColumns: `repeat(${colCount}, 1fr)` }}>
                   {days.map((day, i) => <div key={isoOf(day)} className={`mt-daybg${day.getDay() === 1 ? ' weekend-adjacent' : ''}`} style={{ gridRow: 1, gridColumn: i + 1 }} />)}
-                  <div className="milestone-bar" style={{ gridColumn: `${milestoneSpan.startCol + 1} / span ${milestoneSpan.colSpan}` }}>
-                    <AudioWaveform size={14} className="icon" />
-                    <span className="label">{milestone.title}</span>
-                    <span className="count">{milestone.epics.length} epics</span>
-                  </div>
+                  {isEditingMilestone ? (
+                    <div className="mt-date-inputs milestone-edit-track" style={{ gridColumn: `1 / span ${colCount}` }}>
+                      <input type="date" value={milestoneEditDraft.start_date} onChange={(e) => setMilestoneEditDraft({ ...milestoneEditDraft, start_date: e.target.value })} />
+                      <span>→</span>
+                      <input type="date" value={milestoneEditDraft.end_date} onChange={(e) => setMilestoneEditDraft({ ...milestoneEditDraft, end_date: e.target.value })} />
+                    </div>
+                  ) : (
+                    <div className="milestone-bar" style={{ gridColumn: `${milestoneSpan.startCol + 1} / span ${milestoneSpan.colSpan}` }}>
+                      <AudioWaveform size={14} className="icon" />
+                      <span className="label">{milestone.title}</span>
+                      <span className="count">{milestone.epics.length} epics</span>
+                    </div>
+                  )}
                 </div>
 
                 {milestone.epics.map((epic, index) => {
