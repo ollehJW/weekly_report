@@ -135,6 +135,33 @@ def init_db():
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS project (
+                project_id TEXT PRIMARY KEY,
+                team_id TEXT NOT NULL,
+                project_name TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'in_progress',
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (team_id) REFERENCES teams(team_id) ON DELETE CASCADE
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS project_members (
+                project_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                role TEXT NOT NULL CHECK(role IN ('L', 'M')),
+                PRIMARY KEY (project_id, user_id),
+                FOREIGN KEY (project_id) REFERENCES project(project_id) ON DELETE CASCADE,
+                FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+            )
+            """
+        )
+
+        if not has_column(conn, "project", "status"):
+            conn.execute("ALTER TABLE project ADD COLUMN status TEXT NOT NULL DEFAULT 'in_progress'")
 
         if not has_column(conn, "milestones", "project_id"):
             conn.execute("ALTER TABLE milestones ADD COLUMN project_id INTEGER")
@@ -206,6 +233,25 @@ class MemberPasswordIn(BaseModel):
     password: str = Field(min_length=1, max_length=200)
 
 
+class ProjectMemberIn(BaseModel):
+    user_id: str = Field(min_length=1)
+    role: str = Field(pattern="^(L|M)$")
+
+
+class TeamProjectIn(BaseModel):
+    project_name: str = Field(min_length=1, max_length=120)
+    status: str = Field(default="in_progress", pattern="^(in_progress|done)$")
+    members: list[ProjectMemberIn] = Field(default_factory=list)
+
+
+class TeamProjectStatusIn(BaseModel):
+    status: str = Field(pattern="^(in_progress|done)$")
+
+
+class ProjectMembersIn(BaseModel):
+    members: list[ProjectMemberIn] = Field(default_factory=list)
+
+
 def ensure_range(start_date: date, end_date: date):
     if end_date < start_date:
         raise HTTPException(status_code=422, detail="end_date must be on or after start_date")
@@ -229,6 +275,40 @@ def ensure_team(conn, team_id: str):
     if not team:
         raise HTTPException(status_code=404, detail="Team not found")
     return team
+
+
+def ensure_team_project(conn, project_id: str):
+    project = conn.execute("SELECT * FROM project WHERE project_id = ?", (project_id,)).fetchone()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return project
+
+
+def project_with_members(conn, project_row):
+    data = row_to_dict(project_row)
+    members = conn.execute(
+        """
+        SELECT pm.project_id, pm.user_id, pm.role AS project_role,
+               u.name, u.role AS member_role, u.must_change_password
+        FROM project_members pm
+        JOIN users u ON u.user_id = pm.user_id
+        WHERE pm.project_id = ?
+        ORDER BY CASE pm.role WHEN 'L' THEN 0 ELSE 1 END, u.name
+        """,
+        (project_row["project_id"],),
+    ).fetchall()
+    data["members"] = [
+        {
+            "project_id": row["project_id"],
+            "user_id": row["user_id"],
+            "role": row["project_role"],
+            "name": row["name"],
+            "member_role": row["member_role"],
+            "must_change_password": bool(row["must_change_password"]),
+        }
+        for row in members
+    ]
+    return data
 
 
 def ensure_epic_inside_milestone(conn, milestone_id: int, payload: EpicIn):
@@ -318,7 +398,7 @@ def list_team_users(team_id: str):
             """
             SELECT * FROM users
             WHERE team_id = ?
-            ORDER BY created_at DESC, name
+            ORDER BY created_at ASC, name
             """,
             (team_id,),
         ).fetchall()
@@ -347,6 +427,118 @@ def create_team_user(team_id: str, payload: MemberIn):
         )
         row = conn.execute("SELECT * FROM users WHERE rowid = ?", (cursor.lastrowid,)).fetchone()
         return public_user(row)
+
+
+@app.get("/api/teams/{team_id}/team-projects")
+def list_team_projects(team_id: str):
+    with get_conn() as conn:
+        ensure_team(conn, team_id)
+        rows = conn.execute(
+            """
+            SELECT * FROM project
+            WHERE team_id = ?
+            ORDER BY CASE status WHEN 'in_progress' THEN 0 ELSE 1 END, created_at DESC, project_name
+            """,
+            (team_id,),
+        ).fetchall()
+        return [project_with_members(conn, row) for row in rows]
+
+
+@app.post("/api/teams/{team_id}/team-projects", status_code=201)
+def create_team_project(team_id: str, payload: TeamProjectIn):
+    now = datetime.utcnow().isoformat()
+    project_id = str(uuid.uuid4())
+    with get_conn() as conn:
+        ensure_team(conn, team_id)
+        if sum(1 for member in payload.members if member.role == "L") > 1:
+            raise HTTPException(status_code=422, detail="과제 리더는 한 명만 지정할 수 있습니다")
+        cursor = conn.execute(
+            """
+            INSERT INTO project (project_id, team_id, project_name, status, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (project_id, team_id, payload.project_name.strip(), payload.status, now),
+        )
+        for member in payload.members:
+            user = conn.execute(
+                "SELECT user_id FROM users WHERE user_id = ? AND team_id = ?",
+                (member.user_id, team_id),
+            ).fetchone()
+            if not user:
+                raise HTTPException(status_code=422, detail="해당 팀의 멤버만 과제에 매칭할 수 있습니다")
+            conn.execute(
+                "INSERT INTO project_members (project_id, user_id, role) VALUES (?, ?, ?)",
+                (project_id, member.user_id, member.role),
+            )
+        row = conn.execute("SELECT * FROM project WHERE rowid = ?", (cursor.lastrowid,)).fetchone()
+        return project_with_members(conn, row)
+
+
+@app.put("/api/team-projects/{project_id}/status")
+def update_team_project_status(project_id: str, payload: TeamProjectStatusIn):
+    with get_conn() as conn:
+        ensure_team_project(conn, project_id)
+        conn.execute("UPDATE project SET status = ? WHERE project_id = ?", (payload.status, project_id))
+        row = conn.execute("SELECT * FROM project WHERE project_id = ?", (project_id,)).fetchone()
+        return project_with_members(conn, row)
+
+
+@app.put("/api/team-projects/{project_id}")
+def update_team_project(project_id: str, payload: TeamProjectIn):
+    with get_conn() as conn:
+        project = ensure_team_project(conn, project_id)
+        if sum(1 for member in payload.members if member.role == "L") > 1:
+            raise HTTPException(status_code=422, detail="과제 리더는 한 명만 지정할 수 있습니다")
+        conn.execute(
+            "UPDATE project SET project_name = ?, status = ? WHERE project_id = ?",
+            (payload.project_name.strip(), payload.status, project_id),
+        )
+        conn.execute("DELETE FROM project_members WHERE project_id = ?", (project_id,))
+        for member in payload.members:
+            user = conn.execute(
+                "SELECT user_id FROM users WHERE user_id = ? AND team_id = ?",
+                (member.user_id, project["team_id"]),
+            ).fetchone()
+            if not user:
+                raise HTTPException(status_code=422, detail="해당 팀의 멤버만 과제에 매칭할 수 있습니다")
+            conn.execute(
+                "INSERT INTO project_members (project_id, user_id, role) VALUES (?, ?, ?)",
+                (project_id, member.user_id, member.role),
+            )
+        row = conn.execute("SELECT * FROM project WHERE project_id = ?", (project_id,)).fetchone()
+        return project_with_members(conn, row)
+
+
+@app.put("/api/team-projects/{project_id}/members")
+def set_team_project_members(project_id: str, payload: ProjectMembersIn):
+    with get_conn() as conn:
+        project = ensure_team_project(conn, project_id)
+        if sum(1 for member in payload.members if member.role == "L") > 1:
+            raise HTTPException(status_code=422, detail="과제 리더는 한 명만 지정할 수 있습니다")
+        normalized = {}
+        for member in payload.members:
+            user = conn.execute(
+                "SELECT user_id FROM users WHERE user_id = ? AND team_id = ?",
+                (member.user_id, project["team_id"]),
+            ).fetchone()
+            if not user:
+                raise HTTPException(status_code=422, detail="해당 팀의 멤버만 과제에 매칭할 수 있습니다")
+            normalized[member.user_id] = member.role
+        conn.execute("DELETE FROM project_members WHERE project_id = ?", (project_id,))
+        conn.executemany(
+            "INSERT INTO project_members (project_id, user_id, role) VALUES (?, ?, ?)",
+            [(project_id, user_id, role) for user_id, role in normalized.items()],
+        )
+        row = conn.execute("SELECT * FROM project WHERE project_id = ?", (project_id,)).fetchone()
+        return project_with_members(conn, row)
+
+
+@app.delete("/api/team-projects/{project_id}", status_code=204)
+def delete_team_project(project_id: str):
+    with get_conn() as conn:
+        cursor = conn.execute("DELETE FROM project WHERE project_id = ?", (project_id,))
+        if cursor.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Project not found")
 
 
 @app.put("/api/users/{user_id}/password")

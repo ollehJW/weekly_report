@@ -101,6 +101,7 @@ function App() {
   const [milestones, setMilestones] = useState([]);
   const [teams, setTeams] = useState([]);
   const [members, setMembers] = useState([]);
+  const [teamProjects, setTeamProjects] = useState([]);
   const [currentTeam, setCurrentTeam] = useState(() => {
     const stored = localStorage.getItem('wiareport_team');
     if (!stored) return null;
@@ -117,6 +118,10 @@ function App() {
   const [milestoneDraft, setMilestoneDraft] = useState({ title: '', start_date: todayIso(), end_date: plusDays(todayIso(), 14) });
   const [teamDraft, setTeamDraft] = useState({ department: '', login_id: '' });
   const [memberDraft, setMemberDraft] = useState({ name: '', role: 'M' });
+  const [teamProjectDraft, setTeamProjectDraft] = useState({ project_name: '', leaderId: '', memberIds: [] });
+  const [isProjectModalOpen, setIsProjectModalOpen] = useState(false);
+  const [editingTeamProjectId, setEditingTeamProjectId] = useState(null);
+  const [projectAssignmentDrafts, setProjectAssignmentDrafts] = useState({});
   const [memberPasswordDrafts, setMemberPasswordDrafts] = useState({});
   const [loginDraft, setLoginDraft] = useState({ login_id: '', password: '' });
   const [passwordDraft, setPasswordDraft] = useState({ current_password: INITIAL_PASSWORD, new_password: '', confirm_password: '' });
@@ -155,10 +160,35 @@ function App() {
     setMembers(list);
   }
 
+  async function loadTeamProjects(teamId = currentTeam?.team_id) {
+    if (!teamId) {
+      setTeamProjects([]);
+      return;
+    }
+    const list = await request(`/api/teams/${teamId}/team-projects`);
+    setTeamProjects(list);
+    setProjectAssignmentDrafts((prev) => {
+      const next = { ...prev };
+      list.forEach((project) => {
+        const leader = project.members.find((member) => member.role === 'L');
+        next[project.project_id] = {
+          leaderId: next[project.project_id]?.leaderId ?? leader?.user_id ?? '',
+          memberIds: next[project.project_id]?.memberIds ?? project.members.filter((member) => member.role === 'M').map((member) => member.user_id),
+        };
+      });
+      return next;
+    });
+  }
+
   async function refresh(projectId) {
     setError('');
     const id = await loadProjects(projectId);
-    await Promise.all([loadMilestones(id), loadTeams(), currentTeam?.team_id ? loadMembers(currentTeam.team_id) : Promise.resolve()]);
+    await Promise.all([
+      loadMilestones(id),
+      loadTeams(),
+      currentTeam?.team_id ? loadMembers(currentTeam.team_id) : Promise.resolve(),
+      currentTeam?.team_id ? loadTeamProjects(currentTeam.team_id) : Promise.resolve(),
+    ]);
   }
 
   useEffect(() => {
@@ -179,7 +209,7 @@ function App() {
 
   useEffect(() => {
     if (!currentTeam?.team_id) return;
-    loadMembers(currentTeam.team_id).catch((err) => setError(err.message));
+    Promise.all([loadMembers(currentTeam.team_id), loadTeamProjects(currentTeam.team_id)]).catch((err) => setError(err.message));
   }, [currentTeam?.team_id]);
 
   async function login() {
@@ -259,6 +289,99 @@ function App() {
       });
       setMemberDraft({ name: '', role: 'M' });
       await loadMembers(currentTeam.team_id);
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function createTeamProject() {
+    if (!currentTeam?.team_id || !teamProjectDraft.project_name.trim()) return;
+    const memberIds = (teamProjectDraft.memberIds || []).filter((userId) => userId && userId !== teamProjectDraft.leaderId);
+    const payload = {
+      project_name: teamProjectDraft.project_name.trim(),
+      status: teamProjectDraft.status || 'in_progress',
+      members: [
+        ...(teamProjectDraft.leaderId ? [{ user_id: teamProjectDraft.leaderId, role: 'L' }] : []),
+        ...memberIds.map((userId) => ({ user_id: userId, role: 'M' })),
+      ],
+    };
+    try {
+      if (editingTeamProjectId) {
+        await request(`/api/team-projects/${editingTeamProjectId}`, {
+          method: 'PUT',
+          body: JSON.stringify(payload),
+        });
+      } else {
+        await request(`/api/teams/${currentTeam.team_id}/team-projects`, {
+          method: 'POST',
+          body: JSON.stringify(payload),
+        });
+      }
+      setTeamProjectDraft({ project_name: '', leaderId: '', memberIds: [], status: 'in_progress' });
+      setEditingTeamProjectId(null);
+      setIsProjectModalOpen(false);
+      await loadTeamProjects(currentTeam.team_id);
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  function openTeamProjectEditor(project) {
+    const leader = project.members.find((member) => member.role === 'L');
+    setTeamProjectDraft({
+      project_name: project.project_name,
+      leaderId: leader?.user_id || '',
+      memberIds: project.members.filter((member) => member.role === 'M').map((member) => member.user_id),
+      status: project.status || 'in_progress',
+    });
+    setEditingTeamProjectId(project.project_id);
+    setIsProjectModalOpen(true);
+  }
+
+  async function updateTeamProjectStatus(projectId, status) {
+    try {
+      await request(`/api/team-projects/${projectId}/status`, {
+        method: 'PUT',
+        body: JSON.stringify({ status }),
+      });
+      await loadTeamProjects(currentTeam.team_id);
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function saveProjectMembers(projectId) {
+    const draft = projectAssignmentDrafts[projectId] || { leaderId: '', memberIds: [] };
+    const memberIds = (draft.memberIds || []).filter((userId) => userId && userId !== draft.leaderId);
+    const payloadMembers = [
+      ...(draft.leaderId ? [{ user_id: draft.leaderId, role: 'L' }] : []),
+      ...memberIds.map((userId) => ({ user_id: userId, role: 'M' })),
+    ];
+    try {
+      await request(`/api/team-projects/${projectId}/members`, {
+        method: 'PUT',
+        body: JSON.stringify({ members: payloadMembers }),
+      });
+      await loadTeamProjects(currentTeam.team_id);
+      setError('');
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function deleteTeamProject(projectId) {
+    try {
+      await request(`/api/team-projects/${projectId}`, { method: 'DELETE' });
+      setProjectAssignmentDrafts((prev) => {
+        const next = { ...prev };
+        delete next[projectId];
+        return next;
+      });
+      if (editingTeamProjectId === projectId) {
+        setEditingTeamProjectId(null);
+        setIsProjectModalOpen(false);
+      }
+      await loadTeamProjects(currentTeam.team_id);
     } catch (err) {
       setError(err.message);
     }
@@ -469,11 +592,25 @@ function App() {
             setActiveTeamTab={setActiveTeamTab}
             currentTeam={currentTeam}
             members={members}
+            teamProjects={teamProjects}
+            teamProjectDraft={teamProjectDraft}
+            setTeamProjectDraft={setTeamProjectDraft}
+            isProjectModalOpen={isProjectModalOpen}
+            setIsProjectModalOpen={setIsProjectModalOpen}
+            editingTeamProjectId={editingTeamProjectId}
+            setEditingTeamProjectId={setEditingTeamProjectId}
+            projectAssignmentDrafts={projectAssignmentDrafts}
+            setProjectAssignmentDrafts={setProjectAssignmentDrafts}
             memberDraft={memberDraft}
             setMemberDraft={setMemberDraft}
             memberPasswordDrafts={memberPasswordDrafts}
             setMemberPasswordDrafts={setMemberPasswordDrafts}
             onCreateMember={createMember}
+            onCreateTeamProject={createTeamProject}
+            onEditTeamProject={openTeamProjectEditor}
+            onSaveProjectMembers={saveProjectMembers}
+            onUpdateTeamProjectStatus={updateTeamProjectStatus}
+            onDeleteTeamProject={deleteTeamProject}
             onDeleteMember={deleteMember}
             onSetMemberPassword={setMemberPassword}
             onResetMemberPassword={resetMemberPassword}
@@ -537,7 +674,7 @@ function LoginPage({ loginDraft, setLoginDraft, onLogin, teams, teamDraft, setTe
 }
 
 
-function TeamManagementPage({ activeTeamTab, setActiveTeamTab, currentTeam, members, memberDraft, setMemberDraft, memberPasswordDrafts, setMemberPasswordDrafts, onCreateMember, onDeleteMember, onSetMemberPassword, onResetMemberPassword }) {
+function TeamManagementPage({ activeTeamTab, setActiveTeamTab, currentTeam, members, teamProjects, teamProjectDraft, setTeamProjectDraft, isProjectModalOpen, setIsProjectModalOpen, editingTeamProjectId, setEditingTeamProjectId, projectAssignmentDrafts, setProjectAssignmentDrafts, memberDraft, setMemberDraft, memberPasswordDrafts, setMemberPasswordDrafts, onCreateMember, onCreateTeamProject, onEditTeamProject, onSaveProjectMembers, onUpdateTeamProjectStatus, onDeleteTeamProject, onDeleteMember, onSetMemberPassword, onResetMemberPassword }) {
   return (
     <>
       <div className="page-head">
@@ -576,16 +713,11 @@ function TeamManagementPage({ activeTeamTab, setActiveTeamTab, currentTeam, memb
                 <code>{member.user_id}</code>
                 <div className="member-password-box">
                   {member.must_change_password ? (
-                    <>
-                      <div className="member-password-status">
-                        <span className="password-state initial">초기 비밀번호</span>
-                        <span className="member-password-warning">비밀번호 설정 필요</span>
-                      </div>
-                      <div className="member-password-action">
-                        <input type="password" placeholder="새 비밀번호" value={memberPasswordDrafts[member.user_id] || ''} onChange={(e) => setMemberPasswordDrafts((prev) => ({ ...prev, [member.user_id]: e.target.value }))} onKeyDown={(e) => e.key === 'Enter' && onSetMemberPassword(member.user_id)} />
-                        <button className="mt-btn sm" type="button" onClick={() => onSetMemberPassword(member.user_id)}>설정</button>
-                      </div>
-                    </>
+                    <div className="member-password-inline">
+                      <span className="password-state initial">비밀번호 설정 필요</span>
+                      <input type="password" placeholder="새 비밀번호" value={memberPasswordDrafts[member.user_id] || ''} onChange={(e) => setMemberPasswordDrafts((prev) => ({ ...prev, [member.user_id]: e.target.value }))} onKeyDown={(e) => e.key === 'Enter' && onSetMemberPassword(member.user_id)} />
+                      <button className="mt-btn sm" type="button" onClick={() => onSetMemberPassword(member.user_id)}>설정</button>
+                    </div>
                   ) : (
                     <>
                       <span className="password-state">비밀번호 설정 완료</span>
@@ -600,15 +732,164 @@ function TeamManagementPage({ activeTeamTab, setActiveTeamTab, currentTeam, memb
           </div>
         </section>
       ) : (
-        <section className="account-card team-placeholder">
-          <ClipboardList size={22} />
-          <div>
-            <h2>과제 관리</h2>
-            <p>팀 단위 과제 관리 기준을 이 영역에 확장할 수 있도록 준비했습니다.</p>
-          </div>
-        </section>
+        <ProjectManagementBoard
+          members={members}
+          teamProjects={teamProjects}
+          teamProjectDraft={teamProjectDraft}
+          setTeamProjectDraft={setTeamProjectDraft}
+          isProjectModalOpen={isProjectModalOpen}
+          setIsProjectModalOpen={setIsProjectModalOpen}
+          editingTeamProjectId={editingTeamProjectId}
+          setEditingTeamProjectId={setEditingTeamProjectId}
+          onCreateTeamProject={onCreateTeamProject}
+          onEditTeamProject={onEditTeamProject}
+          onUpdateTeamProjectStatus={onUpdateTeamProjectStatus}
+          onDeleteTeamProject={onDeleteTeamProject}
+        />
       )}
     </>
+  );
+}
+
+
+function ProjectManagementBoard({ members, teamProjects, teamProjectDraft, setTeamProjectDraft, isProjectModalOpen, setIsProjectModalOpen, editingTeamProjectId, setEditingTeamProjectId, onCreateTeamProject, onEditTeamProject, onUpdateTeamProjectStatus, onDeleteTeamProject }) {
+  const inProgressProjects = teamProjects.filter((project) => project.status !== 'done');
+  const doneProjects = teamProjects.filter((project) => project.status === 'done');
+
+  function updateDraftMember(userId, checked) {
+    setTeamProjectDraft((prev) => {
+      const currentIds = prev.memberIds || [];
+      const nextIds = checked
+        ? Array.from(new Set([...currentIds, userId]))
+        : currentIds.filter((id) => id !== userId);
+      return { ...prev, memberIds: nextIds };
+    });
+  }
+
+  function closeModal() {
+    setIsProjectModalOpen(false);
+    setEditingTeamProjectId(null);
+    setTeamProjectDraft({ project_name: '', leaderId: '', memberIds: [], status: 'in_progress' });
+  }
+
+  return (
+    <>
+      <section className="project-board-toolbar">
+        <div>
+          <h2>과제 관리</h2>
+          <p>진행중인 과제와 완료된 과제를 분리해서 관리합니다.</p>
+        </div>
+        <button className="mt-btn primary" type="button" onClick={() => { setEditingTeamProjectId(null); setTeamProjectDraft({ project_name: '', leaderId: '', memberIds: [], status: 'in_progress' }); setIsProjectModalOpen(true); }}><Plus size={15} />과제 추가</button>
+      </section>
+
+      <div className="project-board-grid">
+        <ProjectColumn
+          title="진행중인 과제"
+          projects={inProgressProjects}
+          emptyText="진행중인 과제가 없습니다"
+          nextActionLabel="과제 완료"
+          nextStatus="done"
+          onMove={onUpdateTeamProjectStatus}
+          onEdit={onEditTeamProject}
+          onDelete={onDeleteTeamProject}
+        />
+        <ProjectColumn
+          title="완료된 과제"
+          projects={doneProjects}
+          emptyText="완료된 과제가 없습니다"
+          nextActionLabel="진행중으로 이동"
+          nextStatus="in_progress"
+          onMove={onUpdateTeamProjectStatus}
+          onEdit={onEditTeamProject}
+          onDelete={onDeleteTeamProject}
+        />
+      </div>
+
+      {isProjectModalOpen && (
+        <div className="modal-backdrop" role="presentation">
+          <div className="project-modal" role="dialog" aria-modal="true" aria-labelledby="project-create-title">
+            <div className="project-modal-head">
+              <div>
+                <h2 id="project-create-title">{editingTeamProjectId ? '과제 수정' : '과제 추가'}</h2>
+                <p>과제 정보와 참여 멤버를 지정합니다.</p>
+              </div>
+              <button className="icon-btn" type="button" onClick={closeModal} aria-label="닫기"><X size={16} /></button>
+            </div>
+            <label className="project-leader-field">
+              <span>과제명</span>
+              <input autoFocus placeholder="과제명을 입력하세요" value={teamProjectDraft.project_name} onChange={(e) => setTeamProjectDraft((prev) => ({ ...prev, project_name: e.target.value }))} onKeyDown={(e) => e.key === 'Enter' && onCreateTeamProject()} />
+            </label>
+            <label className="project-leader-field">
+              <span>과제 리더</span>
+              <select value={teamProjectDraft.leaderId || ''} onChange={(e) => setTeamProjectDraft((prev) => ({ ...prev, leaderId: e.target.value, memberIds: (prev.memberIds || []).filter((userId) => userId !== e.target.value) }))}>
+                <option value="">리더 선택</option>
+                {members.map((member) => <option key={member.user_id} value={member.user_id}>{member.name} ({ROLE_LABELS[member.role] || member.role})</option>)}
+              </select>
+            </label>
+            <div className="project-member-picker">
+              <span>과제 멤버</span>
+              <div className="project-member-options modal-options">
+                <button className={`project-member-none${(teamProjectDraft.memberIds || []).length === 0 ? ' active' : ''}`} type="button" onClick={() => setTeamProjectDraft((prev) => ({ ...prev, memberIds: [] }))}>없음</button>
+                {members.map((member) => {
+                  const disabled = member.user_id === teamProjectDraft.leaderId;
+                  const checked = !disabled && (teamProjectDraft.memberIds || []).includes(member.user_id);
+                  return (
+                    <label className={`project-member-option${disabled ? ' disabled' : ''}`} key={member.user_id}>
+                      <input type="checkbox" checked={checked} disabled={disabled} onChange={(e) => updateDraftMember(member.user_id, e.target.checked)} />
+                      <span>{member.name}</span>
+                    </label>
+                  );
+                })}
+                {members.length === 0 && <div className="empty compact">등록된 멤버가 없습니다</div>}
+              </div>
+            </div>
+            <div className="project-modal-actions">
+              <button className="mt-btn" type="button" onClick={closeModal}>취소</button>
+              <button className="mt-btn primary" type="button" onClick={onCreateTeamProject}><Save size={13} />{editingTeamProjectId ? '저장' : '추가'}</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+function ProjectColumn({ title, projects, emptyText, nextActionLabel, nextStatus, onMove, onEdit, onDelete }) {
+  return (
+    <section className="project-column">
+      <div className="project-column-head">
+        <h3>{title}</h3>
+        <span>{projects.length}</span>
+      </div>
+      <div className="project-card-list">
+        {projects.map((project) => <ProjectCard key={project.project_id} project={project} actionLabel={nextActionLabel} nextStatus={nextStatus} onMove={onMove} onEdit={onEdit} onDelete={onDelete} />)}
+        {projects.length === 0 && <div className="empty compact">{emptyText}</div>}
+      </div>
+    </section>
+  );
+}
+
+function ProjectCard({ project, actionLabel, nextStatus, onMove, onEdit, onDelete }) {
+  const leader = project.members.find((member) => member.role === 'L');
+  const projectMembers = project.members.filter((member) => member.role === 'M');
+  return (
+    <article className="team-project-card">
+      <div className="team-project-card-head">
+        <div>
+          <strong>{project.project_name}</strong>
+        </div>
+        <span className={`project-status ${project.status === 'done' ? 'done' : 'active'}`}>{project.status === 'done' ? '완료' : '진행중'}</span>
+      </div>
+      <div className="project-role-lines">
+        <div><b>리더</b><span>{leader ? leader.name : '미지정'}</span></div>
+        <div><b>멤버</b><span>{projectMembers.length ? projectMembers.map((member) => member.name).join(', ') : '없음'}</span></div>
+      </div>
+      <div className="team-project-card-actions">
+        <button className="project-card-btn" type="button" onClick={() => onEdit(project)}><Pencil size={13} />수정</button>
+        <button className="project-card-btn primary" type="button" onClick={() => onMove(project.project_id, nextStatus)}>{actionLabel}</button>
+        <button className="project-card-btn danger" type="button" onClick={() => onDelete(project.project_id)}><Trash2 size={13} />삭제</button>
+      </div>
+    </article>
   );
 }
 
