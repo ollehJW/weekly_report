@@ -16,6 +16,7 @@ from string import Template
 
 DB_PATH = Path(__file__).resolve().parent.parent / "app.db"
 WEEKLY_REPORT_TEMPLATE_PATH = Path(__file__).resolve().parent / "templates" / "weekly_report_static.html"
+PROJECT_REPORT_TEMPLATE_PATH = Path(__file__).resolve().parent / "templates" / "project_report_static.html"
 INITIAL_PASSWORD = "wia1234!"
 OTHER_WORK_PROJECT_NAME = "기타 업무 (교육/출장 등)"
 
@@ -803,6 +804,164 @@ def render_weekly_report_html(report, user, projects):
     )
 
 
+def role_sort_value(role):
+    return {"L": 0, "CM": 1, "M": 2}.get(str(role or ""), 99)
+
+
+def report_member_label(member):
+    return f"{member['name']} {member['role']}"
+
+
+def format_project_report_members(members):
+    ordered = sorted(
+        members,
+        key=lambda member: (
+            role_sort_value(member["role"]),
+            member["sort_order"] if member["sort_order"] is not None else 999999,
+            member["name"] or "",
+        ),
+    )
+    return ", ".join(report_member_label(member) for member in ordered)
+
+
+def collect_project_report_items(members):
+    progress_rows = []
+    risk_rows = []
+    plan_rows = []
+    ordered_members = sorted(
+        members,
+        key=lambda member: (
+            role_sort_value(member["role"]),
+            member["sort_order"] if member["sort_order"] is not None else 999999,
+            member["name"] or "",
+        ),
+    )
+    for member in ordered_members:
+        source = report_member_label(member)
+        for item in parse_json_list(member["progress_log"]):
+            if isinstance(item, str):
+                log = item.strip()
+                status = "done"
+                date_value = ""
+            else:
+                log = str(item.get("log") or item.get("text") or "").strip()
+                status = normalize_progress_status(item.get("status"))
+                date_value = str(item.get("date") or "").strip()
+            if log or date_value:
+                progress_rows.append({"log": log, "status": status, "date": date_value, "source": source})
+        for item in parse_json_list(member["risk_issue"], "issue"):
+            if isinstance(item, str):
+                issue = item.strip()
+                importance = "중"
+            else:
+                issue = str(item.get("issue") or "").strip()
+                importance = str(item.get("importance") or "중").strip()
+            if issue:
+                risk_rows.append({"issue": issue, "importance": importance, "source": source})
+        for item in parse_json_list(member["next_plan"], "plan"):
+            if isinstance(item, str):
+                plan = item.strip()
+                due = ""
+            else:
+                plan = str(item.get("plan") or "").strip()
+                due = str(item.get("due") or "").strip()
+            if plan or due:
+                plan_rows.append({"plan": plan, "due": due, "source": source})
+    progress_rows.sort(key=lambda row: (0 if row["status"] == "done" else 1, report_date_sort_value(row["date"]), row["source"], row["log"]))
+    risk_rows.sort(key=lambda row: (report_importance_sort_value(row["importance"]), row["source"], row["issue"]))
+    plan_rows.sort(key=lambda row: (report_date_sort_value(row["due"]), row["source"], row["plan"]))
+    return progress_rows, risk_rows, plan_rows
+
+
+def render_project_report_progress(rows):
+    if not rows:
+        return render_report_empty()
+    items = []
+    for row in rows:
+        date_html = f'<span class="pdate">{escape_html(format_report_due(row["date"]))}</span>' if row["date"] else ""
+        log_html = escape_html(row["log"]) if row["log"] else "진행 내용 없음"
+        items.append(
+            '<li class="pline progress">'
+            f'<span class="status {progress_status_class(row["status"])}">{escape_html(progress_status_label(row["status"]))}</span>'
+            f'{date_html}'
+            f'<div class="ptxt">{log_html}</div>'
+            f'<span class="source">{escape_html(row["source"])}</span></li>'
+        )
+    return f"<ul>{''.join(items)}</ul>"
+
+
+def render_project_report_risks(rows):
+    if not rows:
+        return render_report_empty()
+    items = []
+    for row in rows:
+        level = report_importance_class(row["importance"])
+        items.append(
+            f'<li class="rline {level}">'
+            f'<span class="badge {level}">{escape_html(row["importance"])}</span>'
+            f'<div class="rtxt">{escape_html(row["issue"])}</div>'
+            f'<span class="source">{escape_html(row["source"])}</span></li>'
+        )
+    return f"<ul>{''.join(items)}</ul>"
+
+
+def render_project_report_plans(rows):
+    if not rows:
+        return render_report_empty()
+    items = []
+    for row in rows:
+        due_html = f'<span class="due">DUE {escape_html(format_report_due(row["due"]))}</span>' if row["due"] else ""
+        plan_html = escape_html(row["plan"]) if row["plan"] else "계획 내용 없음"
+        items.append(
+            '<li class="pline">'
+            f'{due_html}'
+            f'<div class="ptxt">{plan_html}</div>'
+            f'<span class="source">{escape_html(row["source"])}</span></li>'
+        )
+    return f"<ul>{''.join(items)}</ul>"
+
+
+def render_project_report_summary(members):
+    progress_rows, risk_rows, plan_rows = collect_project_report_items(members)
+    return f"""
+      <article class="project">
+        <div class="project-title">
+          <div class="name">
+            <h2>과제 종합</h2>
+          </div>
+          <div class="stats"><span><b>{len(progress_rows)}</b> Progress</span><span><b>{len(risk_rows)}</b> Risk</span><span><b>{len(plan_rows)}</b> Plan</span></div>
+        </div>
+        <div class="blocks">
+          <section class="block">
+            <h3><span class="bar"></span>Progress Log</h3>
+            {render_project_report_progress(progress_rows)}
+          </section>
+          <section class="block risk">
+            <h3><span class="bar"></span>Risk &amp; Issue</h3>
+            {render_project_report_risks(risk_rows)}
+          </section>
+          <section class="block plan">
+            <h3><span class="bar"></span>Next Plan</h3>
+            {render_project_report_plans(plan_rows)}
+          </section>
+        </div>
+      </article>
+    """
+
+
+def render_project_weekly_report_html(report, project, members):
+    if not PROJECT_REPORT_TEMPLATE_PATH.exists():
+        raise HTTPException(status_code=500, detail="Project report template not found")
+    project_sections = render_project_report_summary(members) if members else '<div class="empty">수집 완료된 멤버 작성 내용이 없습니다</div>'
+    template = Template(PROJECT_REPORT_TEMPLATE_PATH.read_text(encoding="utf-8"))
+    return template.safe_substitute(
+        project_name=escape_html(project["project_name"]),
+        member_names=escape_html(format_project_report_members(members) if members else "없음"),
+        period=escape_html(f"{report['start_date']} ~ {report['end_date']}"),
+        project_sections=project_sections,
+    )
+
+
 def recompute_report_entry_status(conn, entry_id: str):
     entry = conn.execute("SELECT * FROM report_entries WHERE entry_id = ?", (entry_id,)).fetchone()
     if not entry:
@@ -1563,6 +1722,78 @@ def update_project_entry_exclusion(entry_id: str, project_id: str, payload: Proj
             )
         recompute_report_entry_status(conn, entry_id)
         return report_for_entry(conn, entry_id)
+
+
+@app.get("/api/projects/{project_id}/weekly-reports")
+def list_project_weekly_reports(project_id: str):
+    with get_conn() as conn:
+        project = ensure_team_project(conn, project_id)
+        rows = conn.execute(
+            """
+            SELECT
+                r.report_id,
+                r.team_id,
+                r.start_date,
+                r.end_date,
+                r.status,
+                r.created_at,
+                COUNT(DISTINCT re.user_id) AS member_count
+            FROM reports r
+            JOIN report_entries re ON re.report_id = r.report_id
+            JOIN project_entry pe ON pe.entry_id = re.entry_id
+            WHERE r.team_id = ?
+              AND pe.project_id = ?
+              AND pe.is_excluded = 0
+              AND re.status = 'done'
+            GROUP BY r.report_id
+            ORDER BY r.start_date DESC, r.end_date DESC, r.created_at DESC
+            """,
+            (project["team_id"], project_id),
+        ).fetchall()
+        return [row_to_dict(row) for row in rows]
+
+
+@app.get("/api/reports/{report_id}/projects/{project_id}/html-report")
+def get_project_html_report(report_id: str, project_id: str):
+    with get_conn() as conn:
+        report = conn.execute("SELECT * FROM reports WHERE report_id = ?", (report_id,)).fetchone()
+        if not report:
+            raise HTTPException(status_code=404, detail="Report not found")
+        project = ensure_team_project(conn, project_id)
+        if project["team_id"] != report["team_id"]:
+            raise HTTPException(status_code=422, detail="The project does not belong to the report team")
+        rows = conn.execute(
+            """
+            SELECT
+                u.user_id,
+                u.name,
+                u.role,
+                u.sort_order,
+                re.entry_id,
+                re.status AS entry_status,
+                pe.is_excluded,
+                pe.progress_log,
+                pe.risk_issue,
+                pe.next_plan,
+                pe.updated_at
+            FROM report_entries re
+            JOIN users u ON u.user_id = re.user_id
+            JOIN project_entry pe ON pe.entry_id = re.entry_id
+            WHERE re.report_id = ?
+              AND pe.project_id = ?
+              AND re.status = 'done'
+              AND pe.is_excluded = 0
+            ORDER BY
+              CASE u.role WHEN 'L' THEN 0 WHEN 'CM' THEN 1 WHEN 'M' THEN 2 ELSE 99 END,
+              u.sort_order ASC,
+              u.created_at ASC,
+              u.name
+            """,
+            (report_id, project_id),
+        ).fetchall()
+        if not rows:
+            raise HTTPException(status_code=404, detail="Project report entries not found")
+        return {"html": render_project_weekly_report_html(row_to_dict(report), row_to_dict(project), [row_to_dict(row) for row in rows])}
 
 
 @app.get("/api/teams/{team_id}/timeline-projects")

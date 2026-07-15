@@ -177,6 +177,14 @@ function App() {
   const [passwordDraft, setPasswordDraft] = useState({ current_password: INITIAL_PASSWORD, new_password: '', confirm_password: '' });
 
   const selectedProject = projects.find((project) => project.id === selectedProjectId) || null;
+  const selectedTeamProject = teamProjects.find((project) => project.project_id === selectedProjectId) || null;
+  const isAdminAccount = currentTeam?.login_id === 'admin';
+
+  useEffect(() => {
+    if (!isAdminAccount && activePage === 'accounts') {
+      setActivePage('tasks');
+    }
+  }, [isAdminAccount, activePage]);
 
   async function loadProjects(nextProjectId, teamId = currentTeam?.team_id) {
     if (!teamId) {
@@ -833,7 +841,7 @@ function App() {
           <button className={`side-tab${activePage === 'weekly-report' ? ' active' : ''}`} type="button" onClick={() => setActivePage('weekly-report')}>주간 보고 작성</button>
           <button className={`side-tab${activePage === 'weekly-lounge' ? ' active' : ''}`} type="button" onClick={() => setActivePage('weekly-lounge')}>주간 보고 라운지</button>
           <button className={`side-tab${activePage === 'team' ? ' active' : ''}`} type="button" onClick={() => setActivePage('team')}>팀 관리</button>
-          <button className={`side-tab${activePage === 'accounts' ? ' active' : ''}`} type="button" onClick={() => setActivePage('accounts')}>계정 관리</button>
+          {isAdminAccount && <button className={`side-tab${activePage === 'accounts' ? ' active' : ''}`} type="button" onClick={() => setActivePage('accounts')}>계정 관리</button>}
         </nav>
 
         <div className="side-user">
@@ -868,20 +876,24 @@ function App() {
 
             {loading && <div className="empty">불러오는 중</div>}
             {!loading && selectedProject && (
-              <ProjectTimeline
-                project={selectedProject}
-                milestones={milestones}
-                addingMilestone={addingMilestone}
-                setAddingMilestone={setAddingMilestone}
-                milestoneDraft={milestoneDraft}
-                setMilestoneDraft={setMilestoneDraft}
-                onAddMilestone={createMilestone}
-                onUpdateMilestone={updateMilestone}
-                onRemoveMilestone={deleteMilestone}
-                onAddEpic={createEpic}
-                onUpdateEpic={updateEpic}
-                onRemoveEpic={deleteEpic}
-              />
+              <>
+                <ProjectMemberPanel project={selectedProject} teamProject={selectedTeamProject} />
+                <ProjectTimeline
+                  project={selectedProject}
+                  milestones={milestones}
+                  addingMilestone={addingMilestone}
+                  setAddingMilestone={setAddingMilestone}
+                  milestoneDraft={milestoneDraft}
+                  setMilestoneDraft={setMilestoneDraft}
+                  onAddMilestone={createMilestone}
+                  onUpdateMilestone={updateMilestone}
+                  onRemoveMilestone={deleteMilestone}
+                  onAddEpic={createEpic}
+                  onUpdateEpic={updateEpic}
+                  onRemoveEpic={deleteEpic}
+                />
+                <ProjectWeeklyReports project={selectedProject} />
+              </>
             )}
           </>
         )}
@@ -954,7 +966,7 @@ function App() {
             setDraggingMemberId={setDraggingMemberId}
           />
         )}
-        {activePage === 'accounts' && (
+        {isAdminAccount && activePage === 'accounts' && (
           <AccountManagementPage teams={teams} teamDraft={teamDraft} setTeamDraft={setTeamDraft} onCreateTeam={createTeam} />
         )}
       </section>
@@ -1384,6 +1396,128 @@ function WeeklyReportLoungePage({ currentTeam }) {
         </div>
       </section>
     </>
+  );
+}
+
+function ProjectMemberPanel({ project, teamProject }) {
+  const assignedMembers = teamProject?.members || [];
+  const leaders = assignedMembers.filter((member) => member.role === 'L');
+  const participants = assignedMembers.filter((member) => member.role !== 'L');
+
+  function renderPerson(member, variant = '') {
+    const label = `${member.name} ${member.member_role || ''}`.trim();
+    return (
+      <span className={`project-member-chip${variant ? ` ${variant}` : ''}`} key={member.user_id}>
+        <span className="avatar-mini">{member.name.slice(0, 1)}</span>
+        <span>{label}</span>
+      </span>
+    );
+  }
+
+  return (
+    <section className="project-member-panel" aria-label="과제 멤버 구성">
+      <div className="project-member-panel-head">
+        <div>
+          <span>Project Members</span>
+          <strong>{project?.title || '선택된 과제'}</strong>
+          <em>{assignedMembers.length}명 참여</em>
+        </div>
+      </div>
+      <div className="project-member-groups">
+        <div className="project-member-group leader">
+          <span className="group-label">리더</span>
+          <div className="project-member-chips">
+            {leaders.length ? leaders.map((member) => renderPerson(member, 'leader')) : <span className="project-member-empty">없음</span>}
+          </div>
+        </div>
+        <div className="project-member-group">
+          <span className="group-label">멤버</span>
+          <div className="project-member-chips">
+            {participants.length ? participants.map((member) => renderPerson(member)) : <span className="project-member-empty">없음</span>}
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function ProjectWeeklyReports({ project }) {
+  const [reports, setReports] = useState([]);
+  const [selectedReport, setSelectedReport] = useState(null);
+  const [reportHtml, setReportHtml] = useState('');
+  const [loadingReports, setLoadingReports] = useState(false);
+  const [loadingHtml, setLoadingHtml] = useState(false);
+  const [reportError, setReportError] = useState('');
+
+  useEffect(() => {
+    let alive = true;
+    setReports([]);
+    setSelectedReport(null);
+    setReportHtml('');
+    setReportError('');
+    if (!project?.id) return undefined;
+    setLoadingReports(true);
+    request(`/api/projects/${project.id}/weekly-reports`)
+      .then((list) => {
+        if (!alive) return;
+        setReports(list || []);
+      })
+      .catch((err) => {
+        if (alive) setReportError(err.message || '과제 주간보고를 불러오지 못했습니다');
+      })
+      .finally(() => {
+        if (alive) setLoadingReports(false);
+      });
+    return () => { alive = false; };
+  }, [project?.id]);
+
+  async function openProjectReport(report) {
+    setSelectedReport(report);
+    setReportHtml('');
+    setReportError('');
+    setLoadingHtml(true);
+    try {
+      const result = await request(`/api/reports/${report.report_id}/projects/${project.id}/html-report`);
+      setReportHtml(result.html || '');
+    } catch (err) {
+      setReportError(err.message || '과제 리포트를 불러오지 못했습니다');
+    } finally {
+      setLoadingHtml(false);
+    }
+  }
+
+  return (
+    <section className="project-weekly-section">
+      <section className="weekly-lounge-layout project-weekly-layout">
+        <div className="weekly-lounge-list">
+          <div className="weekly-lounge-head">
+            <h2>보고 주차</h2>
+            <span>{reports.length}</span>
+          </div>
+          {loadingReports && <div className="empty compact">불러오는 중입니다</div>}
+          {!loadingReports && reports.length === 0 && <div className="empty compact">이 과제의 주간보고가 없습니다</div>}
+          {!loadingReports && reports.map((report) => (
+            <button className={`weekly-lounge-card${selectedReport?.report_id === report.report_id ? ' active' : ''}`} type="button" key={report.report_id} onClick={() => openProjectReport(report)}>
+              <strong>{report.start_date} ~ {report.end_date}</strong>
+              <span>{report.status === 'done' ? '완료된 보고' : '진행중 보고'} · 작성 {report.member_count || 0}명</span>
+            </button>
+          ))}
+        </div>
+
+        <div className="weekly-lounge-viewer">
+          {selectedReport ? (
+            <>
+              {reportError && <div className="error compact">{reportError}</div>}
+              {loadingHtml && <div className="empty">리포트를 불러오는 중입니다</div>}
+              {!loadingHtml && reportHtml && <iframe className="weekly-lounge-frame" title="과제 주간보고 리포트" srcDoc={reportHtml} />}
+              {!loadingHtml && !reportHtml && !reportError && <div className="empty">리포트를 선택하세요</div>}
+            </>
+          ) : (
+            <div className="empty weekly-lounge-empty">보고 주차 카드를 선택하세요</div>
+          )}
+        </div>
+      </section>
+    </section>
   );
 }
 
@@ -1841,12 +1975,6 @@ function ProjectTimeline({
 
   return (
     <article className="mt-card project-card">
-      <div className="mt-card-titlebar">
-        <div>
-          <h2 className="mt-title">{project.title}</h2>
-        </div>
-      </div>
-
       <div className="mt-card-head">
         <p className="mt-card-eyebrow"><AudioWaveform size={14} color="#4F46E5" />Project Timeline</p>
         <p className="mt-card-sub mono">{range.start} → {range.end} · Milestone {milestones.length}개</p>
