@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { Plus, Trash2, AudioWaveform, User, ChevronRight, CornerDownRight, Pencil, Save, X, KeyRound, LogOut, Users, ClipboardList } from 'lucide-react';
+import { Plus, Trash2, AudioWaveform, User, ChevronRight, CornerDownRight, Pencil, Save, X, KeyRound, LogOut, Users, ClipboardList, GripVertical } from 'lucide-react';
 import './styles.css';
 
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:9601';
@@ -116,6 +116,16 @@ function App() {
   const [error, setError] = useState('');
   const [addingMilestone, setAddingMilestone] = useState(false);
   const [milestoneDraft, setMilestoneDraft] = useState({ title: '', start_date: todayIso(), end_date: plusDays(todayIso(), 14) });
+  const [weeklyReport, setWeeklyReport] = useState(null);
+  const [weeklyReportDraft, setWeeklyReportDraft] = useState({ start_date: todayIso(), end_date: plusDays(todayIso(), 7) });
+  const [isWeeklyReportModalOpen, setIsWeeklyReportModalOpen] = useState(false);
+  const [weeklyWarningMessage, setWeeklyWarningMessage] = useState('');
+  const [weeklyPasswordEntry, setWeeklyPasswordEntry] = useState(null);
+  const [weeklyPasswordDraft, setWeeklyPasswordDraft] = useState('');
+  const [weeklyWritingEntry, setWeeklyWritingEntry] = useState(null);
+  const [weeklyEntryProjects, setWeeklyEntryProjects] = useState([]);
+  const [selectedWeeklyEntryId, setSelectedWeeklyEntryId] = useState('');
+  const [weeklyEntryDraft, setWeeklyEntryDraft] = useState({ progress_log: '', risk_issue: '', next_plan: '' });
   const [teamDraft, setTeamDraft] = useState({ department: '', login_id: '' });
   const [memberDraft, setMemberDraft] = useState({ name: '', role: 'M' });
   const [teamProjectDraft, setTeamProjectDraft] = useState({ project_name: '', leaderId: '', memberIds: [] });
@@ -123,6 +133,7 @@ function App() {
   const [editingTeamProjectId, setEditingTeamProjectId] = useState(null);
   const [projectAssignmentDrafts, setProjectAssignmentDrafts] = useState({});
   const [memberPasswordDrafts, setMemberPasswordDrafts] = useState({});
+  const [draggingMemberId, setDraggingMemberId] = useState(null);
   const [loginDraft, setLoginDraft] = useState({ login_id: '', password: '' });
   const [passwordDraft, setPasswordDraft] = useState({ current_password: INITIAL_PASSWORD, new_password: '', confirm_password: '' });
 
@@ -188,6 +199,15 @@ function App() {
     });
   }
 
+  async function loadWeeklyReport(teamId = currentTeam?.team_id) {
+    if (!teamId) {
+      setWeeklyReport(null);
+      return;
+    }
+    const report = await request(`/api/teams/${teamId}/reports/active`);
+    setWeeklyReport(report);
+  }
+
   async function refresh(projectId) {
     setError('');
     const id = await loadProjects(projectId, currentTeam?.team_id);
@@ -196,6 +216,7 @@ function App() {
       loadTeams(),
       currentTeam?.team_id ? loadMembers(currentTeam.team_id) : Promise.resolve(),
       currentTeam?.team_id ? loadTeamProjects(currentTeam.team_id) : Promise.resolve(),
+      currentTeam?.team_id ? loadWeeklyReport(currentTeam.team_id) : Promise.resolve(),
     ]);
   }
 
@@ -220,6 +241,7 @@ function App() {
     Promise.all([
       loadMembers(currentTeam.team_id),
       loadTeamProjects(currentTeam.team_id),
+      loadWeeklyReport(currentTeam.team_id),
       loadProjects(undefined, currentTeam.team_id).then((projectId) => loadMilestones(projectId)),
     ]).catch((err) => setError(err.message));
   }, [currentTeam?.team_id]);
@@ -414,6 +436,26 @@ function App() {
     }
   }
 
+  async function updateMemberRole(userId, role) {
+    if (!currentTeam?.team_id) return;
+    const previousMembers = members;
+    setMembers((prev) => prev.map((member) => (member.user_id === userId ? { ...member, role } : member)));
+    try {
+      await request(`/api/users/${userId}/role`, {
+        method: 'PUT',
+        body: JSON.stringify({ role }),
+      });
+      await Promise.all([
+        loadMembers(currentTeam.team_id),
+        loadTeamProjects(currentTeam.team_id),
+      ]);
+      setError('');
+    } catch (err) {
+      setMembers(previousMembers);
+      setError(err.message);
+    }
+  }
+
   async function setMemberPassword(userId) {
     const password = memberPasswordDrafts[userId] || '';
     if (!password.trim()) {
@@ -442,6 +484,24 @@ function App() {
       await loadMembers(currentTeam.team_id);
     } catch (err) {
       setError(err.message);
+    }
+  }
+
+  async function reorderMembers(nextMembers) {
+    if (!currentTeam?.team_id) return;
+    const previousMembers = members;
+    setMembers(nextMembers);
+    try {
+      const savedMembers = await request(`/api/teams/${currentTeam.team_id}/users/order`, {
+        method: 'PUT',
+        body: JSON.stringify({ user_ids: nextMembers.map((member) => member.user_id) }),
+      });
+      setMembers(savedMembers);
+      setError('');
+    } catch (err) {
+      setMembers(previousMembers);
+      setError(err.message);
+      await loadMembers(currentTeam.team_id).catch(() => {});
     }
   }
 
@@ -545,6 +605,158 @@ function App() {
     }
   }
 
+  async function createWeeklyReportPeriod() {
+    if (!currentTeam?.team_id) return;
+    if (!weeklyReportDraft.start_date || !weeklyReportDraft.end_date) {
+      setError('보고 기간을 입력하세요');
+      return;
+    }
+    if (weeklyReportDraft.end_date < weeklyReportDraft.start_date) {
+      setError('종료일은 시작일 이후여야 합니다');
+      return;
+    }
+    try {
+      const report = await request(`/api/teams/${currentTeam.team_id}/reports`, {
+        method: 'POST',
+        body: JSON.stringify(weeklyReportDraft),
+      });
+      setWeeklyReport(report);
+      setIsWeeklyReportModalOpen(false);
+      setError('');
+    } catch (err) {
+      if (err.message === '이미 진행중인 보고가 있습니다') {
+        setWeeklyWarningMessage(err.message);
+        setError('');
+      } else {
+        setError(err.message);
+      }
+    }
+  }
+
+  async function deleteWeeklyReport(reportId) {
+    if (!reportId) return;
+    try {
+      await request(`/api/reports/${reportId}`, { method: 'DELETE' });
+      setWeeklyReport(null);
+      setWeeklyPasswordEntry(null);
+      setWeeklyPasswordDraft('');
+      closeWeeklyEntryModal();
+      setError('');
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function completeWeeklyReport(reportId) {
+    if (!reportId) return;
+    try {
+      await request(`/api/reports/${reportId}/complete`, { method: 'PUT' });
+      setWeeklyReport(null);
+      setWeeklyPasswordEntry(null);
+      setWeeklyPasswordDraft('');
+      closeWeeklyEntryModal();
+      setError('');
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function toggleWeeklyAbsence(member) {
+    if (!weeklyReport?.report_id) return;
+    try {
+      const report = await request(`/api/reports/${weeklyReport.report_id}/users/${member.user_id}/absence`, { method: 'PUT' });
+      setWeeklyReport(report);
+      setError('');
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  function openWeeklyPassword(entry) {
+    setWeeklyPasswordEntry(entry);
+    setWeeklyPasswordDraft('');
+    setError('');
+  }
+
+  async function authorizeWeeklyEntry() {
+    if (!weeklyPasswordEntry || !weeklyPasswordDraft || !weeklyReport?.report_id) {
+      setError('비밀번호를 입력하세요');
+      return;
+    }
+    try {
+      const result = await request(`/api/reports/${weeklyReport.report_id}/users/${weeklyPasswordEntry.user_id}/authorize`, {
+        method: 'POST',
+        body: JSON.stringify({ password: weeklyPasswordDraft }),
+      });
+      const nextProjects = result.projects || [];
+      const firstProject = nextProjects[0] || null;
+      setWeeklyEntryProjects(nextProjects);
+      setSelectedWeeklyEntryId(firstProject?.project_id || '');
+      setWeeklyWritingEntry(weeklyPasswordEntry);
+      setWeeklyEntryDraft({
+        progress_log: firstProject?.progress_log || '',
+        risk_issue: firstProject?.risk_issue || '',
+        next_plan: firstProject?.next_plan || '',
+      });
+      setWeeklyPasswordEntry(null);
+      setWeeklyPasswordDraft('');
+      setError('');
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  function selectWeeklyProject(project) {
+    setSelectedWeeklyEntryId(project.project_id);
+    setWeeklyEntryDraft({
+      progress_log: project.progress_log || '',
+      risk_issue: project.risk_issue || '',
+      next_plan: project.next_plan || '',
+    });
+  }
+
+  async function saveWeeklyEntry(projectId = selectedWeeklyEntryId) {
+    const project = weeklyEntryProjects.find((item) => item.project_id === projectId);
+    if (!weeklyWritingEntry || !project) return;
+    try {
+      const report = await request(`/api/report-entries/${project.entry_id}/projects/${project.project_id}`, {
+        method: 'PUT',
+        body: JSON.stringify(weeklyEntryDraft),
+      });
+      setWeeklyReport(report);
+      setWeeklyEntryProjects((prev) => prev.map((item) => (item.project_id === project.project_id ? { ...item, ...weeklyEntryDraft, is_excluded: false, status: 'done' } : item)));
+      setError('');
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function updateWeeklyEntryStatus(projectId, isExcluded) {
+    const project = weeklyEntryProjects.find((item) => item.project_id === projectId);
+    if (!project) return;
+    try {
+      const report = await request(`/api/report-entries/${project.entry_id}/projects/${project.project_id}/exclusion`, {
+        method: 'PUT',
+        body: JSON.stringify({ is_excluded: isExcluded }),
+      });
+      setWeeklyReport(report);
+      setWeeklyEntryProjects((prev) => prev.map((item) => (item.project_id === project.project_id ? { ...item, is_excluded: isExcluded, status: isExcluded ? 'excluded' : 'pending', progress_log: isExcluded ? '' : item.progress_log, risk_issue: isExcluded ? '' : item.risk_issue, next_plan: isExcluded ? '' : item.next_plan } : item)));
+      if (selectedWeeklyEntryId === project.project_id && isExcluded) {
+        setWeeklyEntryDraft({ progress_log: '', risk_issue: '', next_plan: '' });
+      }
+      setError('');
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  function closeWeeklyEntryModal() {
+    setWeeklyWritingEntry(null);
+    setWeeklyEntryProjects([]);
+    setSelectedWeeklyEntryId('');
+    setWeeklyEntryDraft({ progress_log: '', risk_issue: '', next_plan: '' });
+  }
+
   if (!currentTeam) {
     return (
       <LoginPage
@@ -573,6 +785,8 @@ function App() {
 
         <nav className="side-nav" aria-label="주요 메뉴">
           <button className={`side-tab${activePage === 'tasks' ? ' active' : ''}`} type="button" onClick={() => setActivePage('tasks')}>과제 현황</button>
+          <button className={`side-tab${activePage === 'weekly-report' ? ' active' : ''}`} type="button" onClick={() => setActivePage('weekly-report')}>주간 보고 작성</button>
+          <button className={`side-tab${activePage === 'weekly-lounge' ? ' active' : ''}`} type="button" onClick={() => setActivePage('weekly-lounge')}>주간 보고 라운지</button>
           <button className={`side-tab${activePage === 'team' ? ' active' : ''}`} type="button" onClick={() => setActivePage('team')}>팀 관리</button>
           <button className={`side-tab${activePage === 'accounts' ? ' active' : ''}`} type="button" onClick={() => setActivePage('accounts')}>계정 관리</button>
         </nav>
@@ -594,7 +808,6 @@ function App() {
             <div className="page-head">
               <div>
                 <h1>과제 현황</h1>
-                <p>{selectedProject ? `${milestones.length}개의 마일스톤 · ${selectedProject.title}` : '프로젝트를 선택하세요'}</p>
               </div>
               <div className="project-toolbar" aria-label="과제 선택">
                 <div className="project-toolbar-meta">
@@ -627,6 +840,38 @@ function App() {
             )}
           </>
         )}
+        {activePage === 'weekly-report' && (
+          <WeeklyReportPage
+            members={members}
+            weeklyReport={weeklyReport}
+            weeklyReportDraft={weeklyReportDraft}
+            setWeeklyReportDraft={setWeeklyReportDraft}
+            isWeeklyReportModalOpen={isWeeklyReportModalOpen}
+            setIsWeeklyReportModalOpen={setIsWeeklyReportModalOpen}
+            onCreateWeeklyReportPeriod={createWeeklyReportPeriod}
+            weeklyWarningMessage={weeklyWarningMessage}
+            setWeeklyWarningMessage={setWeeklyWarningMessage}
+            onDeleteWeeklyReport={deleteWeeklyReport}
+            onCompleteWeeklyReport={completeWeeklyReport}
+            onToggleWeeklyAbsence={toggleWeeklyAbsence}
+            onOpenWeeklyPassword={openWeeklyPassword}
+            weeklyPasswordEntry={weeklyPasswordEntry}
+            weeklyPasswordDraft={weeklyPasswordDraft}
+            setWeeklyPasswordDraft={setWeeklyPasswordDraft}
+            onAuthorizeWeeklyEntry={authorizeWeeklyEntry}
+            setWeeklyPasswordEntry={setWeeklyPasswordEntry}
+            weeklyWritingEntry={weeklyWritingEntry}
+            weeklyEntryProjects={weeklyEntryProjects}
+            weeklyEntryDraft={weeklyEntryDraft}
+            setWeeklyEntryDraft={setWeeklyEntryDraft}
+            selectedWeeklyEntryId={selectedWeeklyEntryId}
+            onSelectWeeklyProject={selectWeeklyProject}
+            onSaveWeeklyEntry={saveWeeklyEntry}
+            onUpdateWeeklyEntryStatus={updateWeeklyEntryStatus}
+            onCloseWeeklyEntryModal={closeWeeklyEntryModal}
+          />
+        )}
+        {activePage === 'weekly-lounge' && <WeeklyReportLoungePage />}
         {activePage === 'team' && (
           <TeamManagementPage
             activeTeamTab={activeTeamTab}
@@ -653,8 +898,12 @@ function App() {
             onUpdateTeamProjectStatus={updateTeamProjectStatus}
             onDeleteTeamProject={deleteTeamProject}
             onDeleteMember={deleteMember}
+            onUpdateMemberRole={updateMemberRole}
             onSetMemberPassword={setMemberPassword}
             onResetMemberPassword={resetMemberPassword}
+            onReorderMembers={reorderMembers}
+            draggingMemberId={draggingMemberId}
+            setDraggingMemberId={setDraggingMemberId}
           />
         )}
         {activePage === 'accounts' && (
@@ -666,6 +915,246 @@ function App() {
         <PasswordChangeModal passwordDraft={passwordDraft} setPasswordDraft={setPasswordDraft} onChangePassword={changePassword} />
       )}
     </main>
+  );
+}
+
+function WeeklyReportPage({
+  members,
+  weeklyReport,
+  weeklyReportDraft,
+  setWeeklyReportDraft,
+  isWeeklyReportModalOpen,
+  setIsWeeklyReportModalOpen,
+  onCreateWeeklyReportPeriod,
+  weeklyWarningMessage,
+  setWeeklyWarningMessage,
+  onDeleteWeeklyReport,
+  onCompleteWeeklyReport,
+  onToggleWeeklyAbsence,
+  onOpenWeeklyPassword,
+  weeklyPasswordEntry,
+  weeklyPasswordDraft,
+  setWeeklyPasswordDraft,
+  onAuthorizeWeeklyEntry,
+  setWeeklyPasswordEntry,
+  weeklyWritingEntry,
+  weeklyEntryProjects,
+  weeklyEntryDraft,
+  setWeeklyEntryDraft,
+  selectedWeeklyEntryId,
+  onSelectWeeklyProject,
+  onSaveWeeklyEntry,
+  onUpdateWeeklyEntryStatus,
+  onCloseWeeklyEntryModal,
+}) {
+  const entries = weeklyReport?.entries || [];
+  const fallbackReportMembers = members.filter((member) => member.role !== 'L');
+  const visibleEntries = weeklyReport ? entries : fallbackReportMembers.map((member) => ({ entry_id: member.user_id, user_id: member.user_id, name: member.name, role: member.role, status: 'pending' }));
+  const activeEntryName = weeklyPasswordEntry ? `${weeklyPasswordEntry.name} ${weeklyPasswordEntry.role}` : '';
+  const writingEntryName = weeklyWritingEntry ? `${weeklyWritingEntry.name} ${weeklyWritingEntry.role}` : '';
+  const selectedWeeklyProject = weeklyEntryProjects.find((project) => project.project_id === selectedWeeklyEntryId) || null;
+  const reportMembers = weeklyReport?.members || [];
+  const canCompleteReport = reportMembers.length > 0 && reportMembers.every((member) => member.status === 'done' || member.status === 'absent');
+
+  return (
+    <>
+      <div className="page-head">
+        <div>
+          <h1>주간 보고 작성</h1>
+        </div>
+        <button className="weekly-open-btn" type="button" onClick={() => setIsWeeklyReportModalOpen(true)}><Plus size={16} />새 보고 주간 개설</button>
+      </div>
+
+      {weeklyReport ? (
+        <section className="weekly-report-section">
+          <div className="weekly-report-head">
+            <div>
+              <h2>진행중인 보고</h2>
+              <p>{weeklyReport.start_date} ~ {weeklyReport.end_date}</p>
+            </div>
+            <div className="weekly-report-head-actions">
+              <button className="weekly-complete-btn" type="button" disabled={!canCompleteReport} title={canCompleteReport ? '보고를 완료합니다' : '모든 멤버가 작성 완료 또는 부재 상태여야 활성화됩니다'} onClick={() => onCompleteWeeklyReport(weeklyReport.report_id)}>완료</button>
+              <button className="weekly-delete-btn" type="button" onClick={() => onDeleteWeeklyReport(weeklyReport.report_id)}>삭제</button>
+            </div>
+          </div>
+          <div className="weekly-member-grid">
+            {(weeklyReport.members || []).map((member) => (
+              <article className={`weekly-member-card${member.status === 'absent' ? ' absent' : ''}${member.status === 'done' ? ' done' : ''}`} key={member.user_id}>
+                <div className="weekly-card-main">
+                  <strong>{member.name} {member.role}</strong>
+                  <span className={`weekly-status-pill ${member.status || 'pending'}`}>{member.status === 'done' ? '작성 완료' : member.status === 'progress' ? '작성중' : member.status === 'absent' ? '부재' : '대기'}</span>
+                </div>
+                <div className="weekly-card-actions">
+                  <button className={`weekly-card-btn${member.status === 'absent' ? ' active' : ''}`} type="button" onClick={() => onToggleWeeklyAbsence(member)}>부재</button>
+                  <button className="weekly-card-btn primary" type="button" disabled={member.status === 'absent'} onClick={() => onOpenWeeklyPassword(member)}>작성</button>
+                </div>
+              </article>
+            ))}
+            {(weeklyReport.members || []).length === 0 && <div className="empty compact">보고 대상 멤버가 없습니다</div>}
+          </div>
+        </section>
+      ) : (
+        <section className="weekly-report-section">
+          <div className="weekly-report-head">
+            <div>
+              <h2>개설된 보고 주간이 없습니다</h2>
+              <p>새 보고 주간을 개설하면 보고 대상 멤버가 표시됩니다.</p>
+            </div>
+            <span>{visibleEntries.length}명</span>
+          </div>
+          <div className="weekly-member-grid">
+            {visibleEntries.map((entry) => (
+              <article className="weekly-member-card preview" key={entry.entry_id}>
+                <div className="weekly-card-main">
+                  <strong>{entry.name} {entry.role}</strong>
+                  <span>대상</span>
+                </div>
+              </article>
+            ))}
+            {visibleEntries.length === 0 && <div className="empty compact">보고 대상 멤버가 없습니다</div>}
+          </div>
+        </section>
+      )}
+
+      {isWeeklyReportModalOpen && (
+        <div className="modal-backdrop" role="presentation">
+          <div className="weekly-report-modal" role="dialog" aria-modal="true" aria-labelledby="weekly-report-title">
+            <div className="project-modal-head">
+              <div>
+                <h2 id="weekly-report-title">새 보고 주간 개설</h2>
+                <p>멤버별 주간 보고를 작성할 업무 기간을 설정합니다.</p>
+              </div>
+              <button className="icon-btn" type="button" onClick={() => setIsWeeklyReportModalOpen(false)} aria-label="닫기"><X size={16} /></button>
+            </div>
+            <div className="weekly-period-fields">
+              <label>
+                <span>시작일</span>
+                <input type="date" value={weeklyReportDraft.start_date} onChange={(e) => setWeeklyReportDraft({ ...weeklyReportDraft, start_date: e.target.value })} />
+              </label>
+              <label>
+                <span>종료일</span>
+                <input type="date" value={weeklyReportDraft.end_date} onChange={(e) => setWeeklyReportDraft({ ...weeklyReportDraft, end_date: e.target.value })} />
+              </label>
+            </div>
+            <div className="project-modal-actions">
+              <button className="mt-btn" type="button" onClick={() => setIsWeeklyReportModalOpen(false)}>취소</button>
+              <button className="mt-btn primary" type="button" onClick={onCreateWeeklyReportPeriod}>개설</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {weeklyWarningMessage && (
+        <div className="modal-backdrop" role="presentation">
+          <div className="weekly-report-modal compact-modal" role="dialog" aria-modal="true" aria-labelledby="weekly-warning-title">
+            <div className="project-modal-head">
+              <div>
+                <h2 id="weekly-warning-title">확인 필요</h2>
+                <p>{weeklyWarningMessage}</p>
+              </div>
+              <button className="icon-btn" type="button" onClick={() => setWeeklyWarningMessage('')} aria-label="닫기"><X size={16} /></button>
+            </div>
+            <div className="project-modal-actions">
+              <button className="mt-btn primary" type="button" onClick={() => setWeeklyWarningMessage('')}>확인</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {weeklyPasswordEntry && (
+        <div className="modal-backdrop" role="presentation">
+          <div className="weekly-report-modal compact-modal" role="dialog" aria-modal="true" aria-labelledby="weekly-password-title">
+            <div className="project-modal-head">
+              <div>
+                <h2 id="weekly-password-title">비밀번호 확인</h2>
+                <p>{activeEntryName} 보고 작성을 시작합니다.</p>
+              </div>
+              <button className="icon-btn" type="button" onClick={() => setWeeklyPasswordEntry(null)} aria-label="닫기"><X size={16} /></button>
+            </div>
+            <input type="password" placeholder="멤버 비밀번호" value={weeklyPasswordDraft} onChange={(e) => setWeeklyPasswordDraft(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && onAuthorizeWeeklyEntry()} autoFocus />
+            <div className="project-modal-actions">
+              <button className="mt-btn" type="button" onClick={() => setWeeklyPasswordEntry(null)}>취소</button>
+              <button className="mt-btn primary" type="button" onClick={onAuthorizeWeeklyEntry}>확인</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {weeklyWritingEntry && (
+        <div className="modal-backdrop" role="presentation">
+          <div className="weekly-entry-modal" role="dialog" aria-modal="true" aria-labelledby="weekly-entry-title">
+            <div className="project-modal-head">
+              <div>
+                <h2 id="weekly-entry-title">주간 보고 작성</h2>
+                <p>{writingEntryName}</p>
+              </div>
+              <button className="icon-btn" type="button" onClick={onCloseWeeklyEntryModal} aria-label="닫기"><X size={16} /></button>
+            </div>
+            <div className="weekly-entry-layout">
+              <aside className="weekly-project-list" aria-label="참여 과제">
+                {weeklyEntryProjects.map((project) => (
+                  <button className={selectedWeeklyEntryId === project.project_id ? 'active' : ''} type="button" key={`${project.entry_id}-${project.project_id}`} onClick={() => onSelectWeeklyProject(project)}>
+                    <span>{project.project_name}</span>
+                    {project.status === 'done' && <b className="entry-state done">작성 완료</b>}
+                    {project.status === 'excluded' && <b className="entry-state excluded">제외</b>}
+                  </button>
+                ))}
+                {weeklyEntryProjects.length === 0 && <div className="empty compact">참여 중인 진행 과제가 없습니다</div>}
+              </aside>
+              <section className="weekly-entry-panel">
+                {selectedWeeklyProject ? (
+                  <>
+                    <div className="weekly-entry-panel-head">
+                      <div>
+                        <h3>{selectedWeeklyProject.project_name}</h3>
+                        <p>과제별로 이번 주 내용을 작성합니다.</p>
+                      </div>
+                      <button className={`weekly-exclude-btn${selectedWeeklyProject.status === 'excluded' ? ' active' : ''}`} type="button" onClick={() => onUpdateWeeklyEntryStatus(selectedWeeklyProject.project_id, selectedWeeklyProject.status !== 'excluded')}>
+                        {selectedWeeklyProject.status === 'excluded' ? '제외 해제' : '이번 주 제외'}
+                      </button>
+                    </div>
+                    <div className="weekly-entry-fields stacked">
+                      <label>
+                        <span>Progress Log</span>
+                        <textarea disabled={selectedWeeklyProject.status === 'excluded'} value={weeklyEntryDraft.progress_log} onChange={(e) => setWeeklyEntryDraft({ ...weeklyEntryDraft, progress_log: e.target.value })} placeholder="이번 주 진행 내용을 입력하세요" />
+                      </label>
+                      <label>
+                        <span>Risk & Issue</span>
+                        <textarea disabled={selectedWeeklyProject.status === 'excluded'} value={weeklyEntryDraft.risk_issue} onChange={(e) => setWeeklyEntryDraft({ ...weeklyEntryDraft, risk_issue: e.target.value })} placeholder="리스크와 이슈를 입력하세요" />
+                      </label>
+                      <label>
+                        <span>Next Plan</span>
+                        <textarea disabled={selectedWeeklyProject.status === 'excluded'} value={weeklyEntryDraft.next_plan} onChange={(e) => setWeeklyEntryDraft({ ...weeklyEntryDraft, next_plan: e.target.value })} placeholder="다음 주 계획을 입력하세요" />
+                      </label>
+                    </div>
+                    <div className="project-modal-actions">
+                      <button className="mt-btn" type="button" onClick={onCloseWeeklyEntryModal}>닫기</button>
+                      <button className="mt-btn primary" type="button" disabled={selectedWeeklyProject.status === 'excluded'} onClick={() => onSaveWeeklyEntry(selectedWeeklyProject.project_id)}>저장</button>
+                    </div>
+                  </>
+                ) : (
+                  <div className="empty">선택 가능한 과제가 없습니다</div>
+                )}
+              </section>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+
+function WeeklyReportLoungePage() {
+  return (
+    <>
+      <div className="page-head">
+        <div>
+          <h1>주간 보고 라운지</h1>
+        </div>
+      </div>
+      <section className="weekly-report-section empty-lounge" />
+    </>
   );
 }
 
@@ -715,7 +1204,7 @@ function LoginPage({ loginDraft, setLoginDraft, onLogin, teams, teamDraft, setTe
 }
 
 
-function TeamManagementPage({ activeTeamTab, setActiveTeamTab, currentTeam, members, teamProjects, teamProjectDraft, setTeamProjectDraft, isProjectModalOpen, setIsProjectModalOpen, editingTeamProjectId, setEditingTeamProjectId, projectAssignmentDrafts, setProjectAssignmentDrafts, memberDraft, setMemberDraft, memberPasswordDrafts, setMemberPasswordDrafts, onCreateMember, onCreateTeamProject, onEditTeamProject, onSaveProjectMembers, onUpdateTeamProjectStatus, onDeleteTeamProject, onDeleteMember, onSetMemberPassword, onResetMemberPassword }) {
+function TeamManagementPage({ activeTeamTab, setActiveTeamTab, currentTeam, members, teamProjects, teamProjectDraft, setTeamProjectDraft, isProjectModalOpen, setIsProjectModalOpen, editingTeamProjectId, setEditingTeamProjectId, projectAssignmentDrafts, setProjectAssignmentDrafts, memberDraft, setMemberDraft, memberPasswordDrafts, setMemberPasswordDrafts, onCreateMember, onCreateTeamProject, onEditTeamProject, onSaveProjectMembers, onUpdateTeamProjectStatus, onDeleteTeamProject, onDeleteMember, onUpdateMemberRole, onSetMemberPassword, onResetMemberPassword, onReorderMembers, draggingMemberId, setDraggingMemberId }) {
   return (
     <>
       <div className="page-head">
@@ -748,9 +1237,39 @@ function TeamManagementPage({ activeTeamTab, setActiveTeamTab, currentTeam, memb
           <div className="member-table">
             <div className="member-table-head"><span>이름</span><span>직급</span><span>User ID</span><span>비밀번호 상태/관리</span><span></span></div>
             {members.map((member) => (
-              <div className="member-row" key={member.user_id}>
-                <strong>{member.name}</strong>
-                <span>{ROLE_LABELS[member.role] || member.role}</span>
+              <div
+                className={`member-row${draggingMemberId === member.user_id ? ' dragging' : ''}`}
+                key={member.user_id}
+                draggable
+                onDragStart={(event) => {
+                  setDraggingMemberId(member.user_id);
+                  event.dataTransfer.effectAllowed = 'move';
+                  event.dataTransfer.setData('text/plain', member.user_id);
+                }}
+                onDragOver={(event) => {
+                  event.preventDefault();
+                  event.dataTransfer.dropEffect = 'move';
+                }}
+                onDrop={(event) => {
+                  event.preventDefault();
+                  const sourceId = event.dataTransfer.getData('text/plain') || draggingMemberId;
+                  if (!sourceId || sourceId === member.user_id) return;
+                  const fromIndex = members.findIndex((item) => item.user_id === sourceId);
+                  const toIndex = members.findIndex((item) => item.user_id === member.user_id);
+                  if (fromIndex < 0 || toIndex < 0) return;
+                  const nextMembers = [...members];
+                  const [movedMember] = nextMembers.splice(fromIndex, 1);
+                  nextMembers.splice(toIndex, 0, movedMember);
+                  onReorderMembers(nextMembers);
+                }}
+                onDragEnd={() => setDraggingMemberId(null)}
+              >
+                <strong className="member-name"><GripVertical className="member-drag-icon" size={15} aria-hidden="true" />{member.name}</strong>
+                <select className="member-role-select" value={member.role} onChange={(event) => onUpdateMemberRole(member.user_id, event.target.value)} onMouseDown={(event) => event.stopPropagation()}>
+                  <option value="L">리더</option>
+                  <option value="CM">책임매니저</option>
+                  <option value="M">매니저</option>
+                </select>
                 <code>{member.user_id}</code>
                 <div className="member-password-box">
                   {member.must_change_password ? (
