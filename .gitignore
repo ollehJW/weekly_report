@@ -15,3 +15,4 @@ frontend/dist/
 frontend/.vite/
 .DS_Store
 *_test.py
+*.html

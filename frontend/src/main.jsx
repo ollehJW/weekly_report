@@ -948,8 +948,6 @@ function WeeklyReportPage({
   onCloseWeeklyEntryModal,
 }) {
   const entries = weeklyReport?.entries || [];
-  const fallbackReportMembers = members.filter((member) => member.role !== 'L');
-  const visibleEntries = weeklyReport ? entries : fallbackReportMembers.map((member) => ({ entry_id: member.user_id, user_id: member.user_id, name: member.name, role: member.role, status: 'pending' }));
   const activeEntryName = weeklyPasswordEntry ? `${weeklyPasswordEntry.name} ${weeklyPasswordEntry.role}` : '';
   const writingEntryName = weeklyWritingEntry ? `${weeklyWritingEntry.name} ${weeklyWritingEntry.role}` : '';
   const selectedWeeklyProject = weeklyEntryProjects.find((project) => project.project_id === selectedWeeklyEntryId) || null;
@@ -1000,18 +998,6 @@ function WeeklyReportPage({
               <h2>개설된 보고 주간이 없습니다</h2>
               <p>새 보고 주간을 개설하면 보고 대상 멤버가 표시됩니다.</p>
             </div>
-            <span>{visibleEntries.length}명</span>
-          </div>
-          <div className="weekly-member-grid">
-            {visibleEntries.map((entry) => (
-              <article className="weekly-member-card preview" key={entry.entry_id}>
-                <div className="weekly-card-main">
-                  <strong>{entry.name} {entry.role}</strong>
-                  <span>대상</span>
-                </div>
-              </article>
-            ))}
-            {visibleEntries.length === 0 && <div className="empty compact">보고 대상 멤버가 없습니다</div>}
           </div>
         </section>
       )}
