@@ -1,7 +1,9 @@
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta
+import html
 from pathlib import Path
 import hashlib
+import json
 import secrets
 import sqlite3
 import uuid
@@ -9,10 +11,13 @@ import uuid
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+from string import Template
 
 
 DB_PATH = Path(__file__).resolve().parent.parent / "app.db"
+WEEKLY_REPORT_TEMPLATE_PATH = Path(__file__).resolve().parent / "templates" / "weekly_report_static.html"
 INITIAL_PASSWORD = "wia1234!"
+OTHER_WORK_PROJECT_NAME = "기타 업무 (교육/출장 등)"
 
 
 def get_conn():
@@ -196,9 +201,9 @@ def init_db():
                 entry_id TEXT NOT NULL,
                 project_id TEXT NOT NULL,
                 is_excluded INTEGER NOT NULL DEFAULT 0,
-                progress_log TEXT NOT NULL DEFAULT '',
-                risk_issue TEXT NOT NULL DEFAULT '',
-                next_plan TEXT NOT NULL DEFAULT '',
+                progress_log TEXT NOT NULL DEFAULT '[]',
+                risk_issue TEXT NOT NULL DEFAULT '[]',
+                next_plan TEXT NOT NULL DEFAULT '[]',
                 updated_at TEXT NOT NULL DEFAULT '',
                 PRIMARY KEY (entry_id, project_id),
                 FOREIGN KEY (entry_id) REFERENCES report_entries(entry_id) ON DELETE CASCADE,
@@ -369,10 +374,26 @@ class ReportEntryAuthIn(BaseModel):
     password: str = Field(min_length=1, max_length=200)
 
 
+class ProgressLogIn(BaseModel):
+    log: str = ""
+    status: str = "done"
+    date: str = ""
+
+
+class RiskIssueIn(BaseModel):
+    issue: str = ""
+    importance: str = "중"
+
+
+class NextPlanIn(BaseModel):
+    plan: str = ""
+    due: str = ""
+
+
 class ReportEntryIn(BaseModel):
-    progress_log: str = ""
-    risk_issue: str = ""
-    next_plan: str = ""
+    progress_log: list[ProgressLogIn] = Field(default_factory=list)
+    risk_issue: list[RiskIssueIn] = Field(default_factory=list)
+    next_plan: list[NextPlanIn] = Field(default_factory=list)
 
 
 class ProjectEntryStatusIn(BaseModel):
@@ -469,12 +490,317 @@ def public_weekly_project(row):
     return data
 
 
+def ensure_other_work_project(conn, team_id: str, user_id: str):
+    now = datetime.utcnow().isoformat()
+    project = conn.execute(
+        """
+        SELECT * FROM project
+        WHERE team_id = ? AND project_name = ?
+        LIMIT 1
+        """,
+        (team_id, OTHER_WORK_PROJECT_NAME),
+    ).fetchone()
+    if project:
+        project_id = project["project_id"]
+        if project["status"] != "in_progress":
+            conn.execute("UPDATE project SET status = 'in_progress' WHERE project_id = ?", (project_id,))
+    else:
+        project_id = str(uuid.uuid4())
+        conn.execute(
+            """
+            INSERT INTO project (project_id, team_id, project_name, status, created_at)
+            VALUES (?, ?, ?, 'in_progress', ?)
+            """,
+            (project_id, team_id, OTHER_WORK_PROJECT_NAME, now),
+        )
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO project_members (project_id, user_id, role)
+        VALUES (?, ?, 'M')
+        """,
+        (project_id, user_id),
+    )
+    return project_id
+
+
+def parse_json_list(value, fallback_key=None):
+    if value is None or value == "":
+        return []
+    try:
+        parsed = json.loads(value)
+    except (TypeError, json.JSONDecodeError):
+        text = str(value).strip()
+        return [{fallback_key: text}] if fallback_key and text else ([text] if text else [])
+    return parsed if isinstance(parsed, list) else []
+
+
+def normalize_progress_status(value):
+    return "in_progress" if value in ("in_progress", "In Progress", "진행중") else "done"
+
+
+def normalize_report_date(value):
+    return str(value or "").strip().replace("-", "/")
+
+
+def normalize_progress_log(items):
+    normalized = []
+    for item in items:
+        log = item.log.strip()
+        date_value = normalize_report_date(item.date)
+        if log or date_value:
+            normalized.append({"log": log, "status": normalize_progress_status(item.status), "date": date_value})
+    return normalized
+
+
+def normalize_risk_issue(items):
+    normalized = []
+    for item in items:
+        issue = item.issue.strip()
+        if issue:
+            normalized.append({"issue": issue, "importance": item.importance if item.importance in ("상", "중", "하") else "중"})
+    return normalized
+
+
+def normalize_next_plan(items):
+    normalized = []
+    for item in items:
+        plan = item.plan.strip()
+        due = item.due.strip()
+        if plan or due:
+            normalized.append({"plan": plan, "due": due})
+    return normalized
+
+
+def project_entry_payload(row):
+    return {
+        "progress_log": parse_json_list(row["progress_log"]),
+        "risk_issue": parse_json_list(row["risk_issue"], "issue"),
+        "next_plan": parse_json_list(row["next_plan"], "plan"),
+    }
+
+
+def project_entry_has_content(row):
+    payload = project_entry_payload(row)
+    return bool(payload["progress_log"] or payload["risk_issue"] or payload["next_plan"])
+
+
 def project_entry_status(row):
     if row["is_excluded"]:
         return "excluded"
-    if row["progress_log"] or row["risk_issue"] or row["next_plan"]:
+    if project_entry_has_content(row):
         return "done"
     return "pending"
+
+
+def escape_html(value):
+    return html.escape(str(value or ""), quote=True)
+
+
+def format_report_due(value):
+    return str(value or "").replace("/", ".").replace("-", ".")
+
+
+def report_importance_sort_value(value):
+    return {"상": 0, "중": 1, "하": 2}.get(str(value or "중"), 1)
+
+
+def report_date_sort_value(value):
+    text = str(value or "").strip()
+    if not text:
+        return (1, "")
+    normalized = text.replace("/", "-").replace(".", "-")
+    for fmt in ("%Y-%m-%d", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return (0, datetime.strptime(normalized, fmt).date().isoformat())
+        except ValueError:
+            pass
+    return (0, normalized)
+
+
+def report_progress_sort_value(row):
+    return (0 if row["status"] == "done" else 1, report_date_sort_value(row["date"]))
+
+
+def render_report_empty():
+    return '<div class="empty">작성 내용 없음</div>'
+
+
+def progress_status_label(value):
+    return "In Progress" if value == "in_progress" else "Done"
+
+
+def progress_status_class(value):
+    return "in-progress" if value == "in_progress" else "done"
+
+
+def render_report_progress(items):
+    rows = []
+    for item in items:
+        if isinstance(item, str):
+            log = item.strip()
+            status = "done"
+            date_value = ""
+        else:
+            log = str(item.get("log") or item.get("text") or "").strip()
+            status = normalize_progress_status(item.get("status"))
+            date_value = str(item.get("date") or "").strip()
+        if log or date_value:
+            rows.append({"log": log, "status": status, "date": date_value})
+    rows.sort(key=report_progress_sort_value)
+    if not rows:
+        return render_report_empty()
+    items_html = []
+    for row in rows:
+        date_html = f'<span class="pdate">{escape_html(format_report_due(row["date"]))}</span>' if row["date"] else ""
+        log_html = escape_html(row["log"]) if row["log"] else "진행 내용 없음"
+        items_html.append(
+            '<li class="pline progress">'
+            f'<span class="status {progress_status_class(row["status"])}">{escape_html(progress_status_label(row["status"]))}</span>'
+            f'{date_html}'
+            f'<div class="ptxt">{log_html}</div>'
+            '</li>'
+        )
+    return f"<ul>{''.join(items_html)}</ul>"
+
+
+def report_importance_class(value):
+    if value == "상":
+        return "high"
+    if value == "하":
+        return "low"
+    return "mid"
+
+
+def render_report_risks(items):
+    rows = []
+    for item in items:
+        if isinstance(item, str):
+            issue = item.strip()
+            importance = "중"
+        else:
+            issue = str(item.get("issue") or "").strip()
+            importance = str(item.get("importance") or "중").strip()
+        if issue:
+            rows.append({"issue": issue, "importance": importance})
+    rows.sort(key=lambda row: (report_importance_sort_value(row["importance"]), row["issue"]))
+    if not rows:
+        return render_report_empty()
+    items_html = []
+    for row in rows:
+        level = report_importance_class(row["importance"])
+        items_html.append(
+            f'<li class="rline {level}">'
+            f'<span class="badge {level}">{escape_html(row["importance"])}</span>'
+            f'<div class="rtxt">{escape_html(row["issue"])}</div>'
+            '</li>'
+        )
+    return f"<ul>{''.join(items_html)}</ul>"
+
+
+def render_report_plans(items):
+    rows = []
+    for item in items:
+        if isinstance(item, str):
+            plan = item.strip()
+            due = ""
+        else:
+            plan = str(item.get("plan") or "").strip()
+            due = str(item.get("due") or "").strip()
+        if plan or due:
+            rows.append({"plan": plan, "due": due})
+    rows.sort(key=lambda row: (report_date_sort_value(row["due"]), row["plan"]))
+    if not rows:
+        return render_report_empty()
+    items_html = []
+    for row in rows:
+        due_html = f'<span class="due">DUE {escape_html(format_report_due(row["due"]))}</span>' if row["due"] else ""
+        plan_html = escape_html(row["plan"]) if row["plan"] else "계획 내용 없음"
+        items_html.append(
+            '<li class="pline">'
+            f'{due_html}'
+            f'<div class="ptxt">{plan_html}</div>'
+            '</li>'
+        )
+    return f"<ul>{''.join(items_html)}</ul>"
+
+
+def count_report_progress(items):
+    count = 0
+    for item in items:
+        if isinstance(item, str):
+            has_content = bool(item.strip())
+        else:
+            has_content = bool(str(item.get("log") or item.get("text") or "").strip() or str(item.get("date") or "").strip())
+        if has_content:
+            count += 1
+    return count
+
+
+def count_report_risks(items):
+    count = 0
+    for item in items:
+        issue = item if isinstance(item, str) else item.get("issue", "")
+        if str(issue).strip():
+            count += 1
+    return count
+
+
+def count_report_plans(items):
+    count = 0
+    for item in items:
+        if isinstance(item, str):
+            has_content = bool(item.strip())
+        else:
+            has_content = bool(str(item.get("plan") or "").strip() or str(item.get("due") or "").strip())
+        if has_content:
+            count += 1
+    return count
+
+
+def render_report_project(project):
+    progress_log = parse_json_list(project["progress_log"])
+    risk_issue = parse_json_list(project["risk_issue"], "issue")
+    next_plan = parse_json_list(project["next_plan"], "plan")
+    return f"""
+      <article class="project">
+        <div class="project-title">
+          <div class="name">
+            <h2>{escape_html(project['project_name'])}</h2>
+          </div>
+          <div class="stats"><span><b>{count_report_progress(progress_log)}</b> Progress</span><span><b>{count_report_risks(risk_issue)}</b> Risk</span><span><b>{count_report_plans(next_plan)}</b> Plan</span></div>
+        </div>
+        <div class="blocks">
+          <section class="block">
+            <h3><span class="bar"></span>Progress Log</h3>
+            {render_report_progress(progress_log)}
+          </section>
+          <section class="block risk">
+            <h3><span class="bar"></span>Risk &amp; Issue</h3>
+            {render_report_risks(risk_issue)}
+          </section>
+          <section class="block plan">
+            <h3><span class="bar"></span>Next Plan</h3>
+            {render_report_plans(next_plan)}
+          </section>
+        </div>
+      </article>
+    """
+
+
+def render_weekly_report_html(report, user, projects):
+    if not WEEKLY_REPORT_TEMPLATE_PATH.exists():
+        raise HTTPException(status_code=500, detail="Weekly report template not found")
+    visible_projects = [project for project in projects if not bool(project["is_excluded"])]
+    if visible_projects:
+        project_sections = "\n".join(render_report_project(project) for project in visible_projects)
+    else:
+        project_sections = '<div class="empty">표시할 과제가 없습니다</div>'
+    template = Template(WEEKLY_REPORT_TEMPLATE_PATH.read_text(encoding="utf-8"))
+    return template.safe_substitute(
+        period=escape_html(f"{report['start_date']} ~ {report['end_date']}"),
+        author_role=escape_html(f"{user['name']} {user['role']}"),
+        project_sections=project_sections,
+    )
 
 
 def recompute_report_entry_status(conn, entry_id: str):
@@ -545,9 +871,9 @@ def report_with_entries(conn, report_row):
             "project_id": row["project_id"],
             "is_excluded": bool(row["is_excluded"]),
             "status": project_entry_status(row),
-            "progress_log": row["progress_log"],
-            "risk_issue": row["risk_issue"],
-            "next_plan": row["next_plan"],
+            "progress_log": project_entry_payload(row)["progress_log"],
+            "risk_issue": project_entry_payload(row)["risk_issue"],
+            "next_plan": project_entry_payload(row)["next_plan"],
             "name": row["name"],
             "role": row["member_role"],
             "project_name": row["project_name"] or "",
@@ -580,15 +906,16 @@ def ensure_report_user_entries(conn, report_id: str, user_id: str):
         )
     else:
         entry_id = entry["entry_id"]
+    ensure_other_work_project(conn, report["team_id"], user_id)
     projects = conn.execute(
         """
         SELECT DISTINCT p.project_id
         FROM project p
         JOIN project_members pm ON pm.project_id = p.project_id
         WHERE p.team_id = ? AND p.status = 'in_progress' AND pm.user_id = ?
-        ORDER BY p.created_at DESC, p.project_name
+        ORDER BY CASE WHEN p.project_name = ? THEN 1 ELSE 0 END, p.created_at DESC, p.project_name
         """,
-        (report["team_id"], user_id),
+        (report["team_id"], user_id, OTHER_WORK_PROJECT_NAME),
     ).fetchall()
     for project in projects:
         exists = conn.execute(
@@ -598,8 +925,8 @@ def ensure_report_user_entries(conn, report_id: str, user_id: str):
         if not exists:
             conn.execute(
                 """
-                INSERT INTO project_entry (entry_id, project_id, is_excluded, updated_at)
-                VALUES (?, ?, 0, ?)
+                INSERT INTO project_entry (entry_id, project_id, is_excluded, progress_log, risk_issue, next_plan, updated_at)
+                VALUES (?, ?, 0, '[]', '[]', '[]', ?)
                 """,
                 (entry_id, project["project_id"], now),
             )
@@ -649,9 +976,9 @@ def list_entry_projects(conn, report_id: str, user_id: str):
         FROM project_entry pe
         JOIN project p ON p.project_id = pe.project_id
         WHERE pe.entry_id = ?
-        ORDER BY p.created_at DESC, p.project_name
+        ORDER BY CASE WHEN p.project_name = ? THEN 1 ELSE 0 END, p.created_at DESC, p.project_name
         """,
-        (entry["entry_id"],),
+        (entry["entry_id"], OTHER_WORK_PROJECT_NAME),
     ).fetchall()
     return [
         {
@@ -662,9 +989,9 @@ def list_entry_projects(conn, report_id: str, user_id: str):
             "entry_id": row["entry_id"],
             "is_excluded": bool(row["is_excluded"]),
             "status": project_entry_status(row),
-            "progress_log": row["progress_log"],
-            "risk_issue": row["risk_issue"],
-            "next_plan": row["next_plan"],
+            "progress_log": project_entry_payload(row)["progress_log"],
+            "risk_issue": project_entry_payload(row)["risk_issue"],
+            "next_plan": project_entry_payload(row)["next_plan"],
             "updated_at": row["updated_at"],
         }
         for row in rows
@@ -849,10 +1176,10 @@ def list_team_projects(team_id: str):
         rows = conn.execute(
             """
             SELECT * FROM project
-            WHERE team_id = ?
+            WHERE team_id = ? AND project_name != ?
             ORDER BY CASE status WHEN 'in_progress' THEN 0 ELSE 1 END, created_at DESC, project_name
             """,
-            (team_id,),
+            (team_id, OTHER_WORK_PROJECT_NAME),
         ).fetchall()
         return [project_with_members(conn, row) for row in rows]
 
@@ -991,6 +1318,23 @@ def delete_user(user_id: str):
             raise HTTPException(status_code=404, detail="User not found")
 
 
+
+
+@app.get("/api/teams/{team_id}/reports/completed")
+def list_completed_reports(team_id: str):
+    with get_conn() as conn:
+        ensure_team(conn, team_id)
+        rows = conn.execute(
+            """
+            SELECT * FROM reports
+            WHERE team_id = ? AND status = 'done'
+            ORDER BY start_date DESC, end_date DESC, created_at DESC
+            """,
+            (team_id,),
+        ).fetchall()
+        return [report_with_entries(conn, row) for row in rows]
+
+
 @app.get("/api/teams/{team_id}/reports/active")
 def get_active_report(team_id: str):
     with get_conn() as conn:
@@ -1079,6 +1423,40 @@ def delete_report(report_id: str):
         conn.execute("DELETE FROM reports WHERE report_id = ?", (report_id,))
 
 
+
+
+@app.get("/api/reports/{report_id}/users/{user_id}/html-report")
+def get_report_user_html(report_id: str, user_id: str):
+    with get_conn() as conn:
+        report = conn.execute("SELECT * FROM reports WHERE report_id = ?", (report_id,)).fetchone()
+        if not report:
+            raise HTTPException(status_code=404, detail="Report not found")
+        user = conn.execute(
+            "SELECT user_id, team_id, name, role FROM users WHERE user_id = ? AND team_id = ?",
+            (user_id, report["team_id"]),
+        ).fetchone()
+        entry = conn.execute(
+            "SELECT * FROM report_entries WHERE report_id = ? AND user_id = ?",
+            (report_id, user_id),
+        ).fetchone()
+        if not user or not entry:
+            raise HTTPException(status_code=404, detail="Report member not found")
+        if entry["status"] != "done":
+            raise HTTPException(status_code=422, detail="작성 완료된 멤버만 리포트를 볼 수 있습니다")
+        projects = conn.execute(
+            """
+            SELECT p.project_id, p.project_name, pe.entry_id, pe.is_excluded,
+                   pe.progress_log, pe.risk_issue, pe.next_plan, pe.updated_at
+            FROM project_entry pe
+            JOIN project p ON p.project_id = pe.project_id
+            WHERE pe.entry_id = ?
+            ORDER BY CASE WHEN p.project_name = ? THEN 1 ELSE 0 END, p.created_at DESC, p.project_name
+            """,
+            (entry["entry_id"], OTHER_WORK_PROJECT_NAME),
+        ).fetchall()
+        return {"html": render_weekly_report_html(row_to_dict(report), row_to_dict(user), [row_to_dict(row) for row in projects])}
+
+
 @app.put("/api/reports/{report_id}/users/{user_id}/absence")
 def toggle_report_user_absence(report_id: str, user_id: str):
     with get_conn() as conn:
@@ -1135,6 +1513,9 @@ def save_project_entry(entry_id: str, project_id: str, payload: ReportEntryIn):
             raise HTTPException(status_code=422, detail="부재 상태에서는 보고를 저장할 수 없습니다")
         ensure_entry_project(conn, entry, project_id)
         now = datetime.utcnow().isoformat()
+        progress_log = normalize_progress_log(payload.progress_log)
+        risk_issue = normalize_risk_issue(payload.risk_issue)
+        next_plan = normalize_next_plan(payload.next_plan)
         conn.execute(
             """
             UPDATE project_entry
@@ -1142,9 +1523,9 @@ def save_project_entry(entry_id: str, project_id: str, payload: ReportEntryIn):
             WHERE entry_id = ? AND project_id = ?
             """,
             (
-                payload.progress_log.strip(),
-                payload.risk_issue.strip(),
-                payload.next_plan.strip(),
+                json.dumps(progress_log, ensure_ascii=False),
+                json.dumps(risk_issue, ensure_ascii=False),
+                json.dumps(next_plan, ensure_ascii=False),
                 now,
                 entry_id,
                 project_id,
@@ -1166,7 +1547,7 @@ def update_project_entry_exclusion(entry_id: str, project_id: str, payload: Proj
             conn.execute(
                 """
                 UPDATE project_entry
-                SET is_excluded = 1, progress_log = '', risk_issue = '', next_plan = '', updated_at = ?
+                SET is_excluded = 1, progress_log = '[]', risk_issue = '[]', next_plan = '[]', updated_at = ?
                 WHERE entry_id = ? AND project_id = ?
                 """,
                 (now, entry_id, project_id),
@@ -1196,11 +1577,11 @@ def list_team_timeline_projects(team_id: str):
             FROM project p
             LEFT JOIN milestones m ON m.project_id = p.project_id
             LEFT JOIN epics e ON e.milestone_id = m.milestone_id
-            WHERE p.team_id = ? AND p.status = 'in_progress'
+            WHERE p.team_id = ? AND p.status = 'in_progress' AND p.project_name != ?
             GROUP BY p.project_id
             ORDER BY p.created_at DESC, p.project_name
             """,
-            (team_id,),
+            (team_id, OTHER_WORK_PROJECT_NAME),
         ).fetchall()
         return [public_timeline_project(row) for row in rows]
 

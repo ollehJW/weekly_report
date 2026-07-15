@@ -41,6 +41,44 @@ function plusDays(iso, days) {
   return isoOf(date);
 }
 
+function slashDateToInput(value) {
+  return typeof value === "string" ? value.replaceAll("/", "-") : "";
+}
+
+function inputDateToSlash(value) {
+  return value ? value.replaceAll("-", "/") : "";
+}
+
+function emptyWeeklyEntryDraft() {
+  return {
+    progress_log: [{ log: "", status: "done", date: "" }],
+    risk_issue: [{ issue: "", importance: "중" }],
+    next_plan: [{ plan: "", due: "" }],
+  };
+}
+
+function normalizeWeeklyList(value, emptyItem) {
+  if (Array.isArray(value)) return value.length ? value : [emptyItem];
+  if (typeof value === "string" && value.trim()) return [value.trim()];
+  return [emptyItem];
+}
+
+function weeklyDraftFromProject(project = {}) {
+  return {
+    progress_log: normalizeWeeklyList(project.progress_log, { log: "", status: "done", date: "" }).map((item) => (typeof item === "string" ? { log: item, status: "done", date: "" } : { log: item.log || item.text || "", status: item.status === "in_progress" ? "in_progress" : "done", date: slashDateToInput(item.date || "") })),
+    risk_issue: normalizeWeeklyList(project.risk_issue, { issue: "", importance: "중" }).map((item) => (typeof item === "string" ? { issue: item, importance: "중" } : { issue: item.issue || "", importance: item.importance || "중" })),
+    next_plan: normalizeWeeklyList(project.next_plan, { plan: "", due: "" }).map((item) => (typeof item === "string" ? { plan: item, due: "" } : { plan: item.plan || "", due: slashDateToInput(item.due || "") })),
+  };
+}
+
+function compactWeeklyDraft(draft) {
+  return {
+    progress_log: (draft.progress_log || []).map((item) => ({ log: String(item.log || "").trim(), status: item.status === "in_progress" ? "in_progress" : "done", date: inputDateToSlash(item.date || "") })).filter((item) => item.log || item.date),
+    risk_issue: (draft.risk_issue || []).map((item) => ({ issue: String(item.issue || "").trim(), importance: item.importance || "중" })).filter((item) => item.issue),
+    next_plan: (draft.next_plan || []).map((item) => ({ plan: String(item.plan || "").trim(), due: inputDateToSlash(item.due || "") })).filter((item) => item.plan || item.due),
+  };
+}
+
 function businessDaysBetween(startIso, endIso) {
   const start = toDate(startIso);
   const end = toDate(endIso);
@@ -125,7 +163,8 @@ function App() {
   const [weeklyWritingEntry, setWeeklyWritingEntry] = useState(null);
   const [weeklyEntryProjects, setWeeklyEntryProjects] = useState([]);
   const [selectedWeeklyEntryId, setSelectedWeeklyEntryId] = useState('');
-  const [weeklyEntryDraft, setWeeklyEntryDraft] = useState({ progress_log: '', risk_issue: '', next_plan: '' });
+  const [weeklyEntryDraft, setWeeklyEntryDraft] = useState(emptyWeeklyEntryDraft());
+  const [weeklyReportPreview, setWeeklyReportPreview] = useState(null);
   const [teamDraft, setTeamDraft] = useState({ department: '', login_id: '' });
   const [memberDraft, setMemberDraft] = useState({ name: '', role: 'M' });
   const [teamProjectDraft, setTeamProjectDraft] = useState({ project_name: '', leaderId: '', memberIds: [] });
@@ -641,6 +680,7 @@ function App() {
       setWeeklyPasswordEntry(null);
       setWeeklyPasswordDraft('');
       closeWeeklyEntryModal();
+      setWeeklyReportPreview(null);
       setError('');
     } catch (err) {
       setError(err.message);
@@ -655,6 +695,7 @@ function App() {
       setWeeklyPasswordEntry(null);
       setWeeklyPasswordDraft('');
       closeWeeklyEntryModal();
+      setWeeklyReportPreview(null);
       setError('');
     } catch (err) {
       setError(err.message);
@@ -666,6 +707,17 @@ function App() {
     try {
       const report = await request(`/api/reports/${weeklyReport.report_id}/users/${member.user_id}/absence`, { method: 'PUT' });
       setWeeklyReport(report);
+      setError('');
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function openWeeklyReportPreview(member) {
+    if (!weeklyReport?.report_id || member.status !== 'done') return;
+    try {
+      const result = await request(`/api/reports/${weeklyReport.report_id}/users/${member.user_id}/html-report`);
+      setWeeklyReportPreview({ member, html: result.html || '' });
       setError('');
     } catch (err) {
       setError(err.message);
@@ -693,11 +745,7 @@ function App() {
       setWeeklyEntryProjects(nextProjects);
       setSelectedWeeklyEntryId(firstProject?.project_id || '');
       setWeeklyWritingEntry(weeklyPasswordEntry);
-      setWeeklyEntryDraft({
-        progress_log: firstProject?.progress_log || '',
-        risk_issue: firstProject?.risk_issue || '',
-        next_plan: firstProject?.next_plan || '',
-      });
+      setWeeklyEntryDraft(firstProject ? weeklyDraftFromProject(firstProject) : emptyWeeklyEntryDraft());
       setWeeklyPasswordEntry(null);
       setWeeklyPasswordDraft('');
       setError('');
@@ -708,23 +756,21 @@ function App() {
 
   function selectWeeklyProject(project) {
     setSelectedWeeklyEntryId(project.project_id);
-    setWeeklyEntryDraft({
-      progress_log: project.progress_log || '',
-      risk_issue: project.risk_issue || '',
-      next_plan: project.next_plan || '',
-    });
+    setWeeklyEntryDraft(weeklyDraftFromProject(project));
   }
 
   async function saveWeeklyEntry(projectId = selectedWeeklyEntryId) {
     const project = weeklyEntryProjects.find((item) => item.project_id === projectId);
     if (!weeklyWritingEntry || !project) return;
     try {
+      const payload = compactWeeklyDraft(weeklyEntryDraft);
       const report = await request(`/api/report-entries/${project.entry_id}/projects/${project.project_id}`, {
         method: 'PUT',
-        body: JSON.stringify(weeklyEntryDraft),
+        body: JSON.stringify(payload),
       });
+      const savedStatus = payload.progress_log.length || payload.risk_issue.length || payload.next_plan.length ? 'done' : 'pending';
       setWeeklyReport(report);
-      setWeeklyEntryProjects((prev) => prev.map((item) => (item.project_id === project.project_id ? { ...item, ...weeklyEntryDraft, is_excluded: false, status: 'done' } : item)));
+      setWeeklyEntryProjects((prev) => prev.map((item) => (item.project_id === project.project_id ? { ...item, ...payload, is_excluded: false, status: savedStatus } : item)));
       setError('');
     } catch (err) {
       setError(err.message);
@@ -740,9 +786,9 @@ function App() {
         body: JSON.stringify({ is_excluded: isExcluded }),
       });
       setWeeklyReport(report);
-      setWeeklyEntryProjects((prev) => prev.map((item) => (item.project_id === project.project_id ? { ...item, is_excluded: isExcluded, status: isExcluded ? 'excluded' : 'pending', progress_log: isExcluded ? '' : item.progress_log, risk_issue: isExcluded ? '' : item.risk_issue, next_plan: isExcluded ? '' : item.next_plan } : item)));
+      setWeeklyEntryProjects((prev) => prev.map((item) => (item.project_id === project.project_id ? { ...item, is_excluded: isExcluded, status: isExcluded ? 'excluded' : 'pending', progress_log: isExcluded ? [] : item.progress_log, risk_issue: isExcluded ? [] : item.risk_issue, next_plan: isExcluded ? [] : item.next_plan } : item)));
       if (selectedWeeklyEntryId === project.project_id && isExcluded) {
-        setWeeklyEntryDraft({ progress_log: '', risk_issue: '', next_plan: '' });
+        setWeeklyEntryDraft(emptyWeeklyEntryDraft());
       }
       setError('');
     } catch (err) {
@@ -754,7 +800,7 @@ function App() {
     setWeeklyWritingEntry(null);
     setWeeklyEntryProjects([]);
     setSelectedWeeklyEntryId('');
-    setWeeklyEntryDraft({ progress_log: '', risk_issue: '', next_plan: '' });
+    setWeeklyEntryDraft(emptyWeeklyEntryDraft());
   }
 
   if (!currentTeam) {
@@ -779,7 +825,6 @@ function App() {
           <AudioWaveform size={22} />
           <div>
             <h1>WiaReport</h1>
-            <span>task timeline</span>
           </div>
         </div>
 
@@ -855,6 +900,9 @@ function App() {
             onCompleteWeeklyReport={completeWeeklyReport}
             onToggleWeeklyAbsence={toggleWeeklyAbsence}
             onOpenWeeklyPassword={openWeeklyPassword}
+            onOpenWeeklyReportPreview={openWeeklyReportPreview}
+            weeklyReportPreview={weeklyReportPreview}
+            setWeeklyReportPreview={setWeeklyReportPreview}
             weeklyPasswordEntry={weeklyPasswordEntry}
             weeklyPasswordDraft={weeklyPasswordDraft}
             setWeeklyPasswordDraft={setWeeklyPasswordDraft}
@@ -871,7 +919,7 @@ function App() {
             onCloseWeeklyEntryModal={closeWeeklyEntryModal}
           />
         )}
-        {activePage === 'weekly-lounge' && <WeeklyReportLoungePage />}
+        {activePage === 'weekly-lounge' && <WeeklyReportLoungePage currentTeam={currentTeam} />}
         {activePage === 'team' && (
           <TeamManagementPage
             activeTeamTab={activeTeamTab}
@@ -932,6 +980,9 @@ function WeeklyReportPage({
   onCompleteWeeklyReport,
   onToggleWeeklyAbsence,
   onOpenWeeklyPassword,
+  onOpenWeeklyReportPreview,
+  weeklyReportPreview,
+  setWeeklyReportPreview,
   weeklyPasswordEntry,
   weeklyPasswordDraft,
   setWeeklyPasswordDraft,
@@ -953,6 +1004,51 @@ function WeeklyReportPage({
   const selectedWeeklyProject = weeklyEntryProjects.find((project) => project.project_id === selectedWeeklyEntryId) || null;
   const reportMembers = weeklyReport?.members || [];
   const canCompleteReport = reportMembers.length > 0 && reportMembers.every((member) => member.status === 'done' || member.status === 'absent');
+
+  function updateProgressItem(index, key, value) {
+    setWeeklyEntryDraft((prev) => ({ ...prev, progress_log: prev.progress_log.map((item, i) => (i === index ? { ...item, [key]: value } : item)) }));
+  }
+
+  function addProgressItem() {
+    setWeeklyEntryDraft((prev) => ({ ...prev, progress_log: [...prev.progress_log, { log: '', status: 'done', date: '' }] }));
+  }
+
+  function removeProgressItem(index) {
+    setWeeklyEntryDraft((prev) => {
+      const next = prev.progress_log.filter((_, i) => i !== index);
+      return { ...prev, progress_log: next.length ? next : [{ log: '', status: 'done', date: '' }] };
+    });
+  }
+
+  function updateRiskItem(index, key, value) {
+    setWeeklyEntryDraft((prev) => ({ ...prev, risk_issue: prev.risk_issue.map((item, i) => (i === index ? { ...item, [key]: value } : item)) }));
+  }
+
+  function addRiskItem() {
+    setWeeklyEntryDraft((prev) => ({ ...prev, risk_issue: [...prev.risk_issue, { issue: '', importance: '중' }] }));
+  }
+
+  function removeRiskItem(index) {
+    setWeeklyEntryDraft((prev) => {
+      const next = prev.risk_issue.filter((_, i) => i !== index);
+      return { ...prev, risk_issue: next.length ? next : [{ issue: '', importance: '중' }] };
+    });
+  }
+
+  function updatePlanItem(index, key, value) {
+    setWeeklyEntryDraft((prev) => ({ ...prev, next_plan: prev.next_plan.map((item, i) => (i === index ? { ...item, [key]: value } : item)) }));
+  }
+
+  function addPlanItem() {
+    setWeeklyEntryDraft((prev) => ({ ...prev, next_plan: [...prev.next_plan, { plan: '', due: '' }] }));
+  }
+
+  function removePlanItem(index) {
+    setWeeklyEntryDraft((prev) => {
+      const next = prev.next_plan.filter((_, i) => i !== index);
+      return { ...prev, next_plan: next.length ? next : [{ plan: '', due: '' }] };
+    });
+  }
 
   return (
     <>
@@ -982,9 +1078,10 @@ function WeeklyReportPage({
                   <strong>{member.name} {member.role}</strong>
                   <span className={`weekly-status-pill ${member.status || 'pending'}`}>{member.status === 'done' ? '작성 완료' : member.status === 'progress' ? '작성중' : member.status === 'absent' ? '부재' : '대기'}</span>
                 </div>
-                <div className="weekly-card-actions">
+                <div className="weekly-card-actions three">
                   <button className={`weekly-card-btn${member.status === 'absent' ? ' active' : ''}`} type="button" onClick={() => onToggleWeeklyAbsence(member)}>부재</button>
                   <button className="weekly-card-btn primary" type="button" disabled={member.status === 'absent'} onClick={() => onOpenWeeklyPassword(member)}>작성</button>
+                  <button className="weekly-card-btn report" type="button" disabled={member.status !== 'done'} title={member.status === 'done' ? '작성 리포트를 봅니다' : '작성 완료 후 리포트를 볼 수 있습니다'} onClick={() => onOpenWeeklyReportPreview(member)}>리포트</button>
                 </div>
               </article>
             ))}
@@ -1066,6 +1163,16 @@ function WeeklyReportPage({
         </div>
       )}
 
+
+      {weeklyReportPreview && (
+        <div className="modal-backdrop" role="presentation">
+          <div className="weekly-preview-modal" role="dialog" aria-modal="true" aria-label="리포트 미리보기">
+            <button className="weekly-preview-close" type="button" onClick={() => setWeeklyReportPreview(null)} aria-label="닫기"><X size={16} /></button>
+            <iframe className="weekly-preview-frame" title="주간 업무 리포트" srcDoc={weeklyReportPreview.html} />
+          </div>
+        </div>
+      )}
+
       {weeklyWritingEntry && (
         <div className="modal-backdrop" role="presentation">
           <div className="weekly-entry-modal" role="dialog" aria-modal="true" aria-labelledby="weekly-entry-title">
@@ -1099,19 +1206,62 @@ function WeeklyReportPage({
                         {selectedWeeklyProject.status === 'excluded' ? '제외 해제' : '이번 주 제외'}
                       </button>
                     </div>
-                    <div className="weekly-entry-fields stacked">
-                      <label>
-                        <span>Progress Log</span>
-                        <textarea disabled={selectedWeeklyProject.status === 'excluded'} value={weeklyEntryDraft.progress_log} onChange={(e) => setWeeklyEntryDraft({ ...weeklyEntryDraft, progress_log: e.target.value })} placeholder="이번 주 진행 내용을 입력하세요" />
-                      </label>
-                      <label>
-                        <span>Risk & Issue</span>
-                        <textarea disabled={selectedWeeklyProject.status === 'excluded'} value={weeklyEntryDraft.risk_issue} onChange={(e) => setWeeklyEntryDraft({ ...weeklyEntryDraft, risk_issue: e.target.value })} placeholder="리스크와 이슈를 입력하세요" />
-                      </label>
-                      <label>
-                        <span>Next Plan</span>
-                        <textarea disabled={selectedWeeklyProject.status === 'excluded'} value={weeklyEntryDraft.next_plan} onChange={(e) => setWeeklyEntryDraft({ ...weeklyEntryDraft, next_plan: e.target.value })} placeholder="다음 주 계획을 입력하세요" />
-                      </label>
+                    <div className="weekly-entry-list-fields">
+                      <section className="weekly-list-block">
+                        <div className="weekly-list-title">
+                          <span>Progress Log</span>
+                          <button type="button" disabled={selectedWeeklyProject.status === 'excluded'} onClick={addProgressItem}><Plus size={14} />추가</button>
+                        </div>
+                        <div className="weekly-list-items">
+                          {weeklyEntryDraft.progress_log.map((item, index) => (
+                            <div className="weekly-list-row progress" key={"progress-" + index}>
+                              <input disabled={selectedWeeklyProject.status === 'excluded'} value={item.log} onChange={(e) => updateProgressItem(index, 'log', e.target.value)} placeholder="진행 내용을 입력하세요" />
+                              <select disabled={selectedWeeklyProject.status === 'excluded'} value={item.status} onChange={(e) => updateProgressItem(index, 'status', e.target.value)} aria-label="진행 상태">
+                                <option value="done">Done</option>
+                                <option value="in_progress">In Progress</option>
+                              </select>
+                              <input className="weekly-due-input" type="date" disabled={selectedWeeklyProject.status === 'excluded'} value={item.date} onChange={(e) => updateProgressItem(index, 'date', e.target.value)} aria-label="Progress Log 날짜" />
+                              <button className="weekly-row-remove" type="button" disabled={selectedWeeklyProject.status === 'excluded'} onClick={() => removeProgressItem(index)} aria-label="Progress Log 삭제"><Trash2 size={15} /></button>
+                            </div>
+                          ))}
+                        </div>
+                      </section>
+
+                      <section className="weekly-list-block">
+                        <div className="weekly-list-title">
+                          <span>Risk & Issue</span>
+                          <button type="button" disabled={selectedWeeklyProject.status === 'excluded'} onClick={addRiskItem}><Plus size={14} />추가</button>
+                        </div>
+                        <div className="weekly-list-items">
+                          {weeklyEntryDraft.risk_issue.map((item, index) => (
+                            <div className="weekly-list-row risk" key={"risk-" + index}>
+                              <input disabled={selectedWeeklyProject.status === 'excluded'} value={item.issue} onChange={(e) => updateRiskItem(index, 'issue', e.target.value)} placeholder="리스크와 이슈를 입력하세요" />
+                              <select disabled={selectedWeeklyProject.status === 'excluded'} value={item.importance} onChange={(e) => updateRiskItem(index, 'importance', e.target.value)} aria-label="중요도">
+                                <option value="상">상</option>
+                                <option value="중">중</option>
+                                <option value="하">하</option>
+                              </select>
+                              <button className="weekly-row-remove" type="button" disabled={selectedWeeklyProject.status === 'excluded'} onClick={() => removeRiskItem(index)} aria-label="Risk & Issue 삭제"><Trash2 size={15} /></button>
+                            </div>
+                          ))}
+                        </div>
+                      </section>
+
+                      <section className="weekly-list-block">
+                        <div className="weekly-list-title">
+                          <span>Next Plan</span>
+                          <button type="button" disabled={selectedWeeklyProject.status === 'excluded'} onClick={addPlanItem}><Plus size={14} />추가</button>
+                        </div>
+                        <div className="weekly-list-items">
+                          {weeklyEntryDraft.next_plan.map((item, index) => (
+                            <div className="weekly-list-row plan" key={"plan-" + index}>
+                              <input disabled={selectedWeeklyProject.status === 'excluded'} value={item.plan} onChange={(e) => updatePlanItem(index, 'plan', e.target.value)} placeholder="다음 계획을 입력하세요" />
+                              <input className="weekly-due-input" type="date" disabled={selectedWeeklyProject.status === 'excluded'} value={item.due} onChange={(e) => updatePlanItem(index, 'due', e.target.value)} aria-label="Due" />
+                              <button className="weekly-row-remove" type="button" disabled={selectedWeeklyProject.status === 'excluded'} onClick={() => removePlanItem(index)} aria-label="Next Plan 삭제"><Trash2 size={15} /></button>
+                            </div>
+                          ))}
+                        </div>
+                      </section>
                     </div>
                     <div className="project-modal-actions">
                       <button className="mt-btn" type="button" onClick={onCloseWeeklyEntryModal}>닫기</button>
@@ -1131,7 +1281,62 @@ function WeeklyReportPage({
 }
 
 
-function WeeklyReportLoungePage() {
+function WeeklyReportLoungePage({ currentTeam }) {
+  const [completedReports, setCompletedReports] = useState([]);
+  const [selectedReport, setSelectedReport] = useState(null);
+  const [selectedMemberId, setSelectedMemberId] = useState('');
+  const [reportHtml, setReportHtml] = useState('');
+  const [loadingReports, setLoadingReports] = useState(false);
+  const [loungeError, setLoungeError] = useState('');
+
+  const completedMembers = (selectedReport?.members || []).filter((member) => member.status === 'done');
+
+  useEffect(() => {
+    if (!currentTeam?.team_id) {
+      setCompletedReports([]);
+      setSelectedReport(null);
+      setSelectedMemberId('');
+      setReportHtml('');
+      return;
+    }
+    setLoadingReports(true);
+    request(`/api/teams/${currentTeam.team_id}/reports/completed`)
+      .then((reports) => {
+        setCompletedReports(reports || []);
+        setSelectedReport(null);
+        setSelectedMemberId('');
+        setReportHtml('');
+        setLoungeError('');
+      })
+      .catch((err) => setLoungeError(err.message))
+      .finally(() => setLoadingReports(false));
+  }, [currentTeam?.team_id]);
+
+  async function openCompletedReport(report) {
+    const doneMembers = (report.members || []).filter((member) => member.status === 'done');
+    setSelectedReport(report);
+    setReportHtml('');
+    setLoungeError('');
+    if (doneMembers.length === 0) {
+      setSelectedMemberId('');
+      return;
+    }
+    await openCompletedMemberReport(report, doneMembers[0]);
+  }
+
+  async function openCompletedMemberReport(report, member) {
+    if (!report?.report_id || !member?.user_id) return;
+    try {
+      setSelectedMemberId(member.user_id);
+      const result = await request(`/api/reports/${report.report_id}/users/${member.user_id}/html-report`);
+      setReportHtml(result.html || '');
+      setLoungeError('');
+    } catch (err) {
+      setReportHtml('');
+      setLoungeError(err.message);
+    }
+  }
+
   return (
     <>
       <div className="page-head">
@@ -1139,7 +1344,45 @@ function WeeklyReportLoungePage() {
           <h1>주간 보고 라운지</h1>
         </div>
       </div>
-      <section className="weekly-report-section empty-lounge" />
+      <section className="weekly-lounge-layout">
+        <div className="weekly-lounge-list">
+          <div className="weekly-lounge-head">
+            <h2>완료된 주간보고</h2>
+            <span>{completedReports.length}</span>
+          </div>
+          {loadingReports && <div className="empty compact">불러오는 중입니다</div>}
+          {!loadingReports && completedReports.length === 0 && <div className="empty compact">완료된 주간보고가 없습니다</div>}
+          {!loadingReports && completedReports.map((report) => {
+            const doneCount = (report.members || []).filter((member) => member.status === 'done').length;
+            const absentCount = (report.members || []).filter((member) => member.status === 'absent').length;
+            return (
+              <button className={`weekly-lounge-card${selectedReport?.report_id === report.report_id ? ' active' : ''}`} type="button" key={report.report_id} onClick={() => openCompletedReport(report)}>
+                <strong>{report.start_date} ~ {report.end_date}</strong>
+                <span>수집 완료 {doneCount}명 · 부재 {absentCount}명</span>
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="weekly-lounge-viewer">
+          {selectedReport ? (
+            <>
+              <div className="weekly-lounge-tabs">
+                {completedMembers.map((member) => (
+                  <button className={selectedMemberId === member.user_id ? 'active' : ''} type="button" key={member.user_id} onClick={() => openCompletedMemberReport(selectedReport, member)}>
+                    {member.name} {member.role}
+                  </button>
+                ))}
+                {completedMembers.length === 0 && <span>수집 완료된 멤버가 없습니다</span>}
+              </div>
+              {loungeError && <div className="error compact">{loungeError}</div>}
+              {reportHtml ? <iframe className="weekly-lounge-frame" title="완료된 주간 업무 리포트" srcDoc={reportHtml} /> : !loungeError && <div className="empty">리포트를 선택하세요</div>}
+            </>
+          ) : (
+            <div className="empty weekly-lounge-empty">완료된 주간보고 카드를 선택하세요</div>
+          )}
+        </div>
+      </section>
     </>
   );
 }
