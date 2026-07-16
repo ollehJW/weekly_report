@@ -286,7 +286,14 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="WiaReport API", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:9602", "http://127.0.0.1:9602"],
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:9602",
+        "http://127.0.0.1:9602",
+        "http://10.217.183.34:9602",
+    ],
+    allow_origin_regex=r"^http://(10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[0-1])\.\d+\.\d+|192\.168\.\d+\.\d+):(5173|9602)$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

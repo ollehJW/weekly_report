@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { Plus, Trash2, AudioWaveform, User, ChevronRight, CornerDownRight, Pencil, Save, X, KeyRound, LogOut, Users, ClipboardList, GripVertical } from 'lucide-react';
 import './styles.css';
 
-const API_BASE = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:9601';
+const API_BASE = import.meta.env.VITE_API_BASE || `${window.location.protocol}//${window.location.hostname}:9601`;
 const DAY = 24 * 60 * 60 * 1000;
 const DOW = ['일', '월', '화', '수', '목', '금', '토'];
 const INITIAL_PASSWORD = 'wia1234!';
