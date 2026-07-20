@@ -132,7 +132,7 @@ function WaveBar({ widthPx, color }) {
 }
 
 function App() {
-  const [activePage, setActivePage] = useState('tasks');
+  const [activePage, setActivePage] = useState('team-status');
   const [activeTeamTab, setActiveTeamTab] = useState('members');
   const [projects, setProjects] = useState([]);
   const [selectedProjectId, setSelectedProjectId] = useState(null);
@@ -837,6 +837,7 @@ function App() {
         </div>
 
         <nav className="side-nav" aria-label="주요 메뉴">
+          <button className={`side-tab${activePage === 'team-status' ? ' active' : ''}`} type="button" onClick={() => setActivePage('team-status')}>팀 현황</button>
           <button className={`side-tab${activePage === 'tasks' ? ' active' : ''}`} type="button" onClick={() => setActivePage('tasks')}>과제 현황</button>
           <button className={`side-tab${activePage === 'weekly-report' ? ' active' : ''}`} type="button" onClick={() => setActivePage('weekly-report')}>주간 보고 작성</button>
           <button className={`side-tab${activePage === 'weekly-lounge' ? ' active' : ''}`} type="button" onClick={() => setActivePage('weekly-lounge')}>주간 보고 라운지</button>
@@ -856,6 +857,15 @@ function App() {
 
       <section className="workspace">
         {error && <div className="error">{error}</div>}
+        {activePage === 'team-status' && (
+          <TeamStatusPage
+            currentTeam={currentTeam}
+            members={members}
+            projects={projects}
+            teamProjects={teamProjects}
+            weeklyReport={weeklyReport}
+          />
+        )}
         {activePage === 'tasks' && (
           <>
             <div className="page-head">
@@ -975,6 +985,56 @@ function App() {
         <PasswordChangeModal passwordDraft={passwordDraft} setPasswordDraft={setPasswordDraft} onChangePassword={changePassword} />
       )}
     </main>
+  );
+}
+
+function TeamStatusPage({ currentTeam, members, projects, teamProjects, weeklyReport }) {
+  const activeProjects = teamProjects.filter((project) => project.status !== 'done');
+  const doneProjects = teamProjects.filter((project) => project.status === 'done');
+  const reportEntries = weeklyReport?.members || [];
+  const completedReports = reportEntries.filter((member) => member.status === 'done').length;
+  const absentReports = reportEntries.filter((member) => member.status === 'absent').length;
+
+  return (
+    <>
+      <section className="team-status-hero" aria-label="팀 현황 환영 메시지">
+        <div className="team-status-copy">
+          <span>WiaReport Team Workspace</span>
+          <h1>{currentTeam.department} 팀, WiaReport에 오신 것을 환영합니다.</h1>
+          <p>이곳에서 팀의 과제 흐름, 주간 보고 진행 상태, 구성원 기준 정보를 한 곳에서 확인합니다.</p>
+        </div>
+        <div className="team-status-identity">
+          <div className="team-status-avatar">{currentTeam.department.slice(0, 1)}</div>
+          <div>
+            <strong>{currentTeam.department}</strong>
+            <span>{currentTeam.login_id}</span>
+          </div>
+        </div>
+      </section>
+
+      <section className="team-status-grid" aria-label="팀 현황 요약">
+        <article className="team-status-metric">
+          <span>구성원</span>
+          <strong>{members.length}</strong>
+          <p>등록된 팀 멤버</p>
+        </article>
+        <article className="team-status-metric">
+          <span>진행중 과제</span>
+          <strong>{activeProjects.length || projects.length}</strong>
+          <p>현재 관리 중인 과제</p>
+        </article>
+        <article className="team-status-metric">
+          <span>완료 과제</span>
+          <strong>{doneProjects.length}</strong>
+          <p>완료로 분류된 과제</p>
+        </article>
+        <article className="team-status-metric">
+          <span>진행중 보고</span>
+          <strong>{weeklyReport ? `${completedReports}/${reportEntries.length}` : '-'}</strong>
+          <p>{weeklyReport ? `작성 완료 ${completedReports}명 · 부재 ${absentReports}명` : '개설된 보고 주간 없음'}</p>
+        </article>
+      </section>
+    </>
   );
 }
 
