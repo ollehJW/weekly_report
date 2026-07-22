@@ -22,6 +22,19 @@ const STATUS_STYLE = {
 const ROLE_LABELS = { L: '리더', CM: '책임매니저', M: '매니저' };
 const WAVE_PATTERN = [4, 9, 6, 13, 8, 15, 7, 11, 5, 10, 6, 14, 9, 4, 12, 7];
 
+const CALENDAR_EVENT_TYPES = {
+  team: { label: '팀 일정', className: 'team' },
+  vacation: { label: '휴가', className: 'vacation' },
+  training: { label: '교육', className: 'training' },
+  trip: { label: '출장', className: 'trip' },
+  personal: { label: '휴가', className: 'vacation' },
+};
+const PERSONAL_CALENDAR_EVENT_TYPES = ['vacation', 'training', 'trip'];
+
+function calendarEventTypeMeta(type) {
+  return CALENDAR_EVENT_TYPES[type] || CALENDAR_EVENT_TYPES.team;
+}
+
 function toDate(iso) {
   const [y, m, d] = iso.split('-').map(Number);
   return new Date(y, m - 1, d);
@@ -1034,7 +1047,331 @@ function TeamStatusPage({ currentTeam, members, projects, teamProjects, weeklyRe
           <p>{weeklyReport ? `작성 완료 ${completedReports}명 · 부재 ${absentReports}명` : '개설된 보고 주간 없음'}</p>
         </article>
       </section>
+
+      <TeamCalendar currentTeam={currentTeam} members={members} />
     </>
+  );
+}
+
+function TeamCalendar({ currentTeam, members }) {
+  const [monthIso, setMonthIso] = useState(todayIso().slice(0, 7) + '-01');
+  const [events, setEvents] = useState([]);
+  const [loadingEvents, setLoadingEvents] = useState(false);
+  const [calendarError, setCalendarError] = useState('');
+  const [selection, setSelection] = useState(null);
+  const [isSelecting, setIsSelecting] = useState(false);
+  const [draft, setDraft] = useState(null);
+
+  useEffect(() => {
+    if (!currentTeam?.team_id) return;
+    setLoadingEvents(true);
+    request(`/api/teams/${currentTeam.team_id}/events`)
+      .then((list) => {
+        setEvents(list);
+        setCalendarError('');
+      })
+      .catch((err) => setCalendarError(err.message))
+      .finally(() => setLoadingEvents(false));
+  }, [currentTeam?.team_id]);
+
+  const monthStart = useMemo(() => {
+    const base = toDate(monthIso);
+    return new Date(base.getFullYear(), base.getMonth(), 1);
+  }, [monthIso]);
+
+  const monthTitle = `${monthStart.getFullYear()}년 ${monthStart.getMonth() + 1}월`;
+  const calendarDays = useMemo(() => {
+    const start = new Date(monthStart);
+    start.setDate(1 - monthStart.getDay());
+    return Array.from({ length: 42 }).map((_, index) => {
+      const date = new Date(start);
+      date.setDate(start.getDate() + index);
+      const iso = isoOf(date);
+      return {
+        iso,
+        day: date.getDate(),
+        isCurrentMonth: date.getMonth() === monthStart.getMonth(),
+        isToday: iso === todayIso(),
+      };
+    });
+  }, [monthStart]);
+
+  function sortEvents(list) {
+    return [...list].sort((a, b) => `${a.start_date}${a.created_at || ''}`.localeCompare(`${b.start_date}${b.created_at || ''}`));
+  }
+
+  function moveMonth(delta) {
+    const next = new Date(monthStart);
+    next.setMonth(next.getMonth() + delta);
+    setMonthIso(isoOf(new Date(next.getFullYear(), next.getMonth(), 1)));
+  }
+
+  function normalizeRange(startIso, endIso) {
+    return startIso <= endIso ? { start_date: startIso, end_date: endIso } : { start_date: endIso, end_date: startIso };
+  }
+
+  function openDraft(startIso, endIso) {
+    const range = normalizeRange(startIso, endIso);
+    setDraft({
+      event_id: null,
+      title: '',
+      event_type: 'team',
+      start_date: range.start_date,
+      end_date: range.end_date,
+      member_ids: [],
+    });
+    setCalendarError('');
+  }
+
+  function openEvent(item) {
+    setIsSelecting(false);
+    setSelection(null);
+    setDraft({
+      event_id: item.event_id,
+      title: item.title || '',
+      event_type: item.event_type === 'personal' ? 'vacation' : (item.event_type || 'team'),
+      start_date: item.start_date,
+      end_date: item.end_date,
+      member_ids: item.member_ids || item.members?.map((member) => member.user_id) || [],
+    });
+    setCalendarError('');
+  }
+
+  function beginSelection(iso) {
+    setSelection({ start: iso, end: iso });
+    setIsSelecting(true);
+  }
+
+  function updateSelection(iso) {
+    if (!isSelecting || !selection) return;
+    setSelection({ ...selection, end: iso });
+  }
+
+  function finishSelection(iso) {
+    if (!isSelecting) return;
+    const startIso = selection?.start || iso;
+    setIsSelecting(false);
+    setSelection(null);
+    openDraft(startIso, iso);
+  }
+
+  function isSelected(iso) {
+    if (!selection) return false;
+    const range = normalizeRange(selection.start, selection.end);
+    return range.start_date <= iso && iso <= range.end_date;
+  }
+
+  function eventsForDate(iso) {
+    return events.filter((item) => item.start_date <= iso && iso <= item.end_date);
+  }
+
+  function setMemberSelected(userId, selected) {
+    setDraft((prev) => {
+      const ids = new Set(prev.member_ids);
+      if (selected) ids.add(userId);
+      else ids.delete(userId);
+      return { ...prev, member_ids: Array.from(ids) };
+    });
+  }
+
+  async function saveEvent() {
+    if (!draft?.title.trim()) {
+      setCalendarError('일정명을 입력하세요');
+      return;
+    }
+    if (draft.end_date < draft.start_date) {
+      setCalendarError('종료일은 시작일보다 빠를 수 없습니다');
+      return;
+    }
+    const payload = {
+      title: draft.title.trim(),
+      event_type: draft.event_type,
+      start_date: draft.start_date,
+      end_date: draft.end_date,
+      member_ids: draft.event_type === 'team' ? [] : draft.member_ids,
+    };
+    try {
+      const saved = await request(draft.event_id ? `/api/team-events/${draft.event_id}` : `/api/teams/${currentTeam.team_id}/events`, {
+        method: draft.event_id ? 'PUT' : 'POST',
+        body: JSON.stringify(payload),
+      });
+      setEvents((prev) => sortEvents(draft.event_id ? prev.map((item) => (item.event_id === saved.event_id ? saved : item)) : [...prev, saved]));
+      setDraft(null);
+      setCalendarError('');
+    } catch (err) {
+      setCalendarError(err.message);
+    }
+  }
+
+  async function deleteEvent() {
+    if (!draft?.event_id) return;
+    if (!window.confirm('이 일정을 삭제할까요?')) return;
+    try {
+      await request(`/api/team-events/${draft.event_id}`, { method: 'DELETE' });
+      setEvents((prev) => prev.filter((item) => item.event_id !== draft.event_id));
+      setDraft(null);
+      setCalendarError('');
+    } catch (err) {
+      setCalendarError(err.message);
+    }
+  }
+
+  return (
+    <section className="team-calendar" aria-label="팀 캘린더">
+      <div className="team-calendar-head">
+        <div>
+          <span>Team Calendar</span>
+          <h2>팀 캘린더</h2>
+        </div>
+        <div className="team-calendar-controls" aria-label="월 이동">
+          <button className="team-calendar-nav" type="button" onClick={() => moveMonth(-1)} aria-label="이전 달">◀</button>
+          <strong>{monthTitle}</strong>
+          <button className="team-calendar-nav" type="button" onClick={() => moveMonth(1)} aria-label="다음 달">▶</button>
+        </div>
+      </div>
+      {calendarError && <div className="team-calendar-alert">{calendarError}</div>}
+      <div className="team-calendar-weekdays" aria-hidden="true">
+        {DOW.map((day) => <span key={day}>{day}</span>)}
+      </div>
+      <div className="team-calendar-grid">
+        {calendarDays.map((day) => {
+          const dayEvents = eventsForDate(day.iso);
+          return (
+            <div
+              key={day.iso}
+              className={`team-calendar-day${day.isCurrentMonth ? '' : ' muted'}${day.isToday ? ' today' : ''}${isSelected(day.iso) ? ' selected' : ''}`}
+              role="button"
+              tabIndex={0}
+              onPointerDown={(e) => {
+                if (e.button !== 0) return;
+                beginSelection(day.iso);
+              }}
+              onPointerEnter={() => updateSelection(day.iso)}
+              onPointerUp={() => finishSelection(day.iso)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  openDraft(day.iso, day.iso);
+                }
+              }}
+            >
+              <span className="team-calendar-day-num">{day.day}</span>
+              <span className="team-calendar-events">
+                {dayEvents.slice(0, 3).map((item) => {
+                  const meta = calendarEventTypeMeta(item.event_type);
+                  const isPersonal = PERSONAL_CALENDAR_EVENT_TYPES.includes(item.event_type) || item.event_type === 'personal';
+                  const peopleLabel = item.members?.length ? item.members.map((member) => `${member.name} ${member.role}`).join(', ') : '인원 없음';
+                  const tooltip = isPersonal ? peopleLabel : item.title;
+                  const isMultiDay = item.start_date !== item.end_date;
+                  const dayOfWeek = toDate(day.iso).getDay();
+                  const startsHere = item.start_date === day.iso || dayOfWeek === 0;
+                  const endsHere = item.end_date === day.iso || dayOfWeek === 6;
+                  const spanClass = isMultiDay ? `${startsHere ? ' span-start' : ' span-mid'}${endsHere ? ' span-end' : ''}` : ' span-single';
+                  return (
+                    <button
+                      key={item.event_id}
+                      className={`team-calendar-event ${meta.className}${spanClass}`}
+                      type="button"
+                      title={tooltip}
+                      onPointerDown={(e) => e.stopPropagation()}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        openEvent(item);
+                      }}
+                    >
+                      <b>{startsHere || !isMultiDay ? item.title : ''}</b>
+                      <small>{startsHere || !isMultiDay ? (item.event_type === 'team' ? meta.label : `${meta.label} · ${item.members.length ? `${item.members.length}명` : '인원 없음'}`) : ''}</small>
+                    </button>
+                  );
+                })}
+                {dayEvents.length > 3 && <span className="team-calendar-more">+{dayEvents.length - 3}</span>}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+      {loadingEvents && <div className="team-calendar-loading">일정을 불러오는 중</div>}
+
+      {draft && (
+        <div className="modal-backdrop" role="presentation">
+          <div className="team-calendar-modal" role="dialog" aria-modal="true" aria-labelledby="team-calendar-title">
+            <div className="project-modal-head">
+              <div>
+                <span>Team Schedule</span>
+                <h2 id="team-calendar-title">{draft.event_id ? '팀 일정 상세' : '팀 일정 추가'}</h2>
+              </div>
+              <button className="icon-btn" type="button" onClick={() => setDraft(null)} aria-label="닫기"><X size={16} /></button>
+            </div>
+            <div className="team-calendar-form">
+              <label>
+                일정명
+                <input value={draft.title} onChange={(e) => setDraft({ ...draft, title: e.target.value })} placeholder="예: 고객사 점검, 내부 리뷰" autoFocus />
+              </label>
+              <div className="team-calendar-scope" role="group" aria-label="일정 범위">
+                <button className={draft.event_type === 'team' ? 'team active' : 'team'} type="button" onClick={() => setDraft({ ...draft, event_type: 'team', member_ids: [] })}>팀 일정</button>
+                <button className={PERSONAL_CALENDAR_EVENT_TYPES.includes(draft.event_type) ? 'personal active' : 'personal'} type="button" onClick={() => setDraft({ ...draft, event_type: PERSONAL_CALENDAR_EVENT_TYPES.includes(draft.event_type) ? draft.event_type : 'vacation', member_ids: draft.member_ids.length ? draft.member_ids : members.map((member) => member.user_id) })}>개인 일정</button>
+              </div>
+              {PERSONAL_CALENDAR_EVENT_TYPES.includes(draft.event_type) && (
+                <div className="team-calendar-subtype" role="group" aria-label="개인 일정 유형">
+                  {PERSONAL_CALENDAR_EVENT_TYPES.map((type) => {
+                    const meta = calendarEventTypeMeta(type);
+                    return (
+                      <button
+                        key={type}
+                        className={`${meta.className}${draft.event_type === type ? ' active' : ''}`}
+                        type="button"
+                        onClick={() => setDraft({ ...draft, event_type: type, member_ids: draft.member_ids.length ? draft.member_ids : members.map((member) => member.user_id) })}
+                      >
+                        {meta.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+              <div className="team-calendar-date-row">
+                <label>
+                  시작일
+                  <input type="date" value={draft.start_date} onChange={(e) => setDraft({ ...draft, start_date: e.target.value })} />
+                </label>
+                <label>
+                  종료일
+                  <input type="date" value={draft.end_date} onChange={(e) => setDraft({ ...draft, end_date: e.target.value })} />
+                </label>
+              </div>
+              {PERSONAL_CALENDAR_EVENT_TYPES.includes(draft.event_type) && (
+                <>
+                  <div className="team-calendar-people-head">
+                    <strong>참여 인원</strong>
+                    <div>
+                      <button type="button" onClick={() => setDraft({ ...draft, member_ids: members.map((member) => member.user_id) })}>전체 선택</button>
+                      <button type="button" onClick={() => setDraft({ ...draft, member_ids: [] })}>선택 해제</button>
+                    </div>
+                  </div>
+                  <div className="team-calendar-people">
+                    {members.map((member) => {
+                      const selected = draft.member_ids.includes(member.user_id);
+                      return (
+                        <button key={member.user_id} className={`team-calendar-person${selected ? ' selected' : ''}`} type="button" onClick={() => setMemberSelected(member.user_id, !selected)}>
+                          <span className="avatar-mini">{member.name.slice(0, 1)}</span>
+                          <b>{member.name}</b>
+                          <small>{member.role}</small>
+                        </button>
+                      );
+                    })}
+                    {members.length === 0 && <div className="empty team-calendar-empty">선택 가능한 팀원이 없습니다</div>}
+                  </div>
+                </>
+              )}
+            </div>
+            <div className="project-modal-actions team-calendar-actions">
+              {draft.event_id && <button className="mt-btn danger" type="button" onClick={deleteEvent}>삭제</button>}
+              <button className="mt-btn" type="button" onClick={() => setDraft(null)}>취소</button>
+              <button className="mt-btn primary" type="button" onClick={saveEvent}>{draft.event_id ? '수정 저장' : '저장'}</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </section>
   );
 }
 

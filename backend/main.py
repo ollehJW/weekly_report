@@ -166,6 +166,70 @@ def init_db():
             )
             """
         )
+        team_event_member_links = []
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS team_events (
+                event_id TEXT PRIMARY KEY,
+                team_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                event_type TEXT NOT NULL DEFAULT 'team',
+                start_date TEXT NOT NULL,
+                end_date TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (team_id) REFERENCES teams(team_id) ON DELETE CASCADE
+            )
+            """
+        )
+        if has_column(conn, "team_events", "description"):
+            if has_table(conn, "team_event_members"):
+                team_event_member_links = conn.execute(
+                    "SELECT event_id, user_id FROM team_event_members"
+                ).fetchall()
+                conn.execute("DROP TABLE IF EXISTS team_event_members")
+            conn.execute("ALTER TABLE team_events RENAME TO team_events_legacy")
+            conn.execute(
+                """
+                CREATE TABLE team_events (
+                    event_id TEXT PRIMARY KEY,
+                    team_id TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    event_type TEXT NOT NULL DEFAULT 'team',
+                    start_date TEXT NOT NULL,
+                    end_date TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY (team_id) REFERENCES teams(team_id) ON DELETE CASCADE
+                )
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO team_events (event_id, team_id, title, event_type, start_date, end_date, created_at)
+                SELECT event_id, team_id, title,
+                       CASE event_type WHEN 'personal' THEN 'vacation' ELSE event_type END,
+                       start_date, end_date, created_at
+                FROM team_events_legacy
+                """
+            )
+            conn.execute("DROP TABLE team_events_legacy")
+        if not has_column(conn, "team_events", "event_type"):
+            conn.execute("ALTER TABLE team_events ADD COLUMN event_type TEXT NOT NULL DEFAULT 'team'")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS team_event_members (
+                event_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                PRIMARY KEY (event_id, user_id),
+                FOREIGN KEY (event_id) REFERENCES team_events(event_id) ON DELETE CASCADE,
+                FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+            )
+            """
+        )
+        for link in team_event_member_links:
+            conn.execute(
+                "INSERT OR IGNORE INTO team_event_members (event_id, user_id) VALUES (?, ?)",
+                (link["event_id"], link["user_id"]),
+            )
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS reports (
@@ -408,6 +472,14 @@ class ProjectEntryStatusIn(BaseModel):
     is_excluded: bool
 
 
+class TeamEventIn(BaseModel):
+    title: str = Field(min_length=1, max_length=120)
+    event_type: str = Field(default="team", pattern="^(team|vacation|training|trip|personal)$")
+    start_date: date
+    end_date: date
+    member_ids: list[str] = Field(default_factory=list)
+
+
 def ensure_range(start_date: date, end_date: date):
     if end_date < start_date:
         raise HTTPException(status_code=422, detail="end_date must be on or after start_date")
@@ -486,6 +558,23 @@ def project_with_members(conn, project_row):
         }
         for row in members
     ]
+    return data
+
+
+def team_event_with_members(conn, event_row):
+    data = row_to_dict(event_row)
+    members = conn.execute(
+        """
+        SELECT u.*
+        FROM team_event_members tem
+        JOIN users u ON u.user_id = tem.user_id
+        WHERE tem.event_id = ?
+        ORDER BY u.sort_order ASC, u.created_at ASC, u.name
+        """,
+        (event_row["event_id"],),
+    ).fetchall()
+    data["member_ids"] = [row["user_id"] for row in members]
+    data["members"] = [public_user(row) for row in members]
     return data
 
 
@@ -1333,6 +1422,113 @@ def reorder_team_users(team_id: str, payload: MemberOrderIn):
             (team_id,),
         ).fetchall()
         return [public_user(row) for row in updated]
+
+
+@app.get("/api/teams/{team_id}/events")
+def list_team_events(team_id: str):
+    with get_conn() as conn:
+        ensure_team(conn, team_id)
+        rows = conn.execute(
+            """
+            SELECT * FROM team_events
+            WHERE team_id = ?
+            ORDER BY start_date ASC, end_date ASC, created_at ASC
+            """,
+            (team_id,),
+        ).fetchall()
+        return [team_event_with_members(conn, row) for row in rows]
+
+
+@app.post("/api/teams/{team_id}/events", status_code=201)
+def create_team_event(team_id: str, payload: TeamEventIn):
+    if payload.end_date < payload.start_date:
+        raise HTTPException(status_code=422, detail="종료일은 시작일보다 빠를 수 없습니다")
+    now = datetime.utcnow().isoformat()
+    event_id = str(uuid.uuid4())
+    event_type = "vacation" if payload.event_type == "personal" else payload.event_type
+    member_ids = [] if event_type == "team" else list(dict.fromkeys(payload.member_ids))
+    with get_conn() as conn:
+        ensure_team(conn, team_id)
+        for user_id in member_ids:
+            user = conn.execute(
+                "SELECT user_id FROM users WHERE user_id = ? AND team_id = ?",
+                (user_id, team_id),
+            ).fetchone()
+            if not user:
+                raise HTTPException(status_code=422, detail="해당 팀의 멤버만 일정에 포함할 수 있습니다")
+        cursor = conn.execute(
+            """
+            INSERT INTO team_events (event_id, team_id, title, event_type, start_date, end_date, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                event_id,
+                team_id,
+                payload.title.strip(),
+                event_type,
+                str(payload.start_date),
+                str(payload.end_date),
+                now,
+            ),
+        )
+        for user_id in member_ids:
+            conn.execute(
+                "INSERT INTO team_event_members (event_id, user_id) VALUES (?, ?)",
+                (event_id, user_id),
+            )
+        row = conn.execute("SELECT * FROM team_events WHERE rowid = ?", (cursor.lastrowid,)).fetchone()
+        return team_event_with_members(conn, row)
+
+
+@app.put("/api/team-events/{event_id}")
+def update_team_event(event_id: str, payload: TeamEventIn):
+    if payload.end_date < payload.start_date:
+        raise HTTPException(status_code=422, detail="종료일은 시작일보다 빠를 수 없습니다")
+    event_type = "vacation" if payload.event_type == "personal" else payload.event_type
+    member_ids = [] if event_type == "team" else list(dict.fromkeys(payload.member_ids))
+    with get_conn() as conn:
+        existing = conn.execute("SELECT * FROM team_events WHERE event_id = ?", (event_id,)).fetchone()
+        if not existing:
+            raise HTTPException(status_code=404, detail="Event not found")
+        for user_id in member_ids:
+            user = conn.execute(
+                "SELECT user_id FROM users WHERE user_id = ? AND team_id = ?",
+                (user_id, existing["team_id"]),
+            ).fetchone()
+            if not user:
+                raise HTTPException(status_code=422, detail="해당 팀의 멤버만 일정에 포함할 수 있습니다")
+        conn.execute(
+            """
+            UPDATE team_events
+            SET title = ?, event_type = ?, start_date = ?, end_date = ?
+            WHERE event_id = ?
+            """,
+            (
+                payload.title.strip(),
+                event_type,
+                str(payload.start_date),
+                str(payload.end_date),
+                event_id,
+            ),
+        )
+        conn.execute("DELETE FROM team_event_members WHERE event_id = ?", (event_id,))
+        for user_id in member_ids:
+            conn.execute(
+                "INSERT INTO team_event_members (event_id, user_id) VALUES (?, ?)",
+                (event_id, user_id),
+            )
+        row = conn.execute("SELECT * FROM team_events WHERE event_id = ?", (event_id,)).fetchone()
+        return team_event_with_members(conn, row)
+
+
+@app.delete("/api/team-events/{event_id}", status_code=204)
+def delete_team_event(event_id: str):
+    with get_conn() as conn:
+        row = conn.execute("SELECT event_id FROM team_events WHERE event_id = ?", (event_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Event not found")
+        conn.execute("DELETE FROM team_events WHERE event_id = ?", (event_id,))
+    return None
 
 
 @app.get("/api/teams/{team_id}/team-projects")
