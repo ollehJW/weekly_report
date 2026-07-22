@@ -413,6 +413,78 @@ input:focus, textarea:focus, select:focus { border-color: #4f46e5; box-shadow: 0
   box-shadow: 0 28px 90px rgba(7, 24, 54, .28);
   padding: 22px;
 }
+.team-calendar-detail {
+  display: grid;
+  gap: 16px;
+  border: 1px solid #e4eaf3;
+  background: #fbfcfe;
+  padding: 18px;
+}
+.team-calendar-detail-badge {
+  justify-self: start;
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 950;
+}
+.team-calendar-detail-badge.team { background: #eef4ff; color: var(--wia-blue); }
+.team-calendar-detail-badge.vacation { background: #e9f8f0; color: #0e8f52; }
+.team-calendar-detail-badge.training { background: #fff6df; color: #8a5f0b; }
+.team-calendar-detail-badge.trip { background: #fff0ec; color: #b0331c; }
+.team-calendar-detail h3 {
+  margin: 0;
+  color: #202a3a;
+  font-size: 22px;
+  font-weight: 950;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+.team-calendar-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.team-calendar-detail-grid div,
+.team-calendar-detail-people {
+  display: grid;
+  gap: 7px;
+  border: 1px solid #e8edf5;
+  background: #fff;
+  padding: 12px;
+}
+.team-calendar-detail-grid span,
+.team-calendar-detail-people > span {
+  color: #66758d;
+  font-size: 11px;
+  font-weight: 950;
+}
+.team-calendar-detail-grid strong {
+  color: #202a3a;
+  font-size: 14px;
+  font-weight: 950;
+}
+.team-calendar-detail-people div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+.team-calendar-detail-person {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  border: 1px solid #dfe6f1;
+  background: #fff;
+  color: #314159;
+  padding: 0 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 950;
+}
+.team-calendar-detail-people em { color: #94a3b8; font-size: 13px; font-style: normal; font-weight: 850; }
+
 .team-calendar-form { display: grid; gap: 14px; }
 .team-calendar-form label { display: grid; gap: 7px; color: #344054; font-size: 12px; font-weight: 950; }
 .team-calendar-form input,
@@ -489,6 +561,7 @@ input:focus, textarea:focus, select:focus { border-color: #4f46e5; box-shadow: 0
 .team-calendar-person small { color: inherit; opacity: .75; font-size: 11px; font-weight: 950; }
 .team-calendar-empty { grid-column: 1 / -1; }
 .team-calendar-actions .danger { margin-right: auto; }
+.team-calendar-actions.view-actions .danger { margin-right: 0; }
 
 .project-toolbar .project-select { min-width: 220px; }
 .mono { font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
@@ -1943,6 +2016,7 @@ input:focus, textarea:focus, select:focus { border-color: var(--wia-blue); box-s
   .team-calendar-scope,
   .team-calendar-subtype,
   .team-calendar-date-row,
+  .team-calendar-detail-grid,
   .team-calendar-people { grid-template-columns: 1fr; }
   .team-status-identity { border-left: 0; border-top: 1px solid #e8edf5; padding-left: 0; padding-top: 18px; }
 }

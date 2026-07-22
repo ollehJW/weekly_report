@@ -1114,6 +1114,7 @@ function TeamCalendar({ currentTeam, members }) {
     const range = normalizeRange(startIso, endIso);
     setDraft({
       event_id: null,
+      mode: 'edit',
       title: '',
       event_type: 'team',
       start_date: range.start_date,
@@ -1128,6 +1129,7 @@ function TeamCalendar({ currentTeam, members }) {
     setSelection(null);
     setDraft({
       event_id: item.event_id,
+      mode: 'view',
       title: item.title || '',
       event_type: item.event_type === 'personal' ? 'vacation' : (item.event_type || 'team'),
       start_date: item.start_date,
@@ -1292,85 +1294,130 @@ function TeamCalendar({ currentTeam, members }) {
       </div>
       {loadingEvents && <div className="team-calendar-loading">일정을 불러오는 중</div>}
 
-      {draft && (
-        <div className="modal-backdrop" role="presentation">
-          <div className="team-calendar-modal" role="dialog" aria-modal="true" aria-labelledby="team-calendar-title">
-            <div className="project-modal-head">
-              <div>
-                <span>Team Schedule</span>
-                <h2 id="team-calendar-title">{draft.event_id ? '팀 일정 상세' : '팀 일정 추가'}</h2>
-              </div>
-              <button className="icon-btn" type="button" onClick={() => setDraft(null)} aria-label="닫기"><X size={16} /></button>
-            </div>
-            <div className="team-calendar-form">
-              <label>
-                일정명
-                <input value={draft.title} onChange={(e) => setDraft({ ...draft, title: e.target.value })} placeholder="예: 고객사 점검, 내부 리뷰" autoFocus />
-              </label>
-              <div className="team-calendar-scope" role="group" aria-label="일정 범위">
-                <button className={draft.event_type === 'team' ? 'team active' : 'team'} type="button" onClick={() => setDraft({ ...draft, event_type: 'team', member_ids: [] })}>팀 일정</button>
-                <button className={PERSONAL_CALENDAR_EVENT_TYPES.includes(draft.event_type) ? 'personal active' : 'personal'} type="button" onClick={() => setDraft({ ...draft, event_type: PERSONAL_CALENDAR_EVENT_TYPES.includes(draft.event_type) ? draft.event_type : 'vacation', member_ids: draft.member_ids.length ? draft.member_ids : members.map((member) => member.user_id) })}>개인 일정</button>
-              </div>
-              {PERSONAL_CALENDAR_EVENT_TYPES.includes(draft.event_type) && (
-                <div className="team-calendar-subtype" role="group" aria-label="개인 일정 유형">
-                  {PERSONAL_CALENDAR_EVENT_TYPES.map((type) => {
-                    const meta = calendarEventTypeMeta(type);
-                    return (
-                      <button
-                        key={type}
-                        className={`${meta.className}${draft.event_type === type ? ' active' : ''}`}
-                        type="button"
-                        onClick={() => setDraft({ ...draft, event_type: type, member_ids: draft.member_ids.length ? draft.member_ids : members.map((member) => member.user_id) })}
-                      >
-                        {meta.label}
-                      </button>
-                    );
-                  })}
+      {draft && (() => {
+        const isPersonalDraft = PERSONAL_CALENDAR_EVENT_TYPES.includes(draft.event_type);
+        const draftMeta = calendarEventTypeMeta(draft.event_type);
+        const selectedMembers = members.filter((member) => draft.member_ids.includes(member.user_id));
+        const periodLabel = draft.start_date === draft.end_date ? draft.start_date : `${draft.start_date} ~ ${draft.end_date}`;
+        return (
+          <div className="modal-backdrop" role="presentation">
+            <div className="team-calendar-modal" role="dialog" aria-modal="true" aria-labelledby="team-calendar-title">
+              <div className="project-modal-head">
+                <div>
+                  <span>Team Schedule</span>
+                  <h2 id="team-calendar-title">{draft.event_id ? '팀 일정 상세' : '팀 일정 추가'}</h2>
                 </div>
-              )}
-              <div className="team-calendar-date-row">
-                <label>
-                  시작일
-                  <input type="date" value={draft.start_date} onChange={(e) => setDraft({ ...draft, start_date: e.target.value })} />
-                </label>
-                <label>
-                  종료일
-                  <input type="date" value={draft.end_date} onChange={(e) => setDraft({ ...draft, end_date: e.target.value })} />
-                </label>
+                <button className="icon-btn" type="button" onClick={() => setDraft(null)} aria-label="닫기"><X size={16} /></button>
               </div>
-              {PERSONAL_CALENDAR_EVENT_TYPES.includes(draft.event_type) && (
-                <>
-                  <div className="team-calendar-people-head">
-                    <strong>참여 인원</strong>
+
+              {draft.mode === 'view' ? (
+                <div className="team-calendar-detail">
+                  <div className={`team-calendar-detail-badge ${draftMeta.className}`}>{isPersonalDraft ? `개인 일정 · ${draftMeta.label}` : draftMeta.label}</div>
+                  <h3>{draft.title}</h3>
+                  <div className="team-calendar-detail-grid">
                     <div>
-                      <button type="button" onClick={() => setDraft({ ...draft, member_ids: members.map((member) => member.user_id) })}>전체 선택</button>
-                      <button type="button" onClick={() => setDraft({ ...draft, member_ids: [] })}>선택 해제</button>
+                      <span>일정 기간</span>
+                      <strong>{periodLabel}</strong>
+                    </div>
+                    <div>
+                      <span>일정 유형</span>
+                      <strong>{isPersonalDraft ? draftMeta.label : '팀 일정'}</strong>
                     </div>
                   </div>
-                  <div className="team-calendar-people">
-                    {members.map((member) => {
-                      const selected = draft.member_ids.includes(member.user_id);
-                      return (
-                        <button key={member.user_id} className={`team-calendar-person${selected ? ' selected' : ''}`} type="button" onClick={() => setMemberSelected(member.user_id, !selected)}>
-                          <span className="avatar-mini">{member.name.slice(0, 1)}</span>
-                          <b>{member.name}</b>
-                          <small>{member.role}</small>
-                        </button>
-                      );
-                    })}
-                    {members.length === 0 && <div className="empty team-calendar-empty">선택 가능한 팀원이 없습니다</div>}
+                  {isPersonalDraft && (
+                    <div className="team-calendar-detail-people">
+                      <span>참여 인원</span>
+                      <div>
+                        {selectedMembers.length ? selectedMembers.map((member) => (
+                          <span key={member.user_id} className="team-calendar-detail-person">{member.name} {member.role}</span>
+                        )) : <em>인원 없음</em>}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="team-calendar-form">
+                  <label>
+                    일정명
+                    <input value={draft.title} onChange={(e) => setDraft({ ...draft, title: e.target.value })} placeholder="예: 고객사 점검, 내부 리뷰" autoFocus />
+                  </label>
+                  <div className="team-calendar-scope" role="group" aria-label="일정 범위">
+                    <button className={draft.event_type === 'team' ? 'team active' : 'team'} type="button" onClick={() => setDraft({ ...draft, event_type: 'team', member_ids: [] })}>팀 일정</button>
+                    <button className={isPersonalDraft ? 'personal active' : 'personal'} type="button" onClick={() => setDraft({ ...draft, event_type: isPersonalDraft ? draft.event_type : 'vacation', member_ids: draft.member_ids.length ? draft.member_ids : members.map((member) => member.user_id) })}>개인 일정</button>
                   </div>
-                </>
+                  {isPersonalDraft && (
+                    <div className="team-calendar-subtype" role="group" aria-label="개인 일정 유형">
+                      {PERSONAL_CALENDAR_EVENT_TYPES.map((type) => {
+                        const meta = calendarEventTypeMeta(type);
+                        return (
+                          <button
+                            key={type}
+                            className={`${meta.className}${draft.event_type === type ? ' active' : ''}`}
+                            type="button"
+                            onClick={() => setDraft({ ...draft, event_type: type, member_ids: draft.member_ids.length ? draft.member_ids : members.map((member) => member.user_id) })}
+                          >
+                            {meta.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                  <div className="team-calendar-date-row">
+                    <label>
+                      시작일
+                      <input type="date" value={draft.start_date} onChange={(e) => setDraft({ ...draft, start_date: e.target.value })} />
+                    </label>
+                    <label>
+                      종료일
+                      <input type="date" value={draft.end_date} onChange={(e) => setDraft({ ...draft, end_date: e.target.value })} />
+                    </label>
+                  </div>
+                  {isPersonalDraft && (
+                    <>
+                      <div className="team-calendar-people-head">
+                        <strong>참여 인원</strong>
+                        <div>
+                          <button type="button" onClick={() => setDraft({ ...draft, member_ids: members.map((member) => member.user_id) })}>전체 선택</button>
+                          <button type="button" onClick={() => setDraft({ ...draft, member_ids: [] })}>선택 해제</button>
+                        </div>
+                      </div>
+                      <div className="team-calendar-people">
+                        {members.map((member) => {
+                          const selected = draft.member_ids.includes(member.user_id);
+                          return (
+                            <button key={member.user_id} className={`team-calendar-person${selected ? ' selected' : ''}`} type="button" onClick={() => setMemberSelected(member.user_id, !selected)}>
+                              <span className="avatar-mini">{member.name.slice(0, 1)}</span>
+                              <b>{member.name}</b>
+                              <small>{member.role}</small>
+                            </button>
+                          );
+                        })}
+                        {members.length === 0 && <div className="empty team-calendar-empty">선택 가능한 팀원이 없습니다</div>}
+                      </div>
+                    </>
+                  )}
+                </div>
               )}
-            </div>
-            <div className="project-modal-actions team-calendar-actions">
-              {draft.event_id && <button className="mt-btn danger" type="button" onClick={deleteEvent}>삭제</button>}
-              <button className="mt-btn" type="button" onClick={() => setDraft(null)}>취소</button>
-              <button className="mt-btn primary" type="button" onClick={saveEvent}>{draft.event_id ? '수정 저장' : '저장'}</button>
+
+              <div className={`project-modal-actions team-calendar-actions${draft.mode === 'view' ? ' view-actions' : ''}`}>
+                {draft.mode === 'view' ? (
+                  <>
+                    <button className="mt-btn danger" type="button" onClick={deleteEvent}>제거</button>
+                    <button className="mt-btn primary" type="button" onClick={() => setDraft({ ...draft, mode: 'edit' })}>수정</button>
+                  </>
+                ) : (
+                  <>
+                    {draft.event_id && <button className="mt-btn danger" type="button" onClick={deleteEvent}>제거</button>}
+                    <button className="mt-btn" type="button" onClick={() => draft.event_id ? setDraft({ ...draft, mode: 'view' }) : setDraft(null)}>취소</button>
+                    <button className="mt-btn primary" type="button" onClick={saveEvent}>{draft.event_id ? '수정 저장' : '저장'}</button>
+                  </>
+                )}
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
+
     </section>
   );
 }
