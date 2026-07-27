@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { Plus, Trash2, AudioWaveform, User, ChevronRight, CornerDownRight, Pencil, Save, X, KeyRound, LogOut, Users, ClipboardList, GripVertical } from 'lucide-react';
+import { Plus, Trash2, AudioWaveform, User, ChevronRight, CornerDownRight, Pencil, Save, X, KeyRound, LogOut, Users, ClipboardList, GripVertical, HelpCircle } from 'lucide-react';
 import './styles.css';
 
 const API_BASE = import.meta.env.VITE_API_BASE || `${window.location.protocol}//${window.location.hostname}:9601`;
@@ -188,6 +188,7 @@ function App() {
   const [draggingMemberId, setDraggingMemberId] = useState(null);
   const [loginDraft, setLoginDraft] = useState({ login_id: '', password: '' });
   const [passwordDraft, setPasswordDraft] = useState({ current_password: INITIAL_PASSWORD, new_password: '', confirm_password: '' });
+  const [isUsageGuideOpen, setIsUsageGuideOpen] = useState(false);
 
   const selectedProject = projects.find((project) => project.id === selectedProjectId) || null;
   const selectedTeamProject = teamProjects.find((project) => project.project_id === selectedProjectId) || null;
@@ -858,6 +859,11 @@ function App() {
           {isAdminAccount && <button className={`side-tab${activePage === 'accounts' ? ' active' : ''}`} type="button" onClick={() => setActivePage('accounts')}>계정 관리</button>}
         </nav>
 
+        <button className="side-help" type="button" onClick={() => setIsUsageGuideOpen(true)}>
+          <HelpCircle size={16} />
+          <span>사용 가이드</span>
+        </button>
+
         <div className="side-user">
           <div className="avatar">{currentTeam.department.slice(0, 1)}</div>
           <div className="side-user-info">
@@ -994,10 +1000,109 @@ function App() {
         )}
       </section>
 
-      {currentTeam?.must_change_password && (
-        <PasswordChangeModal passwordDraft={passwordDraft} setPasswordDraft={setPasswordDraft} onChangePassword={changePassword} />
-      )}
+      {isUsageGuideOpen && <UsageGuideModal onClose={() => setIsUsageGuideOpen(false)} />}
     </main>
+  );
+}
+
+function UsageGuideModal({ onClose }) {
+  return (
+    <div className="modal-backdrop usage-guide-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <article className="usage-guide-modal" role="dialog" aria-modal="true" aria-labelledby="usage-guide-title" onMouseDown={(event) => event.stopPropagation()}>
+        <header className="usage-guide-head">
+          <div>
+            <span>Markdown Guide</span>
+            <h2 id="usage-guide-title">사용 가이드</h2>
+          </div>
+          <button className="usage-guide-close" type="button" onClick={onClose} aria-label="사용 가이드 닫기"><X size={18} /></button>
+        </header>
+
+        <div className="usage-guide-markdown">
+          <p className="usage-guide-lead">WiaReport를 처음 세팅하고 주간보고를 완료본으로 확인하기까지의 기본 흐름입니다.</p>
+
+          <ol>
+            <li>
+              <h3>멤버 비밀번호 설정</h3>
+              <p><strong>팀 관리 → 멤버 관리</strong>에서 멤버를 추가한 뒤 초기 비밀번호 상태를 확인합니다.</p>
+              <ul>
+                <li>초기 비밀번호는 <code>wia1234!</code>입니다.</li>
+                <li>멤버가 처음 접속하면 개인 비밀번호로 변경해야 합니다.</li>
+                <li>필요하면 팀 관리 화면에서 비밀번호를 초기화하거나 직접 설정합니다.</li>
+              </ul>
+            </li>
+            <li>
+              <h3>새로운 과제 생성</h3>
+              <p><strong>팀 관리 → 과제 관리</strong>에서 과제명을 입력하고 담당 리더와 참여 멤버를 지정합니다.</p>
+              <ul>
+                <li>리더는 1명을 선택하고, 매니저는 여러 명을 선택할 수 있습니다.</li>
+                <li>생성된 과제는 과제 현황과 주간보고 작성 화면에 연결됩니다.</li>
+              </ul>
+            </li>
+            <li>
+              <h3>팀 캘린더 작성</h3>
+              <p><strong>팀 현황</strong>의 캘린더에서 날짜를 선택해 팀 일정 또는 개인 일정을 등록합니다.</p>
+              <ul>
+                <li>개인 일정은 휴가, 교육, 출장으로 구분합니다.</li>
+                <li>기간 일정은 시작일과 종료일을 지정해 캘린더에 표시합니다.</li>
+              </ul>
+            </li>
+            <li>
+              <h3>과제 마일스톤 계획 생성</h3>
+              <p><strong>과제 현황</strong>에서 과제를 선택하고 마일스톤과 Epic을 추가합니다.</p>
+              <ul>
+                <li>마일스톤은 과제의 큰 기간 계획입니다.</li>
+                <li>Epic은 마일스톤 안에서 추적할 세부 작업입니다.</li>
+              </ul>
+            </li>
+            <li>
+              <h3>보고 주간 생성</h3>
+              <p><strong>주간 보고 작성</strong>에서 새 보고 주간을 생성합니다.</p>
+              <ul>
+                <li>시작일과 종료일을 지정하면 팀원별 작성 카드가 생성됩니다.</li>
+                <li>이미 진행 중인 보고 주간이 있으면 먼저 완료하거나 삭제합니다.</li>
+              </ul>
+            </li>
+            <li>
+              <h3>개인별 주간 보고 작성</h3>
+              <p>각 멤버 카드에서 비밀번호 확인 후, 내가 참여 멤버로 지정된 과제가 리스트업됩니다. 과제를 하나씩 선택해 주간 내용을 입력합니다.</p>
+              <ul>
+                <li>리더 또는 매니저로 참여 중인 과제가 자동으로 표시됩니다.</li>
+                <li><strong>기타 업무 (교육/출장 등)</strong> 과제에는 정규 과제 외 교육, 출장, 회의, 지원 업무처럼 별도 과제로 묶기 어려운 내용을 입력합니다.</li>
+                <li>해당 주간에 작성할 내용이 없는 과제는 제외 처리할 수 있습니다.</li>
+              </ul>
+              <div className="usage-guide-format">
+                <h4>작성 포맷</h4>
+                <dl>
+                  <div>
+                    <dt>진행 실적</dt>
+                    <dd>이번 보고 주간에 실제로 수행한 업무입니다. 업무 내용, 완료/진행중 상태, 수행일을 함께 남깁니다.</dd>
+                  </div>
+                  <div>
+                    <dt>리스크/이슈</dt>
+                    <dd>일정 지연, 의사결정 필요, 외부 의존성, 품질 문제처럼 공유가 필요한 위험 요소입니다. 중요도와 함께 작성합니다.</dd>
+                  </div>
+                  <div>
+                    <dt>차주 계획</dt>
+                    <dd>다음 보고 주간에 진행할 예정 업무입니다. 실행할 작업과 목표 일정을 적어 다음 주 추적 기준으로 사용합니다.</dd>
+                  </div>
+                </dl>
+              </div>
+              <ul>
+                <li>모든 과제 입력이 끝나면 작성 완료 상태로 저장합니다.</li>
+              </ul>
+            </li>
+            <li>
+              <h3>보고 라운지 확인</h3>
+              <p>팀원 작성이 끝나면 보고 주간을 완료하고 <strong>주간 보고 라운지</strong>에서 결과를 확인합니다.</p>
+              <ul>
+                <li>완료된 보고 주간별로 멤버 리포트를 열람합니다.</li>
+                <li>과제 현황 하단에서는 과제 기준의 주간보고 이력도 확인할 수 있습니다.</li>
+              </ul>
+            </li>
+          </ol>
+        </div>
+      </article>
+    </div>
   );
 }
 
