@@ -2184,3 +2184,185 @@ input:focus, textarea:focus, select:focus { border-color: var(--wia-blue); box-s
   .sidebar .side-help { margin-top: 12px; }
   .sidebar .side-user { margin-top: 0; }
 }
+
+.mt-daycell.today {
+  position: relative;
+  background: #fff4d8;
+  color: #7a4b00;
+  box-shadow: inset 0 -3px 0 #f0b429;
+}
+.mt-daycell.today .dow { color: #9a6500; font-weight: 950; }
+
+.mt-headercell,
+.mt-row-label {
+  position: sticky;
+  left: 0;
+  z-index: 3;
+}
+.mt-headercell {
+  z-index: 5;
+  box-shadow: 1px 0 0 var(--border), 8px 0 16px rgba(15, 23, 42, .06);
+}
+.mt-row-label {
+  box-shadow: 1px 0 0 var(--border-soft), 8px 0 16px rgba(15, 23, 42, .045);
+}
+.mt-row-label.epic::before,
+.mt-row-label.epic::after {
+  z-index: 1;
+}
+.mt-row-label > * {
+  position: relative;
+  z-index: 2;
+}
+
+.mt-row-label.add-slot {
+  z-index: 4;
+  background: #fff;
+}
+.mt-row-label.add-slot.editing {
+  background: #fff;
+}
+.mt-row-label.add-slot .mt-add-form {
+  width: 100%;
+  min-width: 0;
+}
+.mt-row-label.add-slot .mt-add-form input {
+  width: 100%;
+}
+
+.mt-grid-wrap {
+  --mt-scroll-left: 0px;
+}
+.mt-headercell,
+.mt-row-label {
+  position: relative;
+  left: auto;
+  transform: translateX(var(--mt-scroll-left));
+  width: 240px;
+  min-width: 240px;
+  background: #fff;
+  will-change: transform;
+}
+.mt-headercell,
+.mt-daycell { background-clip: padding-box; }
+.mt-headercell { background: #f7f9fd; }
+.mt-row-label.milestone-label { background: #f7f9fd; }
+.mt-row-label.epic { background: #fff; }
+
+.mt-split-wrap {
+  display: grid;
+  grid-template-columns: 240px minmax(0, 1fr);
+  min-width: 0;
+  border-top: 1px solid var(--border);
+}
+.mt-axis-col {
+  position: relative;
+  z-index: 2;
+  display: grid;
+  align-content: start;
+  width: 240px;
+  min-width: 240px;
+  border-right: 1px solid var(--border);
+  background: #fff;
+  box-shadow: 8px 0 16px rgba(15, 23, 42, .04);
+}
+.mt-calendar-scroll {
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+.mt-calendar-grid {
+  display: grid;
+  min-width: 640px;
+}
+.mt-split-wrap .mt-headercell,
+.mt-split-wrap .mt-row-label {
+  position: relative;
+  left: auto;
+  transform: none;
+  width: auto;
+  min-width: 0;
+  box-shadow: none;
+  will-change: auto;
+}
+.mt-split-wrap .mt-headercell {
+  min-height: 55px;
+  border-bottom: 1px solid var(--border);
+}
+.mt-calendar-grid > .mt-daycell {
+  min-height: 55px;
+}
+.mt-split-wrap .timeline-add-milestone {
+  min-height: 54px;
+  border-bottom: 0;
+}
+.timeline-add-milestone.axis {
+  grid-column: auto;
+  border-right: 0;
+}
+.timeline-add-milestone.calendar {
+  display: flex;
+  align-items: center;
+  background: #fff;
+}
+.timeline-add-milestone.calendar:not(.editing) {
+  border: 0;
+  background: #fff;
+}
+.add-milestone-form.axis-form,
+.add-milestone-form.calendar-form {
+  width: 100%;
+}
+.add-milestone-form.axis-form input[name="mtitle"] {
+  min-width: 0;
+  width: 100%;
+}
+
+.mt-split-wrap {
+  --mt-header-row: 55px;
+  --mt-body-row: 54px;
+}
+.mt-split-wrap .mt-headercell,
+.mt-calendar-grid > .mt-daycell {
+  height: var(--mt-header-row);
+  min-height: var(--mt-header-row);
+}
+.mt-split-wrap .mt-row-label,
+.mt-split-wrap .mt-track,
+.mt-split-wrap .timeline-add-milestone {
+  height: var(--mt-body-row);
+  min-height: var(--mt-body-row);
+  max-height: var(--mt-body-row);
+}
+.mt-split-wrap .mt-row-label {
+  overflow: hidden;
+}
+.mt-split-wrap .mt-row-label > div:first-child {
+  min-width: 0;
+  overflow: hidden;
+}
+.mt-split-wrap .mt-row-label .name,
+.mt-split-wrap .mt-row-label .meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mt-split-wrap .mt-date-inputs,
+.mt-split-wrap .add-milestone-form {
+  flex-wrap: nowrap;
+  min-width: 0;
+  max-height: calc(var(--mt-body-row) - 10px);
+  overflow: hidden;
+}
+.mt-split-wrap .mt-add-form,
+.mt-split-wrap .epic-edit-fields,
+.mt-split-wrap .milestone-edit-fields {
+  min-width: 0;
+  max-height: calc(var(--mt-body-row) - 12px);
+  overflow: hidden;
+}
+.mt-split-wrap .epic-edit-fields input,
+.mt-split-wrap .milestone-edit-fields input,
+.mt-split-wrap .mt-add-form input {
+  min-height: 30px;
+}

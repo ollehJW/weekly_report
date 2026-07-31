@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Plus, Trash2, AudioWaveform, User, ChevronRight, CornerDownRight, Pencil, Save, X, KeyRound, LogOut, Users, ClipboardList, GripVertical, HelpCircle } from 'lucide-react';
 import './styles.css';
@@ -1025,16 +1025,16 @@ function UsageGuideModal({ onClose }) {
           <ol>
             <li>
               <h3>멤버 비밀번호 설정</h3>
-              <p><strong>팀 관리 → 멤버 관리</strong>에서 멤버를 추가한 뒤 초기 비밀번호 상태를 확인합니다.</p>
+              <p><strong>멤버 관리</strong>에서 멤버를 추가한 뒤 초기 비밀번호 상태를 확인합니다.</p>
               <ul>
                 <li>초기 비밀번호는 <code>wia1234!</code>입니다.</li>
                 <li>멤버가 처음 접속하면 개인 비밀번호로 변경해야 합니다.</li>
-                <li>필요하면 팀 관리 화면에서 비밀번호를 초기화하거나 직접 설정합니다.</li>
+                <li>필요하면 멤버 관리 화면에서 비밀번호를 초기화하거나 직접 설정합니다.</li>
               </ul>
             </li>
             <li>
               <h3>새로운 과제 생성</h3>
-              <p><strong>팀 관리 → 과제 관리</strong>에서 과제명을 입력하고 담당 리더와 참여 멤버를 지정합니다.</p>
+              <p><strong>과제 관리</strong>에서 과제명을 입력하고 담당 리더와 참여 멤버를 지정합니다.</p>
               <ul>
                 <li>리더는 1명을 선택하고, 매니저는 여러 명을 선택할 수 있습니다.</li>
                 <li>생성된 과제는 과제 현황과 주간보고 작성 화면에 연결됩니다.</li>
@@ -1050,10 +1050,10 @@ function UsageGuideModal({ onClose }) {
             </li>
             <li>
               <h3>과제 마일스톤 계획 생성</h3>
-              <p><strong>과제 현황</strong>에서 과제를 선택하고 마일스톤과 Epic을 추가합니다.</p>
+              <p><strong>과제 현황</strong>에서 과제를 선택하고 마일스톤과 Work를 추가합니다.</p>
               <ul>
                 <li>마일스톤은 과제의 큰 기간 계획입니다.</li>
-                <li>Epic은 마일스톤 안에서 추적할 세부 작업입니다.</li>
+                <li>Work는 마일스톤 안에서 추적할 세부 작업입니다.</li>
               </ul>
             </li>
             <li>
@@ -1766,7 +1766,7 @@ function WeeklyReportPage({
                         <p>과제별로 이번 주 내용을 작성합니다.</p>
                       </div>
                       <button className={`weekly-exclude-btn${selectedWeeklyProject.status === 'excluded' ? ' active' : ''}`} type="button" onClick={() => onUpdateWeeklyEntryStatus(selectedWeeklyProject.project_id, selectedWeeklyProject.status !== 'excluded')}>
-                        {selectedWeeklyProject.status === 'excluded' ? '제외 해제' : '이번 주 제외'}
+                        {selectedWeeklyProject.status === 'excluded' ? '업무 추가' : '이번 주 제외'}
                       </button>
                     </div>
                     <div className="weekly-entry-list-fields">
@@ -2449,6 +2449,7 @@ function ProjectTimeline({
   const [editingMilestoneId, setEditingMilestoneId] = useState(null);
   const [milestoneEditDraft, setMilestoneEditDraft] = useState({ title: '', start_date: todayIso(), end_date: todayIso() });
   const [editDraft, setEditDraft] = useState({ name: '', owner: '', status: 'planned', start_date: todayIso(), end_date: todayIso() });
+  const timelineScrollRef = useRef(null);
 
   const range = useMemo(() => {
     const dates = milestones.flatMap((milestone) => [milestone.start_date, milestone.end_date]);
@@ -2463,7 +2464,25 @@ function ProjectTimeline({
     days.forEach((day, i) => map.set(isoOf(day), i));
     return map;
   }, [days]);
-  const gridTemplate = `240px repeat(${colCount}, minmax(64px, 1fr))`;
+  const dateGridTemplate = 'repeat(' + colCount + ', minmax(64px, 1fr))';
+  const today = todayIso();
+  const todayIndex = dayIndex.has(today) ? dayIndex.get(today) : -1;
+
+  useEffect(() => {
+    const scroller = timelineScrollRef.current;
+    if (!scroller || todayIndex < 0 || colCount < 1) return;
+    const dayWidth = Math.max(64, scroller.scrollWidth / colCount);
+    const todayLeft = todayIndex * dayWidth;
+    const targetLeft = todayLeft - (scroller.clientWidth - dayWidth) / 2;
+    scroller.scrollLeft = Math.max(0, Math.min(targetLeft, scroller.scrollWidth - scroller.clientWidth));
+  }, [project?.id, todayIndex, colCount, dateGridTemplate]);
+
+  function dayCellClass(day, baseClass, highlightToday = false) {
+    const classes = [baseClass];
+    if (day.getDay() === 1) classes.push('weekend-adjacent');
+    if (highlightToday && isoOf(day) === today) classes.push('today');
+    return classes.join(' ');
+  }
 
   function spanFor(startDate, endDate) {
     const itemDays = businessDaysBetween(startDate, endDate);
@@ -2529,6 +2548,70 @@ function ProjectTimeline({
     setEditingMilestoneId(null);
   }
 
+  function renderMilestoneLabel(milestone, isEditingMilestone) {
+    return (
+      <div className={`mt-row-label milestone-label${isEditingMilestone ? ' editing' : ''}`} key={`axis-${milestone.id}`}>
+        {isEditingMilestone ? (
+          <div className="milestone-edit-fields">
+            <input value={milestoneEditDraft.title} autoFocus onChange={(e) => setMilestoneEditDraft({ ...milestoneEditDraft, title: e.target.value })} onKeyDown={(e) => e.key === 'Enter' && commitEditMilestone(milestone)} />
+            <div className="meta">{milestone.start_date} → {milestone.end_date}</div>
+          </div>
+        ) : (
+          <div>
+            <div className="name">{milestone.title}</div>
+            <div className="meta">{milestone.start_date} → {milestone.end_date}</div>
+          </div>
+        )}
+        <div className="row-actions">
+          {isEditingMilestone ? (
+            <>
+              <button className="mt-icon-action save" onClick={() => commitEditMilestone(milestone)} aria-label="마일스톤 저장"><Save size={13} /></button>
+              <button className="mt-icon-action" onClick={() => setEditingMilestoneId(null)} aria-label="마일스톤 편집 취소"><X size={13} /></button>
+            </>
+          ) : (
+            <>
+              <button className="mt-icon-action always" onClick={() => startEditMilestone(milestone)} aria-label="마일스톤 편집"><Pencil size={13} /></button>
+              <button className="mt-delete always" onClick={() => onRemoveMilestone(milestone.id)} aria-label="마일스톤 삭제"><Trash2 size={13} /></button>
+            </>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  function renderEpicLabel(epic, milestone, isLast, isEditing) {
+    const status = STATUS_STYLE[normalizeStatus(epic.status)] || STATUS_STYLE.planned;
+    return (
+      <div className={`mt-row-label epic${isLast ? ' last' : ''}${isEditing ? ' editing' : ''}`} key={`axis-${epic.id}`}>
+        {isEditing ? (
+          <div className="epic-edit-fields">
+            <input value={editDraft.name} autoFocus onChange={(e) => setEditDraft({ ...editDraft, name: e.target.value })} onKeyDown={(e) => e.key === 'Enter' && commitEditEpic(epic)} />
+            <input value={editDraft.owner} placeholder="담당" onChange={(e) => setEditDraft({ ...editDraft, owner: e.target.value })} onKeyDown={(e) => e.key === 'Enter' && commitEditEpic(epic)} />
+          </div>
+        ) : (
+          <div><div className="name">{epic.title}</div><div className="meta"><span className="mt-avatar"><User size={9} /></span>{epic.owner || '담당 미지정'} · <span className="mt-badge" style={{ background: status.bg, color: status.text }}>{status.label}</span></div></div>
+        )}
+        <div className="row-actions">
+          {isEditing ? (
+            <>
+              <button className="mt-icon-action save" onClick={() => commitEditEpic(epic)} aria-label="Work 저장"><Save size={13} /></button>
+              <button className="mt-icon-action" onClick={() => setEditingEpicId(null)} aria-label="Work 편집 취소"><X size={13} /></button>
+            </>
+          ) : (
+            <>
+              <button className="mt-icon-action" onClick={() => startEditEpic(epic)} aria-label="Work 편집"><Pencil size={13} /></button>
+              <button className="mt-delete" onClick={() => onRemoveEpic(epic.id)} aria-label="Work 삭제"><Trash2 size={13} /></button>
+            </>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  function renderTrackBackgrounds() {
+    return days.map((day, i) => <div key={isoOf(day)} className={dayCellClass(day, 'mt-daybg')} style={{ gridRow: 1, gridColumn: i + 1 }} />);
+  }
+
   return (
     <article className="mt-card project-card">
       <div className="mt-card-head">
@@ -2536,97 +2619,75 @@ function ProjectTimeline({
         <p className="mt-card-sub mono">{range.start} → {range.end} · Milestone {milestones.length}개</p>
       </div>
 
-      <div className="mt-grid-wrap">
-        <div className="mt-grid project-grid" style={{ gridTemplateColumns: gridTemplate }}>
-          <div className="mt-headercell">Milestone / Epic</div>
-          {days.map((day) => (
-            <div key={isoOf(day)} className={`mt-daycell${day.getDay() === 1 ? ' weekend-adjacent' : ''}`}>
-              <div className="num">{String(day.getDate()).padStart(2, '0')}</div>
-              <div className="dow">{DOW[day.getDay()]}</div>
-            </div>
-          ))}
-
+      <div className="mt-split-wrap">
+        <div className="mt-axis-col">
+          <div className="mt-headercell">Milestone / Work</div>
           {milestones.map((milestone) => {
-            const milestoneSpan = spanFor(milestone.start_date, milestone.end_date);
             const isAddingEpic = addingEpicId === milestone.id;
             const isEditingMilestone = editingMilestoneId === milestone.id;
             return (
-              <React.Fragment key={milestone.id}>
-                <div className={`mt-row-label milestone-label${isEditingMilestone ? ' editing' : ''}`}>
-                  {isEditingMilestone ? (
-                    <div className="milestone-edit-fields">
-                      <input value={milestoneEditDraft.title} autoFocus onChange={(e) => setMilestoneEditDraft({ ...milestoneEditDraft, title: e.target.value })} onKeyDown={(e) => e.key === 'Enter' && commitEditMilestone(milestone)} />
-                      <div className="meta">{milestone.start_date} → {milestone.end_date}</div>
-                    </div>
+              <React.Fragment key={`axis-${milestone.id}`}>
+                {renderMilestoneLabel(milestone, isEditingMilestone)}
+                {milestone.epics.map((epic, index) => renderEpicLabel(epic, milestone, index === milestone.epics.length - 1 && !isAddingEpic, editingEpicId === epic.id))}
+                <div className={`mt-row-label epic last add-slot${isAddingEpic ? ' editing' : ''}`}>
+                  {isAddingEpic ? (
+                    <div className="mt-add-form"><input name="name" placeholder="Work 이름" value={epicDraft.name} autoFocus onChange={(e) => setEpicDraft({ ...epicDraft, name: e.target.value })} onKeyDown={(e) => e.key === 'Enter' && commitAddEpic(milestone)} /></div>
                   ) : (
-                    <div>
-                      <div className="name">{milestone.title}</div>
-                      <div className="meta">{milestone.start_date} → {milestone.end_date}</div>
-                    </div>
+                    <button className="mt-add-leaf" onClick={() => startAddEpic(milestone)}><CornerDownRight size={13} />Work 추가</button>
                   )}
-                  <div className="row-actions">
+                </div>
+              </React.Fragment>
+            );
+          })}
+          <div className={`timeline-add-milestone axis${addingMilestone ? ' editing' : ''}`}>
+            {addingMilestone ? (
+              <div className="add-milestone-form axis-form">
+                <input name="mtitle" placeholder="마일스톤 이름" value={milestoneDraft.title} autoFocus onChange={(e) => setMilestoneDraft({ ...milestoneDraft, title: e.target.value })} onKeyDown={(e) => e.key === 'Enter' && onAddMilestone()} />
+              </div>
+            ) : (
+              <button className="add-milestone-btn" onClick={() => setAddingMilestone(true)}><Plus size={15} />마일스톤 추가</button>
+            )}
+          </div>
+        </div>
+
+        <div className="mt-calendar-scroll" ref={timelineScrollRef}>
+          <div className="mt-calendar-grid" style={{ gridTemplateColumns: dateGridTemplate }}>
+            {days.map((day) => (
+              <div key={isoOf(day)} className={dayCellClass(day, 'mt-daycell', true)}>
+                <div className="num">{String(day.getDate()).padStart(2, '0')}</div>
+                <div className="dow">{DOW[day.getDay()]}</div>
+              </div>
+            ))}
+
+            {milestones.map((milestone) => {
+              const milestoneSpan = spanFor(milestone.start_date, milestone.end_date);
+              const isAddingEpic = addingEpicId === milestone.id;
+              const isEditingMilestone = editingMilestoneId === milestone.id;
+              return (
+                <React.Fragment key={`calendar-${milestone.id}`}>
+                  <div className={`mt-track milestone-track${isEditingMilestone ? ' editing' : ''}`} style={{ gridColumn: `1 / span ${colCount}`, gridTemplateColumns: dateGridTemplate }}>
+                    {renderTrackBackgrounds()}
                     {isEditingMilestone ? (
-                      <>
-                        <button className="mt-icon-action save" onClick={() => commitEditMilestone(milestone)} aria-label="마일스톤 저장"><Save size={13} /></button>
-                        <button className="mt-icon-action" onClick={() => setEditingMilestoneId(null)} aria-label="마일스톤 편집 취소"><X size={13} /></button>
-                      </>
+                      <div className="mt-date-inputs milestone-edit-track" style={{ gridColumn: `1 / span ${colCount}` }}>
+                        <input type="date" value={milestoneEditDraft.start_date} onChange={(e) => setMilestoneEditDraft({ ...milestoneEditDraft, start_date: e.target.value })} />
+                        <span>→</span>
+                        <input type="date" value={milestoneEditDraft.end_date} onChange={(e) => setMilestoneEditDraft({ ...milestoneEditDraft, end_date: e.target.value })} />
+                      </div>
                     ) : (
-                      <>
-                        <button className="mt-icon-action always" onClick={() => startEditMilestone(milestone)} aria-label="마일스톤 편집"><Pencil size={13} /></button>
-                        <button className="mt-delete always" onClick={() => onRemoveMilestone(milestone.id)} aria-label="마일스톤 삭제"><Trash2 size={13} /></button>
-                      </>
+                      <div className="milestone-bar" style={{ gridColumn: `${milestoneSpan.startCol + 1} / span ${milestoneSpan.colSpan}` }}>
+                        <AudioWaveform size={14} className="icon" />
+                        <span className="label">{milestone.title}</span>
+                        <span className="count">{milestone.epics.length} works</span>
+                      </div>
                     )}
                   </div>
-                </div>
-                <div className={`mt-track milestone-track${isEditingMilestone ? ' editing' : ''}`} style={{ gridColumn: `2 / span ${colCount}`, gridTemplateColumns: `repeat(${colCount}, 1fr)` }}>
-                  {days.map((day, i) => <div key={isoOf(day)} className={`mt-daybg${day.getDay() === 1 ? ' weekend-adjacent' : ''}`} style={{ gridRow: 1, gridColumn: i + 1 }} />)}
-                  {isEditingMilestone ? (
-                    <div className="mt-date-inputs milestone-edit-track" style={{ gridColumn: `1 / span ${colCount}` }}>
-                      <input type="date" value={milestoneEditDraft.start_date} onChange={(e) => setMilestoneEditDraft({ ...milestoneEditDraft, start_date: e.target.value })} />
-                      <span>→</span>
-                      <input type="date" value={milestoneEditDraft.end_date} onChange={(e) => setMilestoneEditDraft({ ...milestoneEditDraft, end_date: e.target.value })} />
-                    </div>
-                  ) : (
-                    <div className="milestone-bar" style={{ gridColumn: `${milestoneSpan.startCol + 1} / span ${milestoneSpan.colSpan}` }}>
-                      <AudioWaveform size={14} className="icon" />
-                      <span className="label">{milestone.title}</span>
-                      <span className="count">{milestone.epics.length} epics</span>
-                    </div>
-                  )}
-                </div>
 
-                {milestone.epics.map((epic, index) => {
-                  const epicSpan = spanFor(epic.start_date, epic.end_date);
-                  const status = STATUS_STYLE[normalizeStatus(epic.status)] || STATUS_STYLE.planned;
-                  const isLast = index === milestone.epics.length - 1 && !isAddingEpic;
-                  const isEditing = editingEpicId === epic.id;
-                  return (
-                    <React.Fragment key={epic.id}>
-                      <div className={`mt-row-label epic${isLast ? ' last' : ''}${isEditing ? ' editing' : ''}`}>
-                        {isEditing ? (
-                          <div className="epic-edit-fields">
-                            <input value={editDraft.name} autoFocus onChange={(e) => setEditDraft({ ...editDraft, name: e.target.value })} onKeyDown={(e) => e.key === 'Enter' && commitEditEpic(epic)} />
-                            <input value={editDraft.owner} placeholder="담당" onChange={(e) => setEditDraft({ ...editDraft, owner: e.target.value })} onKeyDown={(e) => e.key === 'Enter' && commitEditEpic(epic)} />
-                          </div>
-                        ) : (
-                          <div><div className="name">{epic.title}</div><div className="meta"><span className="mt-avatar"><User size={9} /></span>{epic.owner || '담당 미지정'} · <span className="mt-badge" style={{ background: status.bg, color: status.text }}>{status.label}</span></div></div>
-                        )}
-                        <div className="row-actions">
-                          {isEditing ? (
-                            <>
-                              <button className="mt-icon-action save" onClick={() => commitEditEpic(epic)} aria-label="Epic 저장"><Save size={13} /></button>
-                              <button className="mt-icon-action" onClick={() => setEditingEpicId(null)} aria-label="Epic 편집 취소"><X size={13} /></button>
-                            </>
-                          ) : (
-                            <>
-                              <button className="mt-icon-action" onClick={() => startEditEpic(epic)} aria-label="Epic 편집"><Pencil size={13} /></button>
-                              <button className="mt-delete" onClick={() => onRemoveEpic(epic.id)} aria-label="Epic 삭제"><Trash2 size={13} /></button>
-                            </>
-                          )}
-                        </div>
-                      </div>
-                      <div className="mt-track" style={{ gridColumn: `2 / span ${colCount}`, gridTemplateColumns: `repeat(${colCount}, 1fr)` }}>
-                        {days.map((day, i) => <div key={isoOf(day)} className={`mt-daybg${day.getDay() === 1 ? ' weekend-adjacent' : ''}`} style={{ gridRow: 1, gridColumn: i + 1 }} />)}
+                  {milestone.epics.map((epic, index) => {
+                    const epicSpan = spanFor(epic.start_date, epic.end_date);
+                    const isEditing = editingEpicId === epic.id;
+                    return (
+                      <div className="mt-track" key={`calendar-${epic.id}`} style={{ gridColumn: `1 / span ${colCount}`, gridTemplateColumns: dateGridTemplate }}>
+                        {renderTrackBackgrounds()}
                         {isEditing ? (
                           <div className="mt-date-inputs epic-edit-track" style={{ gridColumn: `1 / span ${colCount}` }}>
                             <select value={editDraft.status} onChange={(e) => setEditDraft({ ...editDraft, status: e.target.value })}>
@@ -2646,47 +2707,37 @@ function ProjectTimeline({
                           </div>
                         )}
                       </div>
-                    </React.Fragment>
-                  );
-                })}
+                    );
+                  })}
 
-                <div className={`mt-row-label epic last add-slot${isAddingEpic ? ' editing' : ''}`}>
-                  {isAddingEpic ? (
-                    <div className="mt-add-form"><input name="name" placeholder="Epic 이름" value={epicDraft.name} autoFocus onChange={(e) => setEpicDraft({ ...epicDraft, name: e.target.value })} onKeyDown={(e) => e.key === 'Enter' && commitAddEpic(milestone)} /></div>
-                  ) : (
-                    <button className="mt-add-leaf" onClick={() => startAddEpic(milestone)}><CornerDownRight size={13} />Epic 추가</button>
-                  )}
-                </div>
-                <div className={`mt-track add-track${isAddingEpic ? ' editing' : ''}`} style={{ gridColumn: `2 / span ${colCount}`, gridTemplateColumns: `repeat(${colCount}, 1fr)` }}>
-                  {days.map((day, i) => <div key={isoOf(day)} className="mt-daybg" style={{ gridRow: 1, gridColumn: i + 1 }} />)}
-                  {isAddingEpic && (
-                    <div className="mt-date-inputs" style={{ gridColumn: `1 / span ${colCount}` }}>
-                      <input placeholder="담당" value={epicDraft.owner} onChange={(e) => setEpicDraft({ ...epicDraft, owner: e.target.value })} />
-                      <input type="date" min={milestone.start_date} max={milestone.end_date} value={epicDraft.start_date} onChange={(e) => setEpicDraft({ ...epicDraft, start_date: e.target.value })} />
-                      <span>→</span>
-                      <input type="date" min={milestone.start_date} max={milestone.end_date} value={epicDraft.end_date} onChange={(e) => setEpicDraft({ ...epicDraft, end_date: e.target.value })} />
-                      <button className="mt-btn primary sm" onMouseDown={(e) => e.preventDefault()} onClick={() => commitAddEpic(milestone)}>추가</button>
-                      <button className="mt-btn sm" onMouseDown={(e) => e.preventDefault()} onClick={() => setAddingEpicId(null)}>취소</button>
-                    </div>
-                  )}
-                </div>
-              </React.Fragment>
-            );
-          })}
+                  <div className={`mt-track add-track${isAddingEpic ? ' editing' : ''}`} style={{ gridColumn: `1 / span ${colCount}`, gridTemplateColumns: dateGridTemplate }}>
+                    {renderTrackBackgrounds()}
+                    {isAddingEpic && (
+                      <div className="mt-date-inputs" style={{ gridColumn: `1 / span ${colCount}` }}>
+                        <input placeholder="담당" value={epicDraft.owner} onChange={(e) => setEpicDraft({ ...epicDraft, owner: e.target.value })} />
+                        <input type="date" min={milestone.start_date} max={milestone.end_date} value={epicDraft.start_date} onChange={(e) => setEpicDraft({ ...epicDraft, start_date: e.target.value })} />
+                        <span>→</span>
+                        <input type="date" min={milestone.start_date} max={milestone.end_date} value={epicDraft.end_date} onChange={(e) => setEpicDraft({ ...epicDraft, end_date: e.target.value })} />
+                        <button className="mt-btn primary sm" onMouseDown={(e) => e.preventDefault()} onClick={() => commitAddEpic(milestone)}>추가</button>
+                        <button className="mt-btn sm" onMouseDown={(e) => e.preventDefault()} onClick={() => setAddingEpicId(null)}>취소</button>
+                      </div>
+                    )}
+                  </div>
+                </React.Fragment>
+              );
+            })}
 
-          <div className={`timeline-add-milestone${addingMilestone ? ' editing' : ''}`} style={{ gridColumn: `1 / span ${colCount + 1}` }}>
-            {addingMilestone ? (
-              <div className="add-milestone-form">
-                <input name="mtitle" placeholder="마일스톤 이름" value={milestoneDraft.title} autoFocus onChange={(e) => setMilestoneDraft({ ...milestoneDraft, title: e.target.value })} onKeyDown={(e) => e.key === 'Enter' && onAddMilestone()} />
-                <input type="date" value={milestoneDraft.start_date} onChange={(e) => setMilestoneDraft({ ...milestoneDraft, start_date: e.target.value })} />
-                <span>→</span>
-                <input type="date" value={milestoneDraft.end_date} onChange={(e) => setMilestoneDraft({ ...milestoneDraft, end_date: e.target.value })} />
-                <button className="mt-btn primary sm" onClick={onAddMilestone}>추가</button>
-                <button className="mt-btn sm" onClick={() => setAddingMilestone(false)}>취소</button>
-              </div>
-            ) : (
-              <button className="add-milestone-btn" onClick={() => setAddingMilestone(true)}><Plus size={15} />마일스톤 추가</button>
-            )}
+            <div className={`timeline-add-milestone calendar${addingMilestone ? ' editing' : ''}`} style={{ gridColumn: `1 / span ${colCount}` }}>
+              {addingMilestone && (
+                <div className="add-milestone-form calendar-form">
+                  <input type="date" value={milestoneDraft.start_date} onChange={(e) => setMilestoneDraft({ ...milestoneDraft, start_date: e.target.value })} />
+                  <span>→</span>
+                  <input type="date" value={milestoneDraft.end_date} onChange={(e) => setMilestoneDraft({ ...milestoneDraft, end_date: e.target.value })} />
+                  <button className="mt-btn primary sm" onClick={onAddMilestone}>추가</button>
+                  <button className="mt-btn sm" onClick={() => setAddingMilestone(false)}>취소</button>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </div>

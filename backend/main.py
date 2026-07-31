@@ -1181,9 +1181,9 @@ def ensure_report_user_entries(conn, report_id: str, user_id: str):
             conn.execute(
                 """
                 INSERT INTO project_entry (entry_id, project_id, is_excluded, progress_log, risk_issue, next_plan, updated_at)
-                VALUES (?, ?, 0, '[]', '[]', '[]', ?)
+                VALUES (?, ?, ?, '[]', '[]', '[]', ?)
                 """,
-                (entry_id, project["project_id"], now),
+                (entry_id, project["project_id"], 1 if project["project_name"] == OTHER_WORK_PROJECT_NAME else 0, now),
             )
     return report
 
