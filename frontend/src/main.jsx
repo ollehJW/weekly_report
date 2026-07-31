@@ -855,7 +855,8 @@ function App() {
           <button className={`side-tab${activePage === 'tasks' ? ' active' : ''}`} type="button" onClick={() => setActivePage('tasks')}>과제 현황</button>
           <button className={`side-tab${activePage === 'weekly-report' ? ' active' : ''}`} type="button" onClick={() => setActivePage('weekly-report')}>주간 보고 작성</button>
           <button className={`side-tab${activePage === 'weekly-lounge' ? ' active' : ''}`} type="button" onClick={() => setActivePage('weekly-lounge')}>주간 보고 라운지</button>
-          <button className={`side-tab${activePage === 'team' ? ' active' : ''}`} type="button" onClick={() => setActivePage('team')}>팀 관리</button>
+          <button className={'side-tab' + (activePage === 'member-management' ? ' active' : '')} type="button" onClick={() => setActivePage('member-management')}>멤버 관리</button>
+          <button className={'side-tab' + (activePage === 'project-management' ? ' active' : '')} type="button" onClick={() => setActivePage('project-management')}>과제 관리</button>
           {isAdminAccount && <button className={`side-tab${activePage === 'accounts' ? ' active' : ''}`} type="button" onClick={() => setActivePage('accounts')}>계정 관리</button>}
         </nav>
 
@@ -961,9 +962,10 @@ function App() {
           />
         )}
         {activePage === 'weekly-lounge' && <WeeklyReportLoungePage currentTeam={currentTeam} />}
-        {activePage === 'team' && (
+        {(activePage === 'member-management' || activePage === 'project-management') && (
           <TeamManagementPage
-            activeTeamTab={activeTeamTab}
+            activeTeamTab={activePage === 'member-management' ? 'members' : 'tasks'}
+            showTabs={false}
             setActiveTeamTab={setActiveTeamTab}
             currentTeam={currentTeam}
             members={members}
@@ -1448,7 +1450,7 @@ function TeamCalendar({ currentTeam, members }) {
                   </label>
                   <div className="team-calendar-scope" role="group" aria-label="일정 범위">
                     <button className={draft.event_type === 'team' ? 'team active' : 'team'} type="button" onClick={() => setDraft({ ...draft, event_type: 'team', member_ids: [] })}>팀 일정</button>
-                    <button className={isPersonalDraft ? 'personal active' : 'personal'} type="button" onClick={() => setDraft({ ...draft, event_type: isPersonalDraft ? draft.event_type : 'vacation', member_ids: draft.member_ids.length ? draft.member_ids : members.map((member) => member.user_id) })}>개인 일정</button>
+                    <button className={isPersonalDraft ? 'personal active' : 'personal'} type="button" onClick={() => setDraft({ ...draft, event_type: isPersonalDraft ? draft.event_type : 'vacation', member_ids: draft.member_ids })}>개인 일정</button>
                   </div>
                   {isPersonalDraft && (
                     <div className="team-calendar-subtype" role="group" aria-label="개인 일정 유형">
@@ -1459,7 +1461,7 @@ function TeamCalendar({ currentTeam, members }) {
                             key={type}
                             className={`${meta.className}${draft.event_type === type ? ' active' : ''}`}
                             type="button"
-                            onClick={() => setDraft({ ...draft, event_type: type, member_ids: draft.member_ids.length ? draft.member_ids : members.map((member) => member.user_id) })}
+                            onClick={() => setDraft({ ...draft, event_type: type, member_ids: draft.member_ids })}
                           >
                             {meta.label}
                           </button>
@@ -2116,20 +2118,25 @@ function LoginPage({ loginDraft, setLoginDraft, onLogin, teams, teamDraft, setTe
 }
 
 
-function TeamManagementPage({ activeTeamTab, setActiveTeamTab, currentTeam, members, teamProjects, teamProjectDraft, setTeamProjectDraft, isProjectModalOpen, setIsProjectModalOpen, editingTeamProjectId, setEditingTeamProjectId, projectAssignmentDrafts, setProjectAssignmentDrafts, memberDraft, setMemberDraft, memberPasswordDrafts, setMemberPasswordDrafts, onCreateMember, onCreateTeamProject, onEditTeamProject, onSaveProjectMembers, onUpdateTeamProjectStatus, onDeleteTeamProject, onDeleteMember, onUpdateMemberRole, onSetMemberPassword, onResetMemberPassword, onReorderMembers, draggingMemberId, setDraggingMemberId }) {
+function TeamManagementPage({ activeTeamTab, setActiveTeamTab, showTabs = true, currentTeam, members, teamProjects, teamProjectDraft, setTeamProjectDraft, isProjectModalOpen, setIsProjectModalOpen, editingTeamProjectId, setEditingTeamProjectId, projectAssignmentDrafts, setProjectAssignmentDrafts, memberDraft, setMemberDraft, memberPasswordDrafts, setMemberPasswordDrafts, onCreateMember, onCreateTeamProject, onEditTeamProject, onSaveProjectMembers, onUpdateTeamProjectStatus, onDeleteTeamProject, onDeleteMember, onUpdateMemberRole, onSetMemberPassword, onResetMemberPassword, onReorderMembers, draggingMemberId, setDraggingMemberId }) {
+  const pageTitle = activeTeamTab === 'members' ? '멤버 관리' : '과제 관리';
+  const pageDescription = activeTeamTab === 'members'
+    ? currentTeam.department + ' 팀의 멤버와 비밀번호를 관리합니다'
+    : currentTeam.department + ' 팀의 과제 기준 정보와 참여자를 관리합니다';
+
   return (
     <>
       <div className="page-head">
         <div>
-          <h1>팀 관리</h1>
-          <p>{currentTeam.department} 팀의 멤버와 과제 기준 정보를 관리합니다</p>
+          <h1>{pageTitle}</h1>
+          <p>{pageDescription}</p>
         </div>
       </div>
 
-      <div className="subtab-row">
+      {showTabs && <div className="subtab-row">
         <button className={`subtab${activeTeamTab === 'members' ? ' active' : ''}`} type="button" onClick={() => setActiveTeamTab('members')}><Users size={15} />멤버 관리</button>
         <button className={`subtab${activeTeamTab === 'tasks' ? ' active' : ''}`} type="button" onClick={() => setActiveTeamTab('tasks')}><ClipboardList size={15} />과제 관리</button>
-      </div>
+      </div>}
 
       {activeTeamTab === 'members' ? (
         <section className="account-card">
