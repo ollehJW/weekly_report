@@ -2366,3 +2366,10 @@ input:focus, textarea:focus, select:focus { border-color: var(--wia-blue); box-s
 .mt-split-wrap .mt-add-form input {
   min-height: 30px;
 }
+.team-calendar-event-placeholder {
+  display: block;
+  height: 26px;
+  min-height: 26px;
+  pointer-events: none;
+  visibility: hidden;
+}

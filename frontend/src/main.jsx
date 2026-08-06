@@ -1274,6 +1274,52 @@ function TeamCalendar({ currentTeam, members }) {
     return events.filter((item) => item.start_date <= iso && iso <= item.end_date);
   }
 
+  const calendarEventLayout = useMemo(() => {
+    const layout = new Map();
+    calendarDays.forEach((day) => layout.set(day.iso, []));
+
+    for (let weekStart = 0; weekStart < calendarDays.length; weekStart += 7) {
+      const week = calendarDays.slice(weekStart, weekStart + 7);
+      const weekFirst = week[0]?.iso;
+      const weekLast = week[week.length - 1]?.iso;
+      if (!weekFirst || !weekLast) continue;
+
+      const lanes = [];
+      const weekEvents = sortEvents(events.filter((item) => item.start_date <= weekLast && item.end_date >= weekFirst));
+
+      week.forEach((day) => layout.set(day.iso, []));
+
+      weekEvents.forEach((item) => {
+        const start = item.start_date < weekFirst ? weekFirst : item.start_date;
+        const end = item.end_date > weekLast ? weekLast : item.end_date;
+        let laneIndex = lanes.findIndex((laneEnd) => laneEnd < start);
+        if (laneIndex === -1) {
+          laneIndex = lanes.length;
+          lanes.push(end);
+        } else {
+          lanes[laneIndex] = end;
+        }
+
+        week.forEach((day) => {
+          if (start <= day.iso && day.iso <= end) {
+            const slots = layout.get(day.iso) || [];
+            while (slots.length <= laneIndex) slots.push(null);
+            slots[laneIndex] = item;
+            layout.set(day.iso, slots);
+          }
+        });
+      });
+
+      week.forEach((day) => {
+        const slots = layout.get(day.iso) || [];
+        while (slots.length < lanes.length) slots.push(null);
+        layout.set(day.iso, slots);
+      });
+    }
+
+    return layout;
+  }, [calendarDays, events]);
+
   function setMemberSelected(userId, selected) {
     setDraft((prev) => {
       const ids = new Set(prev.member_ids);
@@ -1345,6 +1391,7 @@ function TeamCalendar({ currentTeam, members }) {
       <div className="team-calendar-grid">
         {calendarDays.map((day) => {
           const dayEvents = eventsForDate(day.iso);
+          const dayEventSlots = calendarEventLayout.get(day.iso) || [];
           return (
             <div
               key={day.iso}
@@ -1366,7 +1413,8 @@ function TeamCalendar({ currentTeam, members }) {
             >
               <span className="team-calendar-day-num">{day.day}</span>
               <span className="team-calendar-events">
-                {dayEvents.slice(0, 3).map((item) => {
+                {dayEventSlots.slice(0, 3).map((item, laneIndex) => {
+                  if (!item) return <span key={`empty-${day.iso}-${laneIndex}`} className="team-calendar-event-placeholder" aria-hidden="true" />;
                   const meta = calendarEventTypeMeta(item.event_type);
                   const isPersonal = PERSONAL_CALENDAR_EVENT_TYPES.includes(item.event_type) || item.event_type === 'personal';
                   const peopleLabel = item.members?.length ? item.members.map((member) => `${member.name} ${member.role}`).join(', ') : '인원 없음';
@@ -1378,7 +1426,7 @@ function TeamCalendar({ currentTeam, members }) {
                   const spanClass = isMultiDay ? `${startsHere ? ' span-start' : ' span-mid'}${endsHere ? ' span-end' : ''}` : ' span-single';
                   return (
                     <button
-                      key={item.event_id}
+                      key={`${item.event_id}-${laneIndex}`}
                       className={`team-calendar-event ${meta.className}${spanClass}`}
                       type="button"
                       title={tooltip}
