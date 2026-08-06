@@ -1164,7 +1164,7 @@ def ensure_report_user_entries(conn, report_id: str, user_id: str):
     ensure_other_work_project(conn, report["team_id"], user_id)
     projects = conn.execute(
         """
-        SELECT DISTINCT p.project_id
+        SELECT DISTINCT p.project_id, p.project_name
         FROM project p
         JOIN project_members pm ON pm.project_id = p.project_id
         WHERE p.team_id = ? AND p.status = 'in_progress' AND pm.user_id = ?
