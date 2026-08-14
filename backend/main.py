@@ -1688,9 +1688,15 @@ def list_completed_reports(team_id: str):
         ensure_team(conn, team_id)
         rows = conn.execute(
             """
-            SELECT * FROM reports
-            WHERE team_id = ? AND status = 'done'
-            ORDER BY start_date DESC, end_date DESC, created_at DESC
+            SELECT DISTINCT r.*
+            FROM reports r
+            LEFT JOIN report_entries re ON re.report_id = r.report_id
+            WHERE r.team_id = ?
+              AND (
+                r.status = 'done'
+                OR (r.status = 'in_progress' AND re.status = 'done')
+              )
+            ORDER BY r.start_date DESC, r.end_date DESC, r.created_at DESC
             """,
             (team_id,),
         ).fetchall()
@@ -1713,6 +1719,21 @@ def get_active_report(team_id: str):
         return report_with_entries(conn, row) if row else None
 
 
+@app.get("/api/teams/{team_id}/reports/active-list")
+def list_active_reports(team_id: str):
+    with get_conn() as conn:
+        ensure_team(conn, team_id)
+        rows = conn.execute(
+            """
+            SELECT * FROM reports
+            WHERE team_id = ? AND status = 'in_progress'
+            ORDER BY start_date DESC, end_date DESC, created_at DESC
+            """,
+            (team_id,),
+        ).fetchall()
+        return [report_with_entries(conn, row) for row in rows]
+
+
 @app.post("/api/teams/{team_id}/reports", status_code=201)
 def create_report(team_id: str, payload: ReportIn):
     ensure_range(payload.start_date, payload.end_date)
@@ -1720,12 +1741,6 @@ def create_report(team_id: str, payload: ReportIn):
     report_id = str(uuid.uuid4())
     with get_conn() as conn:
         ensure_team(conn, team_id)
-        existing = conn.execute(
-            "SELECT report_id FROM reports WHERE team_id = ? AND status = 'in_progress' LIMIT 1",
-            (team_id,),
-        ).fetchone()
-        if existing:
-            raise HTTPException(status_code=409, detail="이미 진행중인 보고가 있습니다")
         conn.execute(
             """
             INSERT INTO reports (report_id, team_id, start_date, end_date, status, created_at)

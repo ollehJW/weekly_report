@@ -167,7 +167,7 @@ function App() {
   const [error, setError] = useState('');
   const [addingMilestone, setAddingMilestone] = useState(false);
   const [milestoneDraft, setMilestoneDraft] = useState({ title: '', start_date: todayIso(), end_date: plusDays(todayIso(), 14) });
-  const [weeklyReport, setWeeklyReport] = useState(null);
+  const [weeklyReports, setWeeklyReports] = useState([]);
   const [weeklyReportDraft, setWeeklyReportDraft] = useState({ start_date: todayIso(), end_date: plusDays(todayIso(), 7) });
   const [isWeeklyReportModalOpen, setIsWeeklyReportModalOpen] = useState(false);
   const [weeklyWarningMessage, setWeeklyWarningMessage] = useState('');
@@ -191,6 +191,7 @@ function App() {
   const [isUsageGuideOpen, setIsUsageGuideOpen] = useState(false);
 
   const selectedProject = projects.find((project) => project.id === selectedProjectId) || null;
+  const weeklyReport = weeklyReports[0] || null;
   const selectedTeamProject = teamProjects.find((project) => project.project_id === selectedProjectId) || null;
   const isAdminAccount = currentTeam?.login_id === 'admin';
 
@@ -262,11 +263,16 @@ function App() {
 
   async function loadWeeklyReport(teamId = currentTeam?.team_id) {
     if (!teamId) {
-      setWeeklyReport(null);
+      setWeeklyReports([]);
       return;
     }
-    const report = await request(`/api/teams/${teamId}/reports/active`);
-    setWeeklyReport(report);
+    const reports = await request(`/api/teams/${teamId}/reports/active-list`);
+    setWeeklyReports(reports || []);
+  }
+
+  function updateWeeklyReportState(report) {
+    if (!report?.report_id) return;
+    setWeeklyReports((prev) => prev.map((item) => (item.report_id === report.report_id ? report : item)));
   }
 
   async function refresh(projectId) {
@@ -681,16 +687,11 @@ function App() {
         method: 'POST',
         body: JSON.stringify(weeklyReportDraft),
       });
-      setWeeklyReport(report);
+      setWeeklyReports((prev) => [report, ...prev.filter((item) => item.report_id !== report.report_id)]);
       setIsWeeklyReportModalOpen(false);
       setError('');
     } catch (err) {
-      if (err.message === '이미 진행중인 보고가 있습니다') {
-        setWeeklyWarningMessage(err.message);
-        setError('');
-      } else {
-        setError(err.message);
-      }
+      setError(err.message);
     }
   }
 
@@ -698,7 +699,7 @@ function App() {
     if (!reportId) return;
     try {
       await request(`/api/reports/${reportId}`, { method: 'DELETE' });
-      setWeeklyReport(null);
+      setWeeklyReports((prev) => prev.filter((report) => report.report_id !== reportId));
       setWeeklyPasswordEntry(null);
       setWeeklyPasswordDraft('');
       closeWeeklyEntryModal();
@@ -713,7 +714,7 @@ function App() {
     if (!reportId) return;
     try {
       await request(`/api/reports/${reportId}/complete`, { method: 'PUT' });
-      setWeeklyReport(null);
+      setWeeklyReports((prev) => prev.filter((report) => report.report_id !== reportId));
       setWeeklyPasswordEntry(null);
       setWeeklyPasswordDraft('');
       closeWeeklyEntryModal();
@@ -724,21 +725,21 @@ function App() {
     }
   }
 
-  async function toggleWeeklyAbsence(member) {
-    if (!weeklyReport?.report_id) return;
+  async function toggleWeeklyAbsence(report, member) {
+    if (!report?.report_id) return;
     try {
-      const report = await request(`/api/reports/${weeklyReport.report_id}/users/${member.user_id}/absence`, { method: 'PUT' });
-      setWeeklyReport(report);
+      const updatedReport = await request(`/api/reports/${report.report_id}/users/${member.user_id}/absence`, { method: 'PUT' });
+      updateWeeklyReportState(updatedReport);
       setError('');
     } catch (err) {
       setError(err.message);
     }
   }
 
-  async function openWeeklyReportPreview(member) {
-    if (!weeklyReport?.report_id || member.status !== 'done') return;
+  async function openWeeklyReportPreview(report, member) {
+    if (!report?.report_id || member.status !== 'done') return;
     try {
-      const result = await request(`/api/reports/${weeklyReport.report_id}/users/${member.user_id}/html-report`);
+      const result = await request(`/api/reports/${report.report_id}/users/${member.user_id}/html-report`);
       setWeeklyReportPreview({ member, html: result.html || '' });
       setError('');
     } catch (err) {
@@ -746,19 +747,19 @@ function App() {
     }
   }
 
-  function openWeeklyPassword(entry) {
-    setWeeklyPasswordEntry(entry);
+  function openWeeklyPassword(report, entry) {
+    setWeeklyPasswordEntry({ ...entry, report_id: report.report_id, report_period: `${report.start_date} ~ ${report.end_date}` });
     setWeeklyPasswordDraft('');
     setError('');
   }
 
   async function authorizeWeeklyEntry() {
-    if (!weeklyPasswordEntry || !weeklyPasswordDraft || !weeklyReport?.report_id) {
+    if (!weeklyPasswordEntry || !weeklyPasswordDraft || !weeklyPasswordEntry.report_id) {
       setError('비밀번호를 입력하세요');
       return;
     }
     try {
-      const result = await request(`/api/reports/${weeklyReport.report_id}/users/${weeklyPasswordEntry.user_id}/authorize`, {
+      const result = await request(`/api/reports/${weeklyPasswordEntry.report_id}/users/${weeklyPasswordEntry.user_id}/authorize`, {
         method: 'POST',
         body: JSON.stringify({ password: weeklyPasswordDraft }),
       });
@@ -791,7 +792,7 @@ function App() {
         body: JSON.stringify(payload),
       });
       const savedStatus = payload.progress_log.length || payload.risk_issue.length || payload.next_plan.length ? 'done' : 'pending';
-      setWeeklyReport(report);
+      updateWeeklyReportState(report);
       setWeeklyEntryProjects((prev) => prev.map((item) => (item.project_id === project.project_id ? { ...item, ...payload, is_excluded: false, status: savedStatus } : item)));
       setError('');
     } catch (err) {
@@ -807,7 +808,7 @@ function App() {
         method: 'PUT',
         body: JSON.stringify({ is_excluded: isExcluded }),
       });
-      setWeeklyReport(report);
+      updateWeeklyReportState(report);
       setWeeklyEntryProjects((prev) => prev.map((item) => (item.project_id === project.project_id ? { ...item, is_excluded: isExcluded, status: isExcluded ? 'excluded' : 'pending', progress_log: isExcluded ? [] : item.progress_log, risk_issue: isExcluded ? [] : item.risk_issue, next_plan: isExcluded ? [] : item.next_plan } : item)));
       if (selectedWeeklyEntryId === project.project_id && isExcluded) {
         setWeeklyEntryDraft(emptyWeeklyEntryDraft());
@@ -883,7 +884,7 @@ function App() {
             members={members}
             projects={projects}
             teamProjects={teamProjects}
-            weeklyReport={weeklyReport}
+            weeklyReports={weeklyReports}
           />
         )}
         {activePage === 'tasks' && (
@@ -930,7 +931,7 @@ function App() {
         {activePage === 'weekly-report' && (
           <WeeklyReportPage
             members={members}
-            weeklyReport={weeklyReport}
+            weeklyReports={weeklyReports}
             weeklyReportDraft={weeklyReportDraft}
             setWeeklyReportDraft={setWeeklyReportDraft}
             isWeeklyReportModalOpen={isWeeklyReportModalOpen}
@@ -1108,7 +1109,8 @@ function UsageGuideModal({ onClose }) {
   );
 }
 
-function TeamStatusPage({ currentTeam, members, projects, teamProjects, weeklyReport }) {
+function TeamStatusPage({ currentTeam, members, projects, teamProjects, weeklyReports }) {
+  const weeklyReport = weeklyReports[0] || null;
   const activeProjects = teamProjects.filter((project) => project.status !== 'done');
   const doneProjects = teamProjects.filter((project) => project.status === 'done');
   const reportEntries = weeklyReport?.members || [];
@@ -1579,7 +1581,7 @@ function TeamCalendar({ currentTeam, members }) {
 
 function WeeklyReportPage({
   members,
-  weeklyReport,
+  weeklyReports,
   weeklyReportDraft,
   setWeeklyReportDraft,
   isWeeklyReportModalOpen,
@@ -1609,12 +1611,10 @@ function WeeklyReportPage({
   onUpdateWeeklyEntryStatus,
   onCloseWeeklyEntryModal,
 }) {
-  const entries = weeklyReport?.entries || [];
   const activeEntryName = weeklyPasswordEntry ? `${weeklyPasswordEntry.name} ${weeklyPasswordEntry.role}` : '';
   const writingEntryName = weeklyWritingEntry ? `${weeklyWritingEntry.name} ${weeklyWritingEntry.role}` : '';
   const selectedWeeklyProject = weeklyEntryProjects.find((project) => project.project_id === selectedWeeklyEntryId) || null;
-  const reportMembers = weeklyReport?.members || [];
-  const canCompleteReport = reportMembers.length > 0 && reportMembers.every((member) => member.status === 'done' || member.status === 'absent');
+  const hasWeeklyReports = weeklyReports.length > 0;
 
   function updateProgressItem(index, key, value) {
     setWeeklyEntryDraft((prev) => ({ ...prev, progress_log: prev.progress_log.map((item, i) => (i === index ? { ...item, [key]: value } : item)) }));
@@ -1670,35 +1670,41 @@ function WeeklyReportPage({
         <button className="weekly-open-btn" type="button" onClick={() => setIsWeeklyReportModalOpen(true)}><Plus size={16} />새 보고 주간 개설</button>
       </div>
 
-      {weeklyReport ? (
-        <section className="weekly-report-section">
-          <div className="weekly-report-head">
-            <div>
-              <h2>진행중인 보고</h2>
-              <p>{weeklyReport.start_date} ~ {weeklyReport.end_date}</p>
-            </div>
-            <div className="weekly-report-head-actions">
-              <button className="weekly-complete-btn" type="button" disabled={!canCompleteReport} title={canCompleteReport ? '보고를 완료합니다' : '모든 멤버가 작성 완료 또는 부재 상태여야 활성화됩니다'} onClick={() => onCompleteWeeklyReport(weeklyReport.report_id)}>완료</button>
-              <button className="weekly-delete-btn" type="button" onClick={() => onDeleteWeeklyReport(weeklyReport.report_id)}>삭제</button>
-            </div>
-          </div>
-          <div className="weekly-member-grid">
-            {(weeklyReport.members || []).map((member) => (
-              <article className={`weekly-member-card${member.status === 'absent' ? ' absent' : ''}${member.status === 'done' ? ' done' : ''}`} key={member.user_id}>
-                <div className="weekly-card-main">
-                  <strong>{member.name} {member.role}</strong>
-                  <span className={`weekly-status-pill ${member.status || 'pending'}`}>{member.status === 'done' ? '작성 완료' : member.status === 'progress' ? '작성중' : member.status === 'absent' ? '부재' : '대기'}</span>
+      {hasWeeklyReports ? (
+        weeklyReports.map((weeklyReport, index) => {
+          const reportMembers = weeklyReport?.members || [];
+          const canCompleteReport = reportMembers.length > 0 && reportMembers.every((member) => member.status === 'done' || member.status === 'absent');
+          return (
+            <section className="weekly-report-section" key={weeklyReport.report_id}>
+              <div className="weekly-report-head">
+                <div>
+                  <h2>{index === 0 ? '진행중인 보고' : '진행중인 보고'}</h2>
+                  <p>{weeklyReport.start_date} ~ {weeklyReport.end_date}</p>
                 </div>
-                <div className="weekly-card-actions three">
-                  <button className={`weekly-card-btn${member.status === 'absent' ? ' active' : ''}`} type="button" onClick={() => onToggleWeeklyAbsence(member)}>부재</button>
-                  <button className="weekly-card-btn primary" type="button" disabled={member.status === 'absent'} onClick={() => onOpenWeeklyPassword(member)}>작성</button>
-                  <button className="weekly-card-btn report" type="button" disabled={member.status !== 'done'} title={member.status === 'done' ? '작성 리포트를 봅니다' : '작성 완료 후 리포트를 볼 수 있습니다'} onClick={() => onOpenWeeklyReportPreview(member)}>리포트</button>
+                <div className="weekly-report-head-actions">
+                  <button className="weekly-complete-btn" type="button" disabled={!canCompleteReport} title={canCompleteReport ? '보고를 완료합니다' : '모든 멤버가 작성 완료 또는 부재 상태여야 활성화됩니다'} onClick={() => onCompleteWeeklyReport(weeklyReport.report_id)}>완료</button>
+                  <button className="weekly-delete-btn" type="button" onClick={() => onDeleteWeeklyReport(weeklyReport.report_id)}>삭제</button>
                 </div>
-              </article>
-            ))}
-            {(weeklyReport.members || []).length === 0 && <div className="empty compact">보고 대상 멤버가 없습니다</div>}
-          </div>
-        </section>
+              </div>
+              <div className="weekly-member-grid">
+                {reportMembers.map((member) => (
+                  <article className={`weekly-member-card${member.status === 'absent' ? ' absent' : ''}${member.status === 'done' ? ' done' : ''}`} key={`${weeklyReport.report_id}-${member.user_id}`}>
+                    <div className="weekly-card-main">
+                      <strong>{member.name} {member.role}</strong>
+                      <span className={`weekly-status-pill ${member.status || 'pending'}`}>{member.status === 'done' ? '작성 완료' : member.status === 'progress' ? '작성중' : member.status === 'absent' ? '부재' : '대기'}</span>
+                    </div>
+                    <div className="weekly-card-actions three">
+                      <button className={`weekly-card-btn${member.status === 'absent' ? ' active' : ''}`} type="button" onClick={() => onToggleWeeklyAbsence(weeklyReport, member)}>부재</button>
+                      <button className="weekly-card-btn primary" type="button" disabled={member.status === 'absent'} onClick={() => onOpenWeeklyPassword(weeklyReport, member)}>작성</button>
+                      <button className="weekly-card-btn report" type="button" disabled={member.status !== 'done'} title={member.status === 'done' ? '작성 리포트를 봅니다' : '작성 완료 후 리포트를 볼 수 있습니다'} onClick={() => onOpenWeeklyReportPreview(weeklyReport, member)}>리포트</button>
+                    </div>
+                  </article>
+                ))}
+                {reportMembers.length === 0 && <div className="empty compact">보고 대상 멤버가 없습니다</div>}
+              </div>
+            </section>
+          );
+        })
       ) : (
         <section className="weekly-report-section">
           <div className="weekly-report-head">
@@ -1761,7 +1767,7 @@ function WeeklyReportPage({
             <div className="project-modal-head">
               <div>
                 <h2 id="weekly-password-title">비밀번호 확인</h2>
-                <p>{activeEntryName} 보고 작성을 시작합니다.</p>
+                <p>{weeklyPasswordEntry?.report_period ? `${weeklyPasswordEntry.report_period} · ` : ''}{activeEntryName} 보고 작성을 시작합니다.</p>
               </div>
               <button className="icon-btn" type="button" onClick={() => setWeeklyPasswordEntry(null)} aria-label="닫기"><X size={16} /></button>
             </div>
@@ -1958,18 +1964,21 @@ function WeeklyReportLoungePage({ currentTeam }) {
       <section className="weekly-lounge-layout">
         <div className="weekly-lounge-list">
           <div className="weekly-lounge-head">
-            <h2>완료된 주간보고</h2>
+            <h2>주간보고 목록</h2>
             <span>{completedReports.length}</span>
           </div>
           {loadingReports && <div className="empty compact">불러오는 중입니다</div>}
-          {!loadingReports && completedReports.length === 0 && <div className="empty compact">완료된 주간보고가 없습니다</div>}
+          {!loadingReports && completedReports.length === 0 && <div className="empty compact">열람 가능한 주간보고가 없습니다</div>}
           {!loadingReports && completedReports.map((report) => {
             const doneCount = (report.members || []).filter((member) => member.status === 'done').length;
             const absentCount = (report.members || []).filter((member) => member.status === 'absent').length;
             return (
               <button className={`weekly-lounge-card${selectedReport?.report_id === report.report_id ? ' active' : ''}`} type="button" key={report.report_id} onClick={() => openCompletedReport(report)}>
-                <strong>{report.start_date} ~ {report.end_date}</strong>
-                <span>수집 완료 {doneCount}명 · 부재 {absentCount}명</span>
+                <span className="weekly-lounge-card-title">
+                  <strong>{report.start_date} ~ {report.end_date}</strong>
+                  <b className={`weekly-lounge-status ${report.status === 'done' ? 'done' : 'progress'}`}>{report.status === 'done' ? '완료' : '작성중'}</b>
+                </span>
+                <span>작성 완료 {doneCount}명 · 부재 {absentCount}명</span>
               </button>
             );
           })}
@@ -1987,10 +1996,10 @@ function WeeklyReportLoungePage({ currentTeam }) {
                 {completedMembers.length === 0 && <span>수집 완료된 멤버가 없습니다</span>}
               </div>
               {loungeError && <div className="error compact">{loungeError}</div>}
-              {reportHtml ? <iframe className="weekly-lounge-frame" title="완료된 주간 업무 리포트" srcDoc={reportHtml} /> : !loungeError && <div className="empty">리포트를 선택하세요</div>}
+              {reportHtml ? <iframe className="weekly-lounge-frame" title="주간 업무 리포트" srcDoc={reportHtml} /> : !loungeError && <div className="empty">리포트를 선택하세요</div>}
             </>
           ) : (
-            <div className="empty weekly-lounge-empty">완료된 주간보고 카드를 선택하세요</div>
+            <div className="empty weekly-lounge-empty">주간보고 카드를 선택하세요</div>
           )}
         </div>
       </section>
