@@ -1,4 +1,5 @@
-from contextlib import asynccontextmanager
+import asyncio
+from contextlib import asynccontextmanager, suppress
 from datetime import date, datetime, timedelta
 import html
 from pathlib import Path
@@ -7,6 +8,7 @@ import json
 import secrets
 import sqlite3
 import uuid
+from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -19,6 +21,9 @@ WEEKLY_REPORT_TEMPLATE_PATH = Path(__file__).resolve().parent / "templates" / "w
 PROJECT_REPORT_TEMPLATE_PATH = Path(__file__).resolve().parent / "templates" / "project_report_static.html"
 INITIAL_PASSWORD = "wia1234!"
 OTHER_WORK_PROJECT_NAME = "기타 업무 (교육/출장 등)"
+KST = ZoneInfo("Asia/Seoul")
+WEEKLY_REPORT_SCHEDULE_WEEKDAY = 4
+WEEKLY_REPORT_SCHEDULE_HOUR = 17
 
 
 def get_conn():
@@ -341,10 +346,61 @@ def init_db():
 
 
 
+def scheduled_weekly_report_period(now_kst=None):
+    now_kst = now_kst or datetime.now(KST)
+    days_since_friday = (now_kst.weekday() - WEEKLY_REPORT_SCHEDULE_WEEKDAY) % 7
+    start = now_kst.date() - timedelta(days=days_since_friday)
+    due_at = datetime(
+        start.year,
+        start.month,
+        start.day,
+        WEEKLY_REPORT_SCHEDULE_HOUR,
+        0,
+        0,
+        tzinfo=KST,
+    )
+    if now_kst < due_at:
+        return None
+    return start, start + timedelta(days=6)
+
+
+def seconds_until_next_weekly_report_schedule(now_kst=None):
+    now_kst = now_kst or datetime.now(KST)
+    days_until_friday = (WEEKLY_REPORT_SCHEDULE_WEEKDAY - now_kst.weekday()) % 7
+    target_date = now_kst.date() + timedelta(days=days_until_friday)
+    target_at = datetime(
+        target_date.year,
+        target_date.month,
+        target_date.day,
+        WEEKLY_REPORT_SCHEDULE_HOUR,
+        0,
+        0,
+        tzinfo=KST,
+    )
+    if target_at <= now_kst:
+        target_at += timedelta(days=7)
+    return max(1, int((target_at - now_kst).total_seconds()))
+
+
+async def weekly_report_scheduler():
+    while True:
+        try:
+            create_due_weekly_reports()
+        except Exception as exc:
+            print(f"weekly report scheduler failed: {exc}", flush=True)
+        await asyncio.sleep(seconds_until_next_weekly_report_schedule())
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
-    yield
+    scheduler_task = asyncio.create_task(weekly_report_scheduler())
+    try:
+        yield
+    finally:
+        scheduler_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await scheduler_task
 
 
 app = FastAPI(title="WiaReport API", lifespan=lifespan)
@@ -718,8 +774,15 @@ def report_progress_sort_value(row):
     return (0 if row["status"] == "done" else 1, report_date_sort_value(row["date"]))
 
 
-def render_report_empty():
-    return '<div class="empty">작성 내용 없음</div>'
+def render_report_block(title, body_html, class_name="block"):
+    if not str(body_html or "").strip():
+        return ""
+    return f"""
+          <section class="{class_name}">
+            <h3><span class="bar"></span>{title}</h3>
+            {body_html}
+          </section>
+    """
 
 
 def progress_status_label(value):
@@ -745,7 +808,7 @@ def render_report_progress(items):
             rows.append({"log": log, "status": status, "date": date_value})
     rows.sort(key=report_progress_sort_value)
     if not rows:
-        return render_report_empty()
+        return ""
     items_html = []
     for row in rows:
         date_html = f'<span class="pdate">{escape_html(format_report_due(row["date"]))}</span>' if row["date"] else ""
@@ -781,7 +844,7 @@ def render_report_risks(items):
             rows.append({"issue": issue, "importance": importance})
     rows.sort(key=lambda row: (report_importance_sort_value(row["importance"]), row["issue"]))
     if not rows:
-        return render_report_empty()
+        return ""
     items_html = []
     for row in rows:
         level = report_importance_class(row["importance"])
@@ -807,7 +870,7 @@ def render_report_plans(items):
             rows.append({"plan": plan, "due": due})
     rows.sort(key=lambda row: (report_date_sort_value(row["due"]), row["plan"]))
     if not rows:
-        return render_report_empty()
+        return ""
     items_html = []
     for row in rows:
         due_html = f'<span class="due">DUE {escape_html(format_report_due(row["due"]))}</span>' if row["due"] else ""
@@ -858,6 +921,9 @@ def render_report_project(project):
     progress_log = parse_json_list(project["progress_log"])
     risk_issue = parse_json_list(project["risk_issue"], "issue")
     next_plan = parse_json_list(project["next_plan"], "plan")
+    progress_section = render_report_block("Progress Log", render_report_progress(progress_log))
+    risk_section = render_report_block("Risk &amp; Issue", render_report_risks(risk_issue), "block risk")
+    plan_section = render_report_block("Next Plan", render_report_plans(next_plan), "block plan")
     return f"""
       <article class="project">
         <div class="project-title">
@@ -867,18 +933,9 @@ def render_report_project(project):
           <div class="stats"><span><b>{count_report_progress(progress_log)}</b> Progress</span><span><b>{count_report_risks(risk_issue)}</b> Risk</span><span><b>{count_report_plans(next_plan)}</b> Plan</span></div>
         </div>
         <div class="blocks">
-          <section class="block">
-            <h3><span class="bar"></span>Progress Log</h3>
-            {render_report_progress(progress_log)}
-          </section>
-          <section class="block risk">
-            <h3><span class="bar"></span>Risk &amp; Issue</h3>
-            {render_report_risks(risk_issue)}
-          </section>
-          <section class="block plan">
-            <h3><span class="bar"></span>Next Plan</h3>
-            {render_report_plans(next_plan)}
-          </section>
+          {progress_section}
+          {risk_section}
+          {plan_section}
         </div>
       </article>
     """
@@ -971,7 +1028,7 @@ def collect_project_report_items(members):
 
 def render_project_report_progress(rows):
     if not rows:
-        return render_report_empty()
+        return ""
     items = []
     for row in rows:
         date_html = f'<span class="pdate">{escape_html(format_report_due(row["date"]))}</span>' if row["date"] else ""
@@ -988,7 +1045,7 @@ def render_project_report_progress(rows):
 
 def render_project_report_risks(rows):
     if not rows:
-        return render_report_empty()
+        return ""
     items = []
     for row in rows:
         level = report_importance_class(row["importance"])
@@ -1003,7 +1060,7 @@ def render_project_report_risks(rows):
 
 def render_project_report_plans(rows):
     if not rows:
-        return render_report_empty()
+        return ""
     items = []
     for row in rows:
         due_html = f'<span class="due">DUE {escape_html(format_report_due(row["due"]))}</span>' if row["due"] else ""
@@ -1019,6 +1076,9 @@ def render_project_report_plans(rows):
 
 def render_project_report_summary(members):
     progress_rows, risk_rows, plan_rows = collect_project_report_items(members)
+    progress_section = render_report_block("Progress Log", render_project_report_progress(progress_rows))
+    risk_section = render_report_block("Risk &amp; Issue", render_project_report_risks(risk_rows), "block risk")
+    plan_section = render_report_block("Next Plan", render_project_report_plans(plan_rows), "block plan")
     return f"""
       <article class="project">
         <div class="project-title">
@@ -1028,18 +1088,9 @@ def render_project_report_summary(members):
           <div class="stats"><span><b>{len(progress_rows)}</b> Progress</span><span><b>{len(risk_rows)}</b> Risk</span><span><b>{len(plan_rows)}</b> Plan</span></div>
         </div>
         <div class="blocks">
-          <section class="block">
-            <h3><span class="bar"></span>Progress Log</h3>
-            {render_project_report_progress(progress_rows)}
-          </section>
-          <section class="block risk">
-            <h3><span class="bar"></span>Risk &amp; Issue</h3>
-            {render_project_report_risks(risk_rows)}
-          </section>
-          <section class="block plan">
-            <h3><span class="bar"></span>Next Plan</h3>
-            {render_project_report_plans(plan_rows)}
-          </section>
+          {progress_section}
+          {risk_section}
+          {plan_section}
         </div>
       </article>
     """
@@ -1138,6 +1189,71 @@ def report_with_entries(conn, report_row):
     return data
 
 
+def create_weekly_report(conn, team_id: str, start_date: date, end_date: date, skip_existing=False):
+    ensure_range(start_date, end_date)
+    ensure_team(conn, team_id)
+    start_text = str(start_date)
+    end_text = str(end_date)
+    if skip_existing:
+        existing = conn.execute(
+            """
+            SELECT * FROM reports
+            WHERE team_id = ? AND start_date = ? AND end_date = ?
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (team_id, start_text, end_text),
+        ).fetchone()
+        if existing:
+            return existing, False
+    now = datetime.utcnow().isoformat()
+    report_id = str(uuid.uuid4())
+    conn.execute(
+        """
+        INSERT INTO reports (report_id, team_id, start_date, end_date, status, created_at)
+        VALUES (?, ?, ?, ?, 'in_progress', ?)
+        """,
+        (report_id, team_id, start_text, end_text, now),
+    )
+    users = conn.execute(
+        """
+        SELECT user_id FROM users
+        WHERE team_id = ? AND role != 'L'
+        ORDER BY sort_order ASC, created_at ASC, name
+        """,
+        (team_id,),
+    ).fetchall()
+    conn.executemany(
+        """
+        INSERT INTO report_entries (entry_id, report_id, user_id, status, created_at, updated_at)
+        VALUES (?, ?, ?, 'pending', ?, ?)
+        """,
+        [(str(uuid.uuid4()), report_id, row["user_id"], now, now) for row in users],
+    )
+    row = conn.execute("SELECT * FROM reports WHERE report_id = ?", (report_id,)).fetchone()
+    return row, True
+
+
+def create_due_weekly_reports(now_kst=None):
+    period = scheduled_weekly_report_period(now_kst)
+    if not period:
+        return []
+    start_date, end_date = period
+    created_reports = []
+    with get_conn() as conn:
+        teams = conn.execute("SELECT team_id FROM teams ORDER BY created_at ASC").fetchall()
+        for team in teams:
+            row, created = create_weekly_report(conn, team["team_id"], start_date, end_date, skip_existing=True)
+            if created:
+                created_reports.append(row["report_id"])
+    if created_reports:
+        print(
+            f"created weekly reports for {start_date}..{end_date}: {len(created_reports)}",
+            flush=True,
+        )
+    return created_reports
+
+
 def ensure_report_user_entries(conn, report_id: str, user_id: str):
     report = conn.execute("SELECT * FROM reports WHERE report_id = ?", (report_id,)).fetchone()
     if not report:
@@ -1181,9 +1297,9 @@ def ensure_report_user_entries(conn, report_id: str, user_id: str):
             conn.execute(
                 """
                 INSERT INTO project_entry (entry_id, project_id, is_excluded, progress_log, risk_issue, next_plan, updated_at)
-                VALUES (?, ?, ?, '[]', '[]', '[]', ?)
+                VALUES (?, ?, 1, '[]', '[]', '[]', ?)
                 """,
-                (entry_id, project["project_id"], 1 if project["project_name"] == OTHER_WORK_PROJECT_NAME else 0, now),
+                (entry_id, project["project_id"], now),
             )
     return report
 
@@ -1736,34 +1852,8 @@ def list_active_reports(team_id: str):
 
 @app.post("/api/teams/{team_id}/reports", status_code=201)
 def create_report(team_id: str, payload: ReportIn):
-    ensure_range(payload.start_date, payload.end_date)
-    now = datetime.utcnow().isoformat()
-    report_id = str(uuid.uuid4())
     with get_conn() as conn:
-        ensure_team(conn, team_id)
-        conn.execute(
-            """
-            INSERT INTO reports (report_id, team_id, start_date, end_date, status, created_at)
-            VALUES (?, ?, ?, ?, 'in_progress', ?)
-            """,
-            (report_id, team_id, str(payload.start_date), str(payload.end_date), now),
-        )
-        users = conn.execute(
-            """
-            SELECT user_id FROM users
-            WHERE team_id = ? AND role != 'L'
-            ORDER BY sort_order ASC, created_at ASC, name
-            """,
-            (team_id,),
-        ).fetchall()
-        conn.executemany(
-            """
-            INSERT INTO report_entries (entry_id, report_id, user_id, status, created_at, updated_at)
-            VALUES (?, ?, ?, 'pending', ?, ?)
-            """,
-            [(str(uuid.uuid4()), report_id, row["user_id"], now, now) for row in users],
-        )
-        row = conn.execute("SELECT * FROM reports WHERE report_id = ?", (report_id,)).fetchone()
+        row, _ = create_weekly_report(conn, team_id, payload.start_date, payload.end_date)
         return report_with_entries(conn, row)
 
 

@@ -1,12 +1,13 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { Plus, Trash2, AudioWaveform, User, ChevronRight, CornerDownRight, Pencil, Save, X, KeyRound, LogOut, Users, ClipboardList, GripVertical, HelpCircle } from 'lucide-react';
+import { Plus, Trash2, AudioWaveform, User, ChevronRight, CornerDownRight, Pencil, Save, X, KeyRound, LogOut, Users, ClipboardList, GripVertical, HelpCircle, Check } from 'lucide-react';
 import './styles.css';
 
 const API_BASE = import.meta.env.VITE_API_BASE || `${window.location.protocol}//${window.location.hostname}:9601`;
 const DAY = 24 * 60 * 60 * 1000;
 const DOW = ['일', '월', '화', '수', '목', '금', '토'];
 const INITIAL_PASSWORD = 'wia1234!';
+const OTHER_WORK_PROJECT_NAME = '기타 업무 (교육/출장 등)';
 const ACCENTS = [
   { id: 'indigo', bar: '#4F46E5' },
   { id: 'teal', bar: '#0F8B8D' },
@@ -764,7 +765,7 @@ function App() {
         body: JSON.stringify({ password: weeklyPasswordDraft }),
       });
       const nextProjects = result.projects || [];
-      const firstProject = nextProjects[0] || null;
+      const firstProject = nextProjects.find((project) => !project.is_excluded && project.project_name !== OTHER_WORK_PROJECT_NAME) || nextProjects.find((project) => !project.is_excluded) || null;
       setWeeklyEntryProjects(nextProjects);
       setSelectedWeeklyEntryId(firstProject?.project_id || '');
       setWeeklyWritingEntry(weeklyPasswordEntry);
@@ -1613,8 +1614,48 @@ function WeeklyReportPage({
 }) {
   const activeEntryName = weeklyPasswordEntry ? `${weeklyPasswordEntry.name} ${weeklyPasswordEntry.role}` : '';
   const writingEntryName = weeklyWritingEntry ? `${weeklyWritingEntry.name} ${weeklyWritingEntry.role}` : '';
-  const selectedWeeklyProject = weeklyEntryProjects.find((project) => project.project_id === selectedWeeklyEntryId) || null;
+  const [isWeeklyProjectPickerOpen, setIsWeeklyProjectPickerOpen] = useState(false);
+  const [weeklySelectionDraft, setWeeklySelectionDraft] = useState([]);
+  const regularWeeklyProjects = weeklyEntryProjects.filter((project) => project.project_name !== OTHER_WORK_PROJECT_NAME);
+  const otherWeeklyProject = weeklyEntryProjects.find((project) => project.project_name === OTHER_WORK_PROJECT_NAME) || null;
+  const writableWeeklyProjects = weeklyEntryProjects.filter((project) => !project.is_excluded);
+  const selectedWeeklyProject = writableWeeklyProjects.find((project) => project.project_id === selectedWeeklyEntryId) || null;
+  const weeklySelectionMax = Math.max(regularWeeklyProjects.length, 1);
+  const weeklySelectionPercent = Math.round((weeklySelectionDraft.length / weeklySelectionMax) * 100);
   const hasWeeklyReports = weeklyReports.length > 0;
+
+  useEffect(() => {
+    if (!weeklyWritingEntry) {
+      setIsWeeklyProjectPickerOpen(false);
+      setWeeklySelectionDraft([]);
+      return;
+    }
+    setWeeklySelectionDraft(regularWeeklyProjects.filter((project) => !project.is_excluded).map((project) => project.project_id));
+    setIsWeeklyProjectPickerOpen(regularWeeklyProjects.length > 0);
+  }, [weeklyWritingEntry?.report_id, weeklyWritingEntry?.user_id]);
+
+  function toggleWeeklySelectionDraft(projectId) {
+    setWeeklySelectionDraft((prev) => (prev.includes(projectId) ? prev.filter((id) => id !== projectId) : [...prev, projectId]));
+  }
+
+  async function applyWeeklyProjectSelection() {
+    const selectedIds = new Set(weeklySelectionDraft);
+    for (const project of regularWeeklyProjects) {
+      const shouldBeExcluded = !selectedIds.has(project.project_id);
+      if (project.is_excluded !== shouldBeExcluded) {
+        await onUpdateWeeklyEntryStatus(project.project_id, shouldBeExcluded);
+      }
+    }
+    const firstSelectedProject = regularWeeklyProjects.find((project) => selectedIds.has(project.project_id));
+    if (firstSelectedProject) onSelectWeeklyProject(firstSelectedProject);
+    setIsWeeklyProjectPickerOpen(false);
+  }
+
+  async function addOtherWeeklyProject() {
+    if (!otherWeeklyProject) return;
+    await onUpdateWeeklyEntryStatus(otherWeeklyProject.project_id, false);
+    onSelectWeeklyProject(otherWeeklyProject);
+  }
 
   function updateProgressItem(index, key, value) {
     setWeeklyEntryDraft((prev) => ({ ...prev, progress_log: prev.progress_log.map((item, i) => (i === index ? { ...item, [key]: value } : item)) }));
@@ -1800,16 +1841,61 @@ function WeeklyReportPage({
               </div>
               <button className="icon-btn" type="button" onClick={onCloseWeeklyEntryModal} aria-label="닫기"><X size={16} /></button>
             </div>
+            {isWeeklyProjectPickerOpen ? (
+              <section className="weekly-project-picker">
+                <div className="weekly-project-picker-body">
+                  <div className="weekly-project-picker-head">
+                    <div>
+                      <h3>이번 주 진행 과제 선택</h3>
+                      <p>금주에 실제로 진행한 정규 과제를 고르면 작성 화면에 배치됩니다.</p>
+                    </div>
+                    <div className="weekly-picker-ring" style={{ '--weekly-picker-progress': `${weeklySelectionPercent}%` }} aria-label={`${weeklySelectionDraft.length}개 선택`}>
+                      <div>
+                        <strong>{weeklySelectionDraft.length}</strong>
+                        <span>/ {regularWeeklyProjects.length}</span>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="weekly-project-choice-list">
+                    {regularWeeklyProjects.map((project, index) => {
+                      const checked = weeklySelectionDraft.includes(project.project_id);
+                      return (
+                        <button className={`weekly-project-choice${checked ? ' selected' : ''}`} type="button" key={`${project.entry_id}-${project.project_id}`} onClick={() => toggleWeeklySelectionDraft(project.project_id)}>
+                          <span className="weekly-choice-index">{String(index + 1).padStart(2, '0')}</span>
+                          <span className="weekly-choice-copy">
+                            <strong>{project.project_name}</strong>
+                            <small>{checked ? '작성 화면에 포함됩니다' : '이번 주 진행했다면 선택하세요'}</small>
+                          </span>
+                          <span className="weekly-choice-check">{checked && <Check size={12} strokeWidth={3} />}</span>
+                        </button>
+                      );
+                    })}
+                    {regularWeeklyProjects.length === 0 && <div className="empty compact">참여 중인 진행 과제가 없습니다</div>}
+                  </div>
+                </div>
+                <div className="weekly-project-picker-actions">
+                  <button className="mt-btn" type="button" onClick={onCloseWeeklyEntryModal}>닫기</button>
+                  <button className="mt-btn primary" type="button" disabled={weeklySelectionDraft.length === 0 && regularWeeklyProjects.length > 0} onClick={applyWeeklyProjectSelection}>선택한 과제 작성하기 ({weeklySelectionDraft.length})</button>
+                </div>
+              </section>
+            ) : (
             <div className="weekly-entry-layout">
-              <aside className="weekly-project-list" aria-label="참여 과제">
-                {weeklyEntryProjects.map((project) => (
+              <aside className="weekly-project-list" aria-label="작성 과제">
+                <div className="weekly-project-list-head">
+                  <strong>작성 과제</strong>
+                  <button type="button" onClick={() => setIsWeeklyProjectPickerOpen(true)}>선택 수정</button>
+                </div>
+                {writableWeeklyProjects.map((project) => (
                   <button className={selectedWeeklyEntryId === project.project_id ? 'active' : ''} type="button" key={`${project.entry_id}-${project.project_id}`} onClick={() => onSelectWeeklyProject(project)}>
                     <span>{project.project_name}</span>
                     {project.status === 'done' && <b className="entry-state done">작성 완료</b>}
-                    {project.status === 'excluded' && <b className="entry-state excluded">제외</b>}
+                    {project.project_name === OTHER_WORK_PROJECT_NAME && <b className="entry-state other">기타 업무</b>}
                   </button>
                 ))}
-                {weeklyEntryProjects.length === 0 && <div className="empty compact">참여 중인 진행 과제가 없습니다</div>}
+                {otherWeeklyProject?.is_excluded && (
+                  <button className="weekly-other-add" type="button" onClick={addOtherWeeklyProject}><Plus size={14} /><span>기타 (교육, 출장 등) 업무 추가</span></button>
+                )}
+                {writableWeeklyProjects.length === 0 && <div className="empty compact">선택된 과제가 없습니다</div>}
               </aside>
               <section className="weekly-entry-panel">
                 {selectedWeeklyProject ? (
@@ -1890,6 +1976,7 @@ function WeeklyReportPage({
                 )}
               </section>
             </div>
+            )}
           </div>
         </div>
       )}
