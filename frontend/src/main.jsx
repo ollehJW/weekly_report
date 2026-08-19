@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { Plus, Trash2, AudioWaveform, User, ChevronRight, CornerDownRight, Pencil, Save, X, KeyRound, LogOut, Users, ClipboardList, GripVertical, HelpCircle, Check } from 'lucide-react';
+import { Plus, Trash2, AudioWaveform, User, ChevronRight, Pencil, Save, X, KeyRound, LogOut, Users, ClipboardList, GripVertical, HelpCircle, Check } from 'lucide-react';
 import './styles.css';
 
 const API_BASE = import.meta.env.VITE_API_BASE || `${window.location.protocol}//${window.location.hostname}:9601`;
@@ -2710,6 +2710,7 @@ function ProjectTimeline({
             </>
           ) : (
             <>
+              <button className="mt-add-work-inline" onClick={() => startAddEpic(milestone)}><Plus size={12} />Work</button>
               <button className="mt-icon-action always" onClick={() => startEditMilestone(milestone)} aria-label="마일스톤 편집"><Pencil size={13} /></button>
               <button className="mt-delete always" onClick={() => onRemoveMilestone(milestone.id)} aria-label="마일스톤 삭제"><Trash2 size={13} /></button>
             </>
@@ -2756,9 +2757,6 @@ function ProjectTimeline({
               <React.Fragment key={`axis-${milestone.id}`}>
                 {renderMilestoneLabel(milestone, isEditingMilestone)}
                 {milestone.epics.map((epic, index) => renderEpicLabel(epic, milestone, index === milestone.epics.length - 1))}
-                <div className="mt-row-label epic last add-slot">
-                  <button className="mt-add-leaf" onClick={() => startAddEpic(milestone)}><CornerDownRight size={13} />Work 추가</button>
-                </div>
               </React.Fragment>
             );
           })}
@@ -2816,10 +2814,6 @@ function ProjectTimeline({
                       </div>
                     );
                   })}
-
-                  <div className="mt-track add-track" style={{ gridColumn: `1 / span ${colCount}`, gridTemplateColumns: dateGridTemplate }}>
-                    {renderTrackBackgrounds()}
-                  </div>
                 </React.Fragment>
               );
             })}

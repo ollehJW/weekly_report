@@ -654,12 +654,6 @@ input:focus, textarea:focus, select:focus { border-color: #4f46e5; box-shadow: 0
 .mt-row-label:hover .mt-delete { opacity: 1; }
 .mt-delete:hover { border-color: #f0d9cf; background: #fcf1ec; color: #b0331c; }
 
-.add-slot { background: transparent; }
-.mt-add-leaf { display: inline-flex; align-items: center; gap: 6px; border: 0; background: none; padding: 4px 0; color: var(--ink-faint); font-size: 12.5px; font-weight: 650; }
-.mt-add-leaf:hover { color: var(--ink); }
-.mt-add-form input { border: 0; border-bottom: 1px solid var(--border-strong); border-radius: 0; background: none; padding: 2px 0; font-size: 13px; font-weight: 650; }
-.mt-add-form input:focus { box-shadow: none; border-bottom-color: var(--ink); }
-.add-track { min-height: 42px; background: #fcfbf8; }
 .mt-date-inputs { display: flex; align-items: center; gap: 6px; padding: 0 4px; }
 .mt-date-inputs input { width: auto; min-height: 30px; padding: 4px 6px; font-size: 11.5px; }
 .mt-date-inputs input[placeholder="담당"] { width: 96px; }
@@ -771,6 +765,27 @@ input:focus, textarea:focus, select:focus { border-color: #4f46e5; box-shadow: 0
   flex-shrink: 0;
 }
 
+
+.mt-add-work-inline {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-height: 26px;
+  border: 1px solid #c7d2e4;
+  border-radius: 7px;
+  background: #fff;
+  color: var(--wia-blue);
+  padding: 0 8px;
+  font-size: 11px;
+  font-weight: 850;
+  white-space: nowrap;
+  transition: background .12s ease, border-color .12s ease, color .12s ease;
+}
+.mt-add-work-inline:hover {
+  border-color: var(--wia-blue);
+  background: #eef4ff;
+}
 .mt-icon-action {
   display: flex;
   align-items: center;
@@ -2455,20 +2470,6 @@ input:focus, textarea:focus, select:focus { border-color: var(--wia-blue); box-s
   z-index: 2;
 }
 
-.mt-row-label.add-slot {
-  z-index: 4;
-  background: #fff;
-}
-.mt-row-label.add-slot.editing {
-  background: #fff;
-}
-.mt-row-label.add-slot .mt-add-form {
-  width: 100%;
-  min-width: 0;
-}
-.mt-row-label.add-slot .mt-add-form input {
-  width: 100%;
-}
 
 .mt-grid-wrap {
   --mt-scroll-left: 0px;
@@ -2478,8 +2479,8 @@ input:focus, textarea:focus, select:focus { border-color: var(--wia-blue); box-s
   position: relative;
   left: auto;
   transform: translateX(var(--mt-scroll-left));
-  width: 240px;
-  min-width: 240px;
+  width: 320px;
+  min-width: 320px;
   background: #fff;
   will-change: transform;
 }
@@ -2491,7 +2492,7 @@ input:focus, textarea:focus, select:focus { border-color: var(--wia-blue); box-s
 
 .mt-split-wrap {
   display: grid;
-  grid-template-columns: 240px minmax(0, 1fr);
+  grid-template-columns: 320px minmax(0, 1fr);
   min-width: 0;
   border-top: 1px solid var(--border);
 }
@@ -2500,8 +2501,8 @@ input:focus, textarea:focus, select:focus { border-color: var(--wia-blue); box-s
   z-index: 2;
   display: grid;
   align-content: start;
-  width: 240px;
-  min-width: 240px;
+  width: 320px;
+  min-width: 320px;
   border-right: 1px solid var(--border);
   background: #fff;
   box-shadow: 8px 0 16px rgba(15, 23, 42, .04);
@@ -2594,7 +2595,6 @@ input:focus, textarea:focus, select:focus { border-color: var(--wia-blue); box-s
   max-height: calc(var(--mt-body-row) - 10px);
   overflow: hidden;
 }
-.mt-split-wrap .mt-add-form,
 .mt-split-wrap .epic-edit-fields,
 .mt-split-wrap .milestone-edit-fields {
   min-width: 0;
@@ -2602,8 +2602,7 @@ input:focus, textarea:focus, select:focus { border-color: var(--wia-blue); box-s
   overflow: hidden;
 }
 .mt-split-wrap .epic-edit-fields input,
-.mt-split-wrap .milestone-edit-fields input,
-.mt-split-wrap .mt-add-form input {
+.mt-split-wrap .milestone-edit-fields input {
   min-height: 30px;
 }
 .team-calendar-event-placeholder {
