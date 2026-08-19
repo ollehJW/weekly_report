@@ -641,11 +641,8 @@ input:focus, textarea:focus, select:focus { border-color: #4f46e5; box-shadow: 0
 .mt-row-label.epic.last::before { height: 50%; }
 .mt-row-label.epic::after { content: ""; position: absolute; left: 20px; top: 50%; width: 12px; height: 1px; background: var(--border-strong); }
 
-.mt-track { position: relative; display: grid; align-items: center; min-height: 46px; border-bottom: 1px solid var(--border-soft); }
-.mt-daybg { align-self: stretch; border-left: 1px solid var(--border-soft); }
-.mt-daybg.weekend-adjacent { background: var(--weekend); }
+.mt-track { position: relative; display: grid; align-items: center; min-height: 46px; border-bottom: 1px solid var(--border-soft); background: transparent; }
 .mt-bar { position: relative; z-index: 1; display: flex; align-items: center; gap: 8px; min-width: 0; height: 24px; margin: 0 4px; border-radius: 7px; padding: 0 10px; color: #fff; box-shadow: 0 1px 2px rgba(23, 24, 28, .16); }
-.mt-bar .wave { width: 42px; min-width: 24px; opacity: .8; }
 .mt-bar .label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 750; }
 
 .mt-badge { border-radius: 100px; padding: 1px 7px; font-size: 10.5px; font-weight: 650; }
@@ -703,7 +700,7 @@ input:focus, textarea:focus, select:focus { border-color: #4f46e5; box-shadow: 0
 
 .milestone-track {
   min-height: 48px;
-  background: #fbfaf7;
+  background: transparent;
   border-bottom-color: var(--border);
 }
 
@@ -2513,8 +2510,28 @@ input:focus, textarea:focus, select:focus { border-color: var(--wia-blue); box-s
   overflow-y: hidden;
 }
 .mt-calendar-grid {
+  position: relative;
   display: grid;
   min-width: 640px;
+  background: #fff;
+}
+.mt-calendar-bg-layer {
+  position: absolute;
+  top: var(--mt-header-row, 55px);
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 0;
+  display: grid;
+  grid-template-columns: inherit;
+  pointer-events: none;
+}
+.mt-calendar-bg-cell {
+  min-width: 0;
+  border-left: 1px solid var(--border-soft);
+}
+.mt-calendar-bg-cell.weekend-adjacent {
+  background: var(--weekend);
 }
 .mt-split-wrap .mt-headercell,
 .mt-split-wrap .mt-row-label {
@@ -2531,6 +2548,8 @@ input:focus, textarea:focus, select:focus { border-color: var(--wia-blue); box-s
   border-bottom: 1px solid var(--border);
 }
 .mt-calendar-grid > .mt-daycell {
+  position: relative;
+  z-index: 2;
   min-height: 55px;
 }
 .mt-split-wrap .timeline-add-milestone {
@@ -2574,6 +2593,10 @@ input:focus, textarea:focus, select:focus { border-color: var(--wia-blue); box-s
   height: var(--mt-body-row);
   min-height: var(--mt-body-row);
   max-height: var(--mt-body-row);
+}
+.mt-split-wrap .mt-track,
+.mt-split-wrap .timeline-add-milestone {
+  z-index: 1;
 }
 .mt-split-wrap .mt-row-label {
   overflow: hidden;

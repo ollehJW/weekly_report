@@ -21,8 +21,6 @@ const STATUS_STYLE = {
   blocked: { label: '차단', bg: '#FCF1EC', text: '#B0331C' },
 };
 const ROLE_LABELS = { L: '리더', CM: '책임매니저', M: '매니저' };
-const WAVE_PATTERN = [4, 9, 6, 13, 8, 15, 7, 11, 5, 10, 6, 14, 9, 4, 12, 7];
-
 const CALENDAR_EVENT_TYPES = {
   team: { label: '팀 일정', className: 'team' },
   vacation: { label: '휴가', className: 'vacation' },
@@ -133,17 +131,6 @@ async function request(path, options = {}) {
   return res.json();
 }
 
-function WaveBar({ widthPx, color }) {
-  const bars = Math.max(6, Math.round(widthPx / 9));
-  return (
-    <svg width="100%" height="14" viewBox={`0 0 ${bars * 6} 16`} preserveAspectRatio="none" aria-hidden="true">
-      {Array.from({ length: bars }).map((_, i) => {
-        const amp = WAVE_PATTERN[i % WAVE_PATTERN.length];
-        return <rect key={i} x={i * 6 + 1} y={(16 - amp) / 2} width="3" height={amp} rx="1.5" fill={color} opacity="0.9" />;
-      })}
-    </svg>
-  );
-}
 
 function App() {
   const [activePage, setActivePage] = useState('team-status');
@@ -2733,9 +2720,6 @@ function ProjectTimeline({
     );
   }
 
-  function renderTrackBackgrounds() {
-    return days.map((day, i) => <div key={isoOf(day)} className={dayCellClass(day, 'mt-daybg')} style={{ gridRow: 1, gridColumn: i + 1 }} />);
-  }
 
   const activeWorkDraft = workModal?.mode === 'edit' ? editDraft : epicDraft;
   const setActiveWorkDraft = workModal?.mode === 'edit' ? setEditDraft : setEpicDraft;
@@ -2773,6 +2757,9 @@ function ProjectTimeline({
 
         <div className="mt-calendar-scroll" ref={timelineScrollRef}>
           <div className="mt-calendar-grid" style={{ gridTemplateColumns: dateGridTemplate }}>
+            <div className="mt-calendar-bg-layer" aria-hidden="true">
+              {days.map((day) => <div key={`bg-${isoOf(day)}`} className={dayCellClass(day, 'mt-calendar-bg-cell')} />)}
+            </div>
             {days.map((day) => (
               <div key={isoOf(day)} className={dayCellClass(day, 'mt-daycell', true)}>
                 <div className="num">{String(day.getDate()).padStart(2, '0')}</div>
@@ -2786,7 +2773,6 @@ function ProjectTimeline({
               return (
                 <React.Fragment key={`calendar-${milestone.id}`}>
                   <div className={`mt-track milestone-track${isEditingMilestone ? ' editing' : ''}`} style={{ gridColumn: `1 / span ${colCount}`, gridTemplateColumns: dateGridTemplate }}>
-                    {renderTrackBackgrounds()}
                     {isEditingMilestone ? (
                       <div className="mt-date-inputs milestone-edit-track" style={{ gridColumn: `1 / span ${colCount}` }}>
                         <input type="date" value={milestoneEditDraft.start_date} onChange={(e) => setMilestoneEditDraft({ ...milestoneEditDraft, start_date: e.target.value })} />
@@ -2806,9 +2792,7 @@ function ProjectTimeline({
                     const epicSpan = spanFor(epic.start_date, epic.end_date);
                     return (
                       <div className="mt-track" key={`calendar-${epic.id}`} style={{ gridColumn: `1 / span ${colCount}`, gridTemplateColumns: dateGridTemplate }}>
-                        {renderTrackBackgrounds()}
                         <div className="mt-bar" style={{ gridColumn: `${epicSpan.startCol + 1} / span ${epicSpan.colSpan}`, background: epic.color || accentFor(index).bar }}>
-                          <div className="wave"><WaveBar widthPx={epicSpan.colSpan * 70} color="#FFFFFF" /></div>
                           <span className="label">{epic.title}</span>
                         </div>
                       </div>
