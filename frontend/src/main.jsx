@@ -2587,9 +2587,8 @@ function ProjectTimeline({
   onUpdateEpic,
   onRemoveEpic,
 }) {
-  const [addingEpicId, setAddingEpicId] = useState(null);
+  const [workModal, setWorkModal] = useState(null);
   const [epicDraft, setEpicDraft] = useState({ name: '', owner: '', status: 'planned', start_date: todayIso(), end_date: todayIso() });
-  const [editingEpicId, setEditingEpicId] = useState(null);
   const [editingMilestoneId, setEditingMilestoneId] = useState(null);
   const [milestoneEditDraft, setMilestoneEditDraft] = useState({ title: '', start_date: todayIso(), end_date: todayIso() });
   const [editDraft, setEditDraft] = useState({ name: '', owner: '', status: 'planned', start_date: todayIso(), end_date: todayIso() });
@@ -2638,26 +2637,23 @@ function ProjectTimeline({
   }
 
   function startAddEpic(milestone) {
-    setAddingEpicId(milestone.id);
-    setEditingEpicId(null);
     setEditingMilestoneId(null);
     setEpicDraft({ name: '', owner: '', status: 'planned', start_date: milestone.start_date, end_date: milestone.start_date });
+    setWorkModal({ mode: 'add', milestone });
   }
 
-  function commitAddEpic(milestone) {
-    if (!epicDraft.name.trim()) {
-      setAddingEpicId(null);
+  function commitAddEpic() {
+    if (!workModal?.milestone || !epicDraft.name.trim()) {
+      setWorkModal(null);
       return;
     }
-    onAddEpic(milestone, epicDraft);
+    onAddEpic(workModal.milestone, epicDraft);
     setEpicDraft({ name: '', owner: '', status: 'planned', start_date: todayIso(), end_date: todayIso() });
-    setAddingEpicId(null);
+    setWorkModal(null);
   }
 
-  function startEditEpic(epic) {
-    setAddingEpicId(null);
+  function startEditEpic(epic, milestone) {
     setEditingMilestoneId(null);
-    setEditingEpicId(epic.id);
     setEditDraft({
       name: epic.title,
       owner: epic.owner || '',
@@ -2665,20 +2661,20 @@ function ProjectTimeline({
       start_date: epic.start_date,
       end_date: epic.end_date,
     });
+    setWorkModal({ mode: 'edit', milestone, epic });
   }
 
-  function commitEditEpic(epic) {
-    if (!editDraft.name.trim()) {
-      setEditingEpicId(null);
+  function commitEditEpic() {
+    if (!workModal?.epic || !editDraft.name.trim()) {
+      setWorkModal(null);
       return;
     }
-    onUpdateEpic(epic, editDraft);
-    setEditingEpicId(null);
+    onUpdateEpic(workModal.epic, editDraft);
+    setWorkModal(null);
   }
 
   function startEditMilestone(milestone) {
-    setAddingEpicId(null);
-    setEditingEpicId(null);
+    setWorkModal(null);
     setEditingMilestoneId(milestone.id);
     setMilestoneEditDraft({ title: milestone.title, start_date: milestone.start_date, end_date: milestone.end_date });
   }
@@ -2723,30 +2719,14 @@ function ProjectTimeline({
     );
   }
 
-  function renderEpicLabel(epic, milestone, isLast, isEditing) {
+  function renderEpicLabel(epic, milestone, isLast) {
     const status = STATUS_STYLE[normalizeStatus(epic.status)] || STATUS_STYLE.planned;
     return (
-      <div className={`mt-row-label epic${isLast ? ' last' : ''}${isEditing ? ' editing' : ''}`} key={`axis-${epic.id}`}>
-        {isEditing ? (
-          <div className="epic-edit-fields">
-            <input value={editDraft.name} autoFocus onChange={(e) => setEditDraft({ ...editDraft, name: e.target.value })} onKeyDown={(e) => e.key === 'Enter' && commitEditEpic(epic)} />
-            <input value={editDraft.owner} placeholder="담당" onChange={(e) => setEditDraft({ ...editDraft, owner: e.target.value })} onKeyDown={(e) => e.key === 'Enter' && commitEditEpic(epic)} />
-          </div>
-        ) : (
-          <div><div className="name">{epic.title}</div><div className="meta"><span className="mt-avatar"><User size={9} /></span>{epic.owner || '담당 미지정'} · <span className="mt-badge" style={{ background: status.bg, color: status.text }}>{status.label}</span></div></div>
-        )}
+      <div className={`mt-row-label epic${isLast ? ' last' : ''}`} key={`axis-${epic.id}`}>
+        <div><div className="name">{epic.title}</div><div className="meta"><span className="mt-avatar"><User size={9} /></span>{epic.owner || '담당 미지정'} · <span className="mt-badge" style={{ background: status.bg, color: status.text }}>{status.label}</span></div></div>
         <div className="row-actions">
-          {isEditing ? (
-            <>
-              <button className="mt-icon-action save" onClick={() => commitEditEpic(epic)} aria-label="Work 저장"><Save size={13} /></button>
-              <button className="mt-icon-action" onClick={() => setEditingEpicId(null)} aria-label="Work 편집 취소"><X size={13} /></button>
-            </>
-          ) : (
-            <>
-              <button className="mt-icon-action" onClick={() => startEditEpic(epic)} aria-label="Work 편집"><Pencil size={13} /></button>
-              <button className="mt-delete" onClick={() => onRemoveEpic(epic.id)} aria-label="Work 삭제"><Trash2 size={13} /></button>
-            </>
-          )}
+          <button className="mt-icon-action" onClick={() => startEditEpic(epic, milestone)} aria-label="Work 편집"><Pencil size={13} /></button>
+          <button className="mt-delete" onClick={() => onRemoveEpic(epic.id)} aria-label="Work 삭제"><Trash2 size={13} /></button>
         </div>
       </div>
     );
@@ -2756,7 +2736,11 @@ function ProjectTimeline({
     return days.map((day, i) => <div key={isoOf(day)} className={dayCellClass(day, 'mt-daybg')} style={{ gridRow: 1, gridColumn: i + 1 }} />);
   }
 
+  const activeWorkDraft = workModal?.mode === 'edit' ? editDraft : epicDraft;
+  const setActiveWorkDraft = workModal?.mode === 'edit' ? setEditDraft : setEpicDraft;
+
   return (
+    <>
     <article className="mt-card project-card">
       <div className="mt-card-head">
         <p className="mt-card-eyebrow"><AudioWaveform size={14} color="#4F46E5" />Project Timeline</p>
@@ -2767,18 +2751,13 @@ function ProjectTimeline({
         <div className="mt-axis-col">
           <div className="mt-headercell">Milestone / Work</div>
           {milestones.map((milestone) => {
-            const isAddingEpic = addingEpicId === milestone.id;
             const isEditingMilestone = editingMilestoneId === milestone.id;
             return (
               <React.Fragment key={`axis-${milestone.id}`}>
                 {renderMilestoneLabel(milestone, isEditingMilestone)}
-                {milestone.epics.map((epic, index) => renderEpicLabel(epic, milestone, index === milestone.epics.length - 1 && !isAddingEpic, editingEpicId === epic.id))}
-                <div className={`mt-row-label epic last add-slot${isAddingEpic ? ' editing' : ''}`}>
-                  {isAddingEpic ? (
-                    <div className="mt-add-form"><input name="name" placeholder="Work 이름" value={epicDraft.name} autoFocus onChange={(e) => setEpicDraft({ ...epicDraft, name: e.target.value })} onKeyDown={(e) => e.key === 'Enter' && commitAddEpic(milestone)} /></div>
-                  ) : (
-                    <button className="mt-add-leaf" onClick={() => startAddEpic(milestone)}><CornerDownRight size={13} />Work 추가</button>
-                  )}
+                {milestone.epics.map((epic, index) => renderEpicLabel(epic, milestone, index === milestone.epics.length - 1))}
+                <div className="mt-row-label epic last add-slot">
+                  <button className="mt-add-leaf" onClick={() => startAddEpic(milestone)}><CornerDownRight size={13} />Work 추가</button>
                 </div>
               </React.Fragment>
             );
@@ -2805,7 +2784,6 @@ function ProjectTimeline({
 
             {milestones.map((milestone) => {
               const milestoneSpan = spanFor(milestone.start_date, milestone.end_date);
-              const isAddingEpic = addingEpicId === milestone.id;
               const isEditingMilestone = editingMilestoneId === milestone.id;
               return (
                 <React.Fragment key={`calendar-${milestone.id}`}>
@@ -2828,44 +2806,19 @@ function ProjectTimeline({
 
                   {milestone.epics.map((epic, index) => {
                     const epicSpan = spanFor(epic.start_date, epic.end_date);
-                    const isEditing = editingEpicId === epic.id;
                     return (
                       <div className="mt-track" key={`calendar-${epic.id}`} style={{ gridColumn: `1 / span ${colCount}`, gridTemplateColumns: dateGridTemplate }}>
                         {renderTrackBackgrounds()}
-                        {isEditing ? (
-                          <div className="mt-date-inputs epic-edit-track" style={{ gridColumn: `1 / span ${colCount}` }}>
-                            <select value={editDraft.status} onChange={(e) => setEditDraft({ ...editDraft, status: e.target.value })}>
-                              <option value="planned">예정</option>
-                              <option value="in_progress">진행중</option>
-                              <option value="done">완료</option>
-                              <option value="blocked">차단</option>
-                            </select>
-                            <input type="date" min={milestone.start_date} max={milestone.end_date} value={editDraft.start_date} onChange={(e) => setEditDraft({ ...editDraft, start_date: e.target.value })} />
-                            <span>→</span>
-                            <input type="date" min={milestone.start_date} max={milestone.end_date} value={editDraft.end_date} onChange={(e) => setEditDraft({ ...editDraft, end_date: e.target.value })} />
-                          </div>
-                        ) : (
-                          <div className="mt-bar" style={{ gridColumn: `${epicSpan.startCol + 1} / span ${epicSpan.colSpan}`, background: epic.color || accentFor(index).bar }}>
-                            <div className="wave"><WaveBar widthPx={epicSpan.colSpan * 70} color="#FFFFFF" /></div>
-                            <span className="label">{epic.title}</span>
-                          </div>
-                        )}
+                        <div className="mt-bar" style={{ gridColumn: `${epicSpan.startCol + 1} / span ${epicSpan.colSpan}`, background: epic.color || accentFor(index).bar }}>
+                          <div className="wave"><WaveBar widthPx={epicSpan.colSpan * 70} color="#FFFFFF" /></div>
+                          <span className="label">{epic.title}</span>
+                        </div>
                       </div>
                     );
                   })}
 
-                  <div className={`mt-track add-track${isAddingEpic ? ' editing' : ''}`} style={{ gridColumn: `1 / span ${colCount}`, gridTemplateColumns: dateGridTemplate }}>
+                  <div className="mt-track add-track" style={{ gridColumn: `1 / span ${colCount}`, gridTemplateColumns: dateGridTemplate }}>
                     {renderTrackBackgrounds()}
-                    {isAddingEpic && (
-                      <div className="mt-date-inputs" style={{ gridColumn: `1 / span ${colCount}` }}>
-                        <input placeholder="담당" value={epicDraft.owner} onChange={(e) => setEpicDraft({ ...epicDraft, owner: e.target.value })} />
-                        <input type="date" min={milestone.start_date} max={milestone.end_date} value={epicDraft.start_date} onChange={(e) => setEpicDraft({ ...epicDraft, start_date: e.target.value })} />
-                        <span>→</span>
-                        <input type="date" min={milestone.start_date} max={milestone.end_date} value={epicDraft.end_date} onChange={(e) => setEpicDraft({ ...epicDraft, end_date: e.target.value })} />
-                        <button className="mt-btn primary sm" onMouseDown={(e) => e.preventDefault()} onClick={() => commitAddEpic(milestone)}>추가</button>
-                        <button className="mt-btn sm" onMouseDown={(e) => e.preventDefault()} onClick={() => setAddingEpicId(null)}>취소</button>
-                      </div>
-                    )}
                   </div>
                 </React.Fragment>
               );
@@ -2886,6 +2839,52 @@ function ProjectTimeline({
         </div>
       </div>
     </article>
+
+    {workModal && (
+      <div className="modal-backdrop" role="presentation">
+        <div className="project-modal work-modal" role="dialog" aria-modal="true" aria-labelledby="work-modal-title">
+          <div className="project-modal-head">
+            <div>
+              <h2 id="work-modal-title">{workModal.mode === 'edit' ? 'Work 수정' : 'Work 추가'}</h2>
+              <p>{workModal.milestone?.title} · {workModal.milestone?.start_date} ~ {workModal.milestone?.end_date}</p>
+            </div>
+            <button className="icon-btn" type="button" onClick={() => setWorkModal(null)} aria-label="닫기"><X size={16} /></button>
+          </div>
+          <div className="work-modal-form">
+            <label>
+              <span>Work 이름</span>
+              <input value={activeWorkDraft.name} autoFocus onChange={(e) => setActiveWorkDraft({ ...activeWorkDraft, name: e.target.value })} onKeyDown={(e) => e.key === 'Enter' && (workModal.mode === 'edit' ? commitEditEpic() : commitAddEpic())} />
+            </label>
+            <label>
+              <span>담당</span>
+              <input value={activeWorkDraft.owner} placeholder="담당 미지정" onChange={(e) => setActiveWorkDraft({ ...activeWorkDraft, owner: e.target.value })} />
+            </label>
+            <label>
+              <span>상태</span>
+              <select value={activeWorkDraft.status} onChange={(e) => setActiveWorkDraft({ ...activeWorkDraft, status: e.target.value })}>
+                <option value="planned">예정</option>
+                <option value="in_progress">진행중</option>
+                <option value="done">완료</option>
+                <option value="blocked">차단</option>
+              </select>
+            </label>
+            <label>
+              <span>시작일</span>
+              <input type="date" min={workModal.milestone?.start_date} max={workModal.milestone?.end_date} value={activeWorkDraft.start_date} onChange={(e) => setActiveWorkDraft({ ...activeWorkDraft, start_date: e.target.value })} />
+            </label>
+            <label>
+              <span>종료일</span>
+              <input type="date" min={workModal.milestone?.start_date} max={workModal.milestone?.end_date} value={activeWorkDraft.end_date} onChange={(e) => setActiveWorkDraft({ ...activeWorkDraft, end_date: e.target.value })} />
+            </label>
+          </div>
+          <div className="project-modal-actions">
+            <button className="mt-btn" type="button" onClick={() => setWorkModal(null)}>취소</button>
+            <button className="mt-btn primary" type="button" onClick={workModal.mode === 'edit' ? commitEditEpic : commitAddEpic}>{workModal.mode === 'edit' ? '저장' : '추가'}</button>
+          </div>
+        </div>
+      </div>
+    )}
+    </>
   );
 }
 

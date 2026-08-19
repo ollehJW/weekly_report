@@ -2015,6 +2015,27 @@ input:focus, textarea:focus, select:focus { border-color: var(--wia-blue); box-s
 .project-modal-head p { margin: 4px 0 0; color: #66758d; font-size: 13px; }
 .project-modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .project-member-options.modal-options { max-height: 176px; overflow: auto; padding: 2px; }
+.work-modal { width: min(520px, 100%); }
+.work-modal-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.work-modal-form label {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+}
+.work-modal-form label:first-child { grid-column: 1 / -1; }
+.work-modal-form span {
+  color: #354154;
+  font-size: 12px;
+  font-weight: 850;
+}
+.work-modal-form input,
+.work-modal-form select {
+  min-height: 38px;
+}
 
 @media (max-width: 1200px) {
   .project-card-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -2099,7 +2120,8 @@ input:focus, textarea:focus, select:focus { border-color: var(--wia-blue); box-s
   .weekly-entry-layout,
   .weekly-entry-fields,
   .weekly-period-fields,
-  .weekly-project-choice-list { grid-template-columns: 1fr; }
+  .weekly-project-choice-list,
+  .work-modal-form { grid-template-columns: 1fr; }
   .project-board-toolbar,
   .weekly-open-btn,
   .weekly-report-head,
