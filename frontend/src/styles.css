@@ -227,6 +227,7 @@ input:focus, textarea:focus, select:focus { border-color: #4f46e5; box-shadow: 0
 }
 .team-status-metric span { color: #66758d; font-size: 12px; font-weight: 950; }
 .team-status-metric strong { color: #202a3a; font-size: 28px; line-height: 1; font-weight: 950; }
+.team-status-metric.report-period strong { font-size: 17px; line-height: 1.25; white-space: nowrap; }
 .team-status-metric p { margin: 0; color: #66758d; font-size: 12px; font-weight: 800; overflow-wrap: anywhere; }
 
 .team-calendar {
@@ -1981,7 +1982,6 @@ input:focus, textarea:focus, select:focus { border-color: var(--wia-blue); box-s
   font-size: 11px;
   font-weight: 900;
 }
-.project-status.active { background: #eef4ff; color: var(--wia-blue); }
 .project-status.done { background: #edf7f1; color: #0e8f52; }
 .project-role-lines { display: grid; gap: 7px; }
 .project-role-lines div { display: grid; grid-template-columns: 44px minmax(0, 1fr); gap: 8px; align-items: baseline; }

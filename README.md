@@ -7,6 +7,7 @@ The services in `ops/systemd/` keep the frontend and backend running after the
 VS Code terminal is closed and restart them automatically if the process exits.
 
 ```bash
+systemctl --user restart weekly-report-backend.service weekly-report-frontend.service
 mkdir -p ~/.config/systemd/user
 cp ops/systemd/weekly-report-*.service ~/.config/systemd/user/
 systemctl --user daemon-reload

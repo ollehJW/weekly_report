@@ -61,6 +61,14 @@ function inputDateToSlash(value) {
   return value ? value.replaceAll("-", "/") : "";
 }
 
+function weeklyCompletionText(members) {
+  const list = members || [];
+  const doneCount = list.filter((member) => member.status === 'done').length;
+  const absentCount = list.filter((member) => member.status === 'absent').length;
+  const targetCount = Math.max(0, list.length - absentCount);
+  return `작성 ${doneCount}/${targetCount} 명${absentCount ? ` (부재 ${absentCount}명)` : ''}`;
+}
+
 function emptyWeeklyEntryDraft() {
   return {
     progress_log: [{ log: "", status: "done", date: "" }],
@@ -1050,16 +1058,17 @@ function UsageGuideModal({ onClose }) {
               <p><strong>주간 보고 작성</strong>에서 새 보고 주간을 생성합니다.</p>
               <ul>
                 <li>시작일과 종료일을 지정하면 팀원별 작성 카드가 생성됩니다.</li>
-                <li>이미 진행 중인 보고 주간이 있으면 먼저 완료하거나 삭제합니다.</li>
+                <li>진행 중인 보고 주간이 있어도 새 보고 주간을 추가로 개설할 수 있습니다.</li>
               </ul>
             </li>
             <li>
               <h3>개인별 주간 보고 작성</h3>
-              <p>각 멤버 카드에서 비밀번호 확인 후, 내가 참여 멤버로 지정된 과제가 리스트업됩니다. 과제를 하나씩 선택해 주간 내용을 입력합니다.</p>
+              <p>각 멤버 카드에서 비밀번호 확인 후, 먼저 이번 주에 실제로 진행한 정규 과제를 선택합니다. 선택한 과제만 작성 화면 왼쪽 목록에 배치되고, 과제를 하나씩 눌러 주간 내용을 입력합니다.</p>
               <ul>
-                <li>리더 또는 매니저로 참여 중인 과제가 자동으로 표시됩니다.</li>
-                <li><strong>기타 업무 (교육/출장 등)</strong> 과제에는 정규 과제 외 교육, 출장, 회의, 지원 업무처럼 별도 과제로 묶기 어려운 내용을 입력합니다.</li>
-                <li>해당 주간에 작성할 내용이 없는 과제는 제외 처리할 수 있습니다.</li>
+                <li>내가 참여 멤버로 지정된 진행 중 과제가 선택 화면에 자동으로 표시됩니다.</li>
+                <li>작성 중에도 <strong>선택 수정</strong>을 눌러 이번 주 작성 대상 과제를 언제든지 다시 고를 수 있습니다.</li>
+                <li><strong>기타 업무 (교육/출장 등)</strong>는 정규 과제 선택 화면에는 포함되지 않고, 작성 화면의 <strong>기타 (교육, 출장 등) 업무 추가</strong> 버튼으로 별도 추가합니다.</li>
+                <li>정규 과제 외 교육, 출장, 회의, 지원 업무처럼 별도 과제로 묶기 어려운 내용을 기타 업무에 입력합니다.</li>
               </ul>
               <div className="usage-guide-format">
                 <h4>작성 포맷</h4>
@@ -1102,8 +1111,6 @@ function TeamStatusPage({ currentTeam, members, projects, teamProjects, weeklyRe
   const activeProjects = teamProjects.filter((project) => project.status !== 'done');
   const doneProjects = teamProjects.filter((project) => project.status === 'done');
   const reportEntries = weeklyReport?.members || [];
-  const completedReports = reportEntries.filter((member) => member.status === 'done').length;
-  const absentReports = reportEntries.filter((member) => member.status === 'absent').length;
 
   return (
     <>
@@ -1126,22 +1133,19 @@ function TeamStatusPage({ currentTeam, members, projects, teamProjects, weeklyRe
         <article className="team-status-metric">
           <span>구성원</span>
           <strong>{members.length}</strong>
-          <p>등록된 팀 멤버</p>
         </article>
         <article className="team-status-metric">
           <span>진행중 과제</span>
           <strong>{activeProjects.length || projects.length}</strong>
-          <p>현재 관리 중인 과제</p>
         </article>
         <article className="team-status-metric">
           <span>완료 과제</span>
           <strong>{doneProjects.length}</strong>
-          <p>완료로 분류된 과제</p>
         </article>
-        <article className="team-status-metric">
-          <span>진행중 보고</span>
-          <strong>{weeklyReport ? `${completedReports}/${reportEntries.length}` : '-'}</strong>
-          <p>{weeklyReport ? `작성 완료 ${completedReports}명 · 부재 ${absentReports}명` : '개설된 보고 주간 없음'}</p>
+        <article className="team-status-metric report-period">
+          <span>금주 보고</span>
+          <strong>{weeklyReport ? `${weeklyReport.start_date} ~ ${weeklyReport.end_date}` : '-'}</strong>
+          <p>{weeklyReport ? weeklyCompletionText(reportEntries) : '개설된 보고 주간 없음'}</p>
         </article>
       </section>
 
@@ -1706,8 +1710,8 @@ function WeeklyReportPage({
             <section className="weekly-report-section" key={weeklyReport.report_id}>
               <div className="weekly-report-head">
                 <div>
-                  <h2>{index === 0 ? '진행중인 보고' : '진행중인 보고'}</h2>
-                  <p>{weeklyReport.start_date} ~ {weeklyReport.end_date}</p>
+                  <h2>{weeklyReport.start_date} ~ {weeklyReport.end_date}</h2>
+                  <p>{weeklyCompletionText(reportMembers)}</p>
                 </div>
                 <div className="weekly-report-head-actions">
                   <button className="weekly-complete-btn" type="button" disabled={!canCompleteReport} title={canCompleteReport ? '보고를 완료합니다' : '모든 멤버가 작성 완료 또는 부재 상태여야 활성화됩니다'} onClick={() => onCompleteWeeklyReport(weeklyReport.report_id)}>완료</button>
@@ -2173,7 +2177,7 @@ function ProjectWeeklyReports({ project }) {
       <section className="weekly-lounge-layout project-weekly-layout">
         <div className="weekly-lounge-list">
           <div className="weekly-lounge-head">
-            <h2>보고 주차</h2>
+            <h2>진행중 보고</h2>
             <span>{reports.length}</span>
           </div>
           {loadingReports && <div className="empty compact">불러오는 중입니다</div>}
@@ -2488,7 +2492,7 @@ function ProjectCard({ project, actionLabel, nextStatus, onMove, onEdit, onDelet
         <div>
           <strong>{project.project_name}</strong>
         </div>
-        <span className={`project-status ${project.status === 'done' ? 'done' : 'active'}`}>{project.status === 'done' ? '완료' : '진행중'}</span>
+        {project.status === 'done' && <span className="project-status done">완료</span>}
       </div>
       <div className="project-role-lines">
         <div><b>리더</b><span>{leader ? leader.name : '미지정'}</span></div>
@@ -2843,7 +2847,6 @@ function ProjectTimeline({
                 <option value="planned">예정</option>
                 <option value="in_progress">진행중</option>
                 <option value="done">완료</option>
-                <option value="blocked">차단</option>
               </select>
             </label>
             <label>
