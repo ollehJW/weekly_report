@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { Plus, Trash2, AudioWaveform, User, ChevronRight, Pencil, Save, X, KeyRound, LogOut, Users, ClipboardList, GripVertical, HelpCircle, Check, FileText, Link2, ImagePlus, AlertTriangle, History, ExternalLink } from 'lucide-react';
 import './styles.css';
 
-const API_BASE = import.meta.env.VITE_API_BASE || `${window.location.protocol}//${window.location.hostname}:9801`;
+const API_BASE = import.meta.env.VITE_API_BASE || `${window.location.protocol}//${window.location.hostname}:9601`;
 
 function reportImageSrc(value) {
   const image = String(value || "");
@@ -929,6 +929,7 @@ function App() {
                 />
                 <ProjectProgressHistory project={selectedProject} />
                 <ProjectIssueManagement project={selectedProject} />
+                <ProjectNextPlan project={selectedProject} />
               </>
             )}
           </>
@@ -2651,6 +2652,7 @@ function ProjectProgressHistory({ project }) {
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [historyError, setHistoryError] = useState("");
   const [historyImagePreview, setHistoryImagePreview] = useState(null);
+  const [removingHistoryId, setRemovingHistoryId] = useState("");
 
   useEffect(() => {
     let active = true;
@@ -2674,6 +2676,22 @@ function ProjectProgressHistory({ project }) {
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
   }, [historyImagePreview]);
+
+  async function hideProgressFromHistory(progressId) {
+    setRemovingHistoryId(progressId);
+    setHistoryError("");
+    try {
+      await request("/api/project-progress/" + progressId + "/history-visibility", {
+        method: "PUT",
+        body: JSON.stringify({ is_hidden: true }),
+      });
+      setHistory((prev) => prev.filter((item) => (item.progress_id || item.history_id) !== progressId));
+    } catch (err) {
+      setHistoryError(err.message || "Progress 이력 표시를 제거하지 못했습니다");
+    } finally {
+      setRemovingHistoryId("");
+    }
+  }
 
   return (
     <section className="progress-history-card" aria-labelledby="progress-history-title">
@@ -2720,7 +2738,10 @@ function ProjectProgressHistory({ project }) {
                 )}
                 <div className="progress-history-footer">
                   <span>보고 주간 {item.report_start_date} ~ {item.report_end_date}</span>
-                  {item.confluence_url && <a href={item.confluence_url} target="_blank" rel="noopener noreferrer">Confluence 상세 <ExternalLink size={12} /></a>}
+                  <div className="progress-history-actions">
+                    {item.confluence_url && <a href={item.confluence_url} target="_blank" rel="noopener noreferrer">Confluence 상세 <ExternalLink size={12} /></a>}
+                    <button className="progress-history-remove" type="button" disabled={removingHistoryId === (item.progress_id || item.history_id)} onClick={() => hideProgressFromHistory(item.progress_id || item.history_id)} aria-label="Progress History에서 제거" title="Progress History에서 제거"><Trash2 size={14} /></button>
+                  </div>
                 </div>
               </div>
             </article>
@@ -2741,53 +2762,267 @@ function ProjectProgressHistory({ project }) {
 }
 
 
+function ProjectNextPlan({ project }) {
+  const [plans, setPlans] = useState([]);
+  const [loadingPlans, setLoadingPlans] = useState(false);
+  const [planError, setPlanError] = useState("");
+
+  useEffect(() => {
+    let active = true;
+    if (!project?.id) {
+      setPlans([]);
+      return () => { active = false; };
+    }
+    setLoadingPlans(true);
+    setPlanError("");
+    request("/api/projects/" + project.id + "/upcoming-next-plans")
+      .then((items) => { if (active) setPlans(items || []); })
+      .catch((err) => { if (active) { setPlans([]); setPlanError(err.message || "Next Plan을 불러오지 못했습니다"); } })
+      .finally(() => { if (active) setLoadingPlans(false); });
+    return () => { active = false; };
+  }, [project?.id]);
+
+  return (
+    <section className="progress-history-card next-plan-card" aria-labelledby="next-plan-title">
+      <div className="progress-history-head next-plan-head">
+        <div>
+          <p className="mt-card-eyebrow"><ClipboardList size={15} />Next Plan</p>
+          <h2 id="next-plan-title">Next Plan</h2>
+          <p>한국 날짜 기준 오늘 이후의 Next Plan을 예정일 순으로 확인합니다.</p>
+        </div>
+        <span className="progress-history-count next-plan-count"><b>{plans.length}</b> plans</span>
+      </div>
+
+      {loadingPlans && <div className="progress-history-empty next-plan-empty">Next Plan을 불러오는 중입니다.</div>}
+      {!loadingPlans && planError && <div className="error compact">{planError}</div>}
+      {!loadingPlans && !planError && plans.length === 0 && <div className="progress-history-empty next-plan-empty">오늘 이후 예정된 Next Plan이 없습니다.</div>}
+      {!loadingPlans && !planError && plans.length > 0 && (
+        <div className="progress-history-list next-plan-list">
+          {plans.map((item) => (
+            <article className="progress-history-item next-plan-item" key={item.plan_id}>
+              <div className="progress-history-rail next-plan-rail" aria-hidden="true"><span className="in-progress"></span></div>
+              <div className="progress-history-content next-plan-content">
+                <div className="progress-history-meta">
+                  <time dateTime={item.due}>{String(item.due || "").replaceAll("-", ".")}</time>
+                  <span className="progress-history-status in-progress">Plan</span>
+                  <span className="progress-history-author">{item.reported_by} {ROLE_LABELS[item.reported_role] || item.reported_role}</span>
+                </div>
+                <h3>{item.plan}</h3>
+                <div className="progress-history-footer">
+                  <span>보고 주간 {item.report_start_date} ~ {item.report_end_date}</span>
+                </div>
+              </div>
+            </article>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+
 function ProjectIssueManagement({ project }) {
   const [issues, setIssues] = useState([]);
+  const [progressItems, setProgressItems] = useState([]);
   const [loadingIssues, setLoadingIssues] = useState(false);
+  const [loadingProgress, setLoadingProgress] = useState(false);
   const [issueError, setIssueError] = useState("");
   const [importanceFilter, setImportanceFilter] = useState("all");
   const [issueImagePreview, setIssueImagePreview] = useState(null);
+  const [updatingIssueId, setUpdatingIssueId] = useState("");
+  const [resolutionModal, setResolutionModal] = useState(null);
 
   useEffect(() => {
     let active = true;
     if (!project?.id) {
       setIssues([]);
+      setProgressItems([]);
       return () => { active = false; };
     }
     setImportanceFilter("all");
     setIssueImagePreview(null);
+    setResolutionModal(null);
     setLoadingIssues(true);
+    setLoadingProgress(true);
     setIssueError("");
     request("/api/projects/" + project.id + "/issue-management")
       .then((items) => { if (active) setIssues(items || []); })
       .catch((err) => { if (active) { setIssues([]); setIssueError(err.message || "Issue & Risk를 불러오지 못했습니다"); } })
       .finally(() => { if (active) setLoadingIssues(false); });
+    request("/api/projects/" + project.id + "/progress-history?include_hidden=1")
+      .then((items) => { if (active) setProgressItems(items || []); })
+      .catch(() => { if (active) setProgressItems([]); })
+      .finally(() => { if (active) setLoadingProgress(false); });
     return () => { active = false; };
   }, [project?.id]);
 
   useEffect(() => {
-    if (!issueImagePreview) return undefined;
-    const closeOnEscape = (event) => { if (event.key === "Escape") setIssueImagePreview(null); };
+    if (!issueImagePreview && !resolutionModal) return undefined;
+    const closeOnEscape = (event) => {
+      if (event.key !== "Escape") return;
+      if (issueImagePreview) setIssueImagePreview(null);
+      else setResolutionModal(null);
+    };
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [issueImagePreview]);
+  }, [issueImagePreview, resolutionModal]);
 
+  const progressById = useMemo(() => {
+    const map = new Map();
+    progressItems.forEach((item) => map.set(item.progress_id || item.history_id, item));
+    return map;
+  }, [progressItems]);
+  const openIssues = useMemo(() => issues.filter((item) => item.status !== "resolved"), [issues]);
+  const resolvedIssues = useMemo(() => issues.filter((item) => item.status === "resolved"), [issues]);
   const issueCounts = useMemo(() => ({
-    all: issues.length,
-    high: issues.filter((item) => item.importance === "상").length,
-    medium: issues.filter((item) => item.importance === "중").length,
-    low: issues.filter((item) => item.importance === "하").length,
-  }), [issues]);
+    all: openIssues.length,
+    resolved: resolvedIssues.length,
+    high: openIssues.filter((item) => item.importance === "상").length,
+    medium: openIssues.filter((item) => item.importance === "중").length,
+    low: openIssues.filter((item) => item.importance === "하").length,
+  }), [openIssues, resolvedIssues]);
 
-  const visibleIssues = useMemo(() => {
-    const value = { high: "상", medium: "중", low: "하" }[importanceFilter];
-    return value ? issues.filter((item) => item.importance === value) : issues;
-  }, [issues, importanceFilter]);
+  const filteredOpenIssues = useMemo(() => filterIssuesByImportance(openIssues, importanceFilter), [openIssues, importanceFilter]);
+  const filteredResolvedIssues = useMemo(() => filterIssuesByImportance(resolvedIssues, importanceFilter), [resolvedIssues, importanceFilter]);
+
+  function filterIssuesByImportance(items, filter) {
+    const value = { high: "상", medium: "중", low: "하" }[filter];
+    return value ? items.filter((item) => item.importance === value) : items;
+  }
 
   function importanceClass(value) {
     if (value === "상") return "high";
     if (value === "하") return "low";
     return "medium";
+  }
+
+  function openResolutionModal(issue) {
+    setResolutionModal({
+      issue,
+      selectedIds: Array.isArray(issue.resolution_progress_ids) ? issue.resolution_progress_ids : [],
+      comment: issue.resolution_comment || "",
+    });
+  }
+
+  function toggleResolutionProgress(progressId) {
+    setResolutionModal((prev) => {
+      if (!prev) return prev;
+      const selected = new Set(prev.selectedIds || []);
+      if (selected.has(progressId)) selected.delete(progressId);
+      else selected.add(progressId);
+      return { ...prev, selectedIds: Array.from(selected) };
+    });
+  }
+
+  async function updateIssueStatus(issueId, status, options = {}) {
+    setUpdatingIssueId(issueId);
+    setIssueError("");
+    try {
+      const updated = await request("/api/project-issues/" + issueId + "/status", {
+        method: "PUT",
+        body: JSON.stringify({ status, ...options }),
+      });
+      setIssues((prev) => prev.map((item) => (item.issue_id === issueId ? {
+        ...item,
+        status: updated.status,
+        resolved_at: updated.resolved_at || "",
+        updated_at: updated.updated_at || item.updated_at,
+        resolution_progress_ids: updated.resolution_progress_ids || item.resolution_progress_ids || [],
+        resolution_comment: updated.resolution_comment || "",
+      } : item)));
+      setResolutionModal(null);
+    } catch (err) {
+      setIssueError(err.message || "Issue 상태를 변경하지 못했습니다");
+    } finally {
+      setUpdatingIssueId("");
+    }
+  }
+
+  function submitIssueResolution() {
+    if (!resolutionModal?.issue) return;
+    updateIssueStatus(resolutionModal.issue.issue_id, "resolved", {
+      resolution_progress_ids: resolutionModal.selectedIds || [],
+      resolution_comment: resolutionModal.comment || "",
+    });
+  }
+
+  function renderResolvedMeta(item) {
+    const linkedIds = Array.isArray(item.resolution_progress_ids) ? item.resolution_progress_ids : [];
+    const linkedProgress = linkedIds.map((id) => progressById.get(id)).filter(Boolean);
+    if (!linkedProgress.length && !item.resolution_comment) return null;
+    return (
+      <div className="issue-resolution-summary">
+        {linkedProgress.length > 0 && (
+          <div className="issue-resolution-linked">
+            <span>관련 Process</span>
+            <ul>
+              {linkedProgress.map((progress) => (
+                <li key={progress.progress_id || progress.history_id}>
+                  <time dateTime={progress.occurred_on}>{String(progress.occurred_on || "").replaceAll("-", ".")}</time>
+                  <p>{progress.log}</p>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {item.resolution_comment && (
+          <div className="issue-resolution-comment-block">
+            <span>종합 의견</span>
+            <p>{item.resolution_comment}</p>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  function renderIssueList(items, emptyText, isResolvedSection = false) {
+    if (items.length === 0) return <div className="issue-management-empty section-empty">{emptyText}</div>;
+    return (
+      <div className="issue-management-list">
+        {items.map((item) => {
+          const level = importanceClass(item.importance);
+          const isUpdating = updatingIssueId === item.issue_id;
+          return (
+            <article className={"issue-management-item " + level + (isResolvedSection ? " resolved" : "")} key={item.issue_id}>
+              <div className="issue-management-item-head">
+                <span className={"issue-importance " + level}>중요도 {item.importance}</span>
+                <span className="issue-management-author">{item.reported_by} {ROLE_LABELS[item.reported_role] || item.reported_role}</span>
+              </div>
+              <h3>{item.issue}</h3>
+              {(item.detail || item.images?.length > 0) && (
+                <details className="progress-history-details">
+                  <summary><span>상세 내용{item.images?.length ? " · 이미지 " + item.images.length + "장" : ""}</span></summary>
+                  <div className="progress-history-detail-body">
+                    {item.detail && <p className="progress-history-detail">{item.detail}</p>}
+                    {item.images?.length > 0 && (
+                      <div className="progress-history-images">
+                        {item.images.map((image, imageIndex) => (
+                          <button type="button" key={item.issue_id + "-image-" + imageIndex} onClick={() => setIssueImagePreview({ src: reportImageSrc(image), alt: item.issue + " 첨부 이미지 " + (imageIndex + 1) })}>
+                            <img src={reportImageSrc(image)} alt={item.issue + " 첨부 이미지 " + (imageIndex + 1)} />
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </details>
+              )}
+              {isResolvedSection && renderResolvedMeta(item)}
+              <div className="issue-management-footer">
+                <span>보고 주간 {item.report_start_date} ~ {item.report_end_date}</span>
+                <div className="issue-management-actions">
+                  {item.confluence_url && <a href={item.confluence_url} target="_blank" rel="noopener noreferrer">Confluence 상세 <ExternalLink size={12} /></a>}
+                  {isResolvedSection ? (
+                    <button className="issue-resolve-btn secondary" type="button" disabled={isUpdating} onClick={() => updateIssueStatus(item.issue_id, "open")}>미해결로 되돌리기</button>
+                  ) : (
+                    <button className="issue-resolve-btn" type="button" disabled={isUpdating} onClick={() => openResolutionModal(item)}><Check size={13} />Issue 해결</button>
+                  )}
+                </div>
+              </div>
+            </article>
+          );
+        })}
+      </div>
+    );
   }
 
   return (
@@ -2796,13 +3031,13 @@ function ProjectIssueManagement({ project }) {
         <div>
           <p className="mt-card-eyebrow"><AlertTriangle size={15} />Issue Management</p>
           <h2 id="issue-management-title">Issue &amp; Risk 관리</h2>
-          <p>모든 주간보고에 작성된 Issue &amp; Risk를 중요도별로 모아 확인합니다.</p>
+          <p>모든 주간보고에 작성된 Issue &amp; Risk를 미해결 항목과 해결된 항목으로 나누어 관리합니다.</p>
         </div>
-        <span className="issue-management-count"><b>{issueCounts.all}</b> issues</span>
+        <span className="issue-management-count"><b>{issueCounts.all}</b> 미해결 · {issueCounts.resolved} 해결</span>
       </div>
 
       <div className="issue-management-toolbar">
-        <div className="issue-management-summary" aria-label="Issue 중요도 요약">
+        <div className="issue-management-summary" aria-label="미해결 Issue 중요도 요약">
           <span className="high"><b>{issueCounts.high}</b> 상</span>
           <span className="medium"><b>{issueCounts.medium}</b> 중</span>
           <span className="low"><b>{issueCounts.low}</b> 하</span>
@@ -2819,42 +3054,71 @@ function ProjectIssueManagement({ project }) {
       {loadingIssues && <div className="issue-management-empty">Issue &amp; Risk를 불러오는 중입니다.</div>}
       {!loadingIssues && issueError && <div className="error compact">{issueError}</div>}
       {!loadingIssues && !issueError && issues.length === 0 && <div className="issue-management-empty">아직 작성된 Issue &amp; Risk가 없습니다.</div>}
-      {!loadingIssues && !issueError && issues.length > 0 && visibleIssues.length === 0 && <div className="issue-management-empty">선택한 중요도의 Issue &amp; Risk가 없습니다.</div>}
-      {!loadingIssues && !issueError && visibleIssues.length > 0 && (
-        <div className="issue-management-list">
-          {visibleIssues.map((item) => {
-            const level = importanceClass(item.importance);
-            return (
-              <article className={"issue-management-item " + level} key={item.issue_id}>
-                <div className="issue-management-item-head">
-                  <span className={"issue-importance " + level}>중요도 {item.importance}</span>
-                  <span className="issue-management-author">{item.reported_by} {ROLE_LABELS[item.reported_role] || item.reported_role}</span>
+      {!loadingIssues && !issueError && issues.length > 0 && (
+        <div className="issue-management-sections">
+          <section className="issue-management-section ongoing" aria-label="미해결 Issue">
+            <div className="issue-management-section-head">
+              <div><h3>미해결</h3><p>아직 해결되지 않아 계속 추적해야 하는 Issue입니다.</p></div>
+              <span>{filteredOpenIssues.length}건</span>
+            </div>
+            {renderIssueList(filteredOpenIssues, importanceFilter === "all" ? "미해결 Issue가 없습니다." : "선택한 중요도의 미해결 Issue가 없습니다.")}
+          </section>
+          <section className="issue-management-section resolved" aria-label="해결된 Issue">
+            <div className="issue-management-section-head">
+              <div><h3>해결</h3><p>해결 처리되어 기록으로 보관되는 Issue입니다.</p></div>
+              <span>{filteredResolvedIssues.length}건</span>
+            </div>
+            {renderIssueList(filteredResolvedIssues, importanceFilter === "all" ? "해결된 Issue가 없습니다." : "선택한 중요도의 해결 Issue가 없습니다.", true)}
+          </section>
+        </div>
+      )}
+
+      {resolutionModal && (
+        <div className="modal-backdrop issue-resolution-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setResolutionModal(null); }}>
+          <div className="issue-resolution-modal" role="dialog" aria-modal="true" aria-labelledby="issue-resolution-title" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="project-modal-head">
+              <div>
+                <h2 id="issue-resolution-title">Issue 해결</h2>
+                <p>{resolutionModal.issue.issue}</p>
+              </div>
+              <button type="button" className="icon-button" onClick={() => setResolutionModal(null)} aria-label="Issue 해결 팝업 닫기"><X size={18} /></button>
+            </div>
+            <div className="issue-resolution-body">
+              <section className="issue-resolution-panel">
+                <div className="issue-resolution-panel-head">
+                  <h3>관련 Progress 연동</h3>
+                  <span>{resolutionModal.selectedIds.length}개 선택</span>
                 </div>
-                <h3>{item.issue}</h3>
-                {(item.detail || item.images?.length > 0) && (
-                  <details className="progress-history-details">
-                    <summary><span>상세 내용{item.images?.length ? " · 이미지 " + item.images.length + "장" : ""}</span></summary>
-                    <div className="progress-history-detail-body">
-                      {item.detail && <p className="progress-history-detail">{item.detail}</p>}
-                      {item.images?.length > 0 && (
-                        <div className="progress-history-images">
-                          {item.images.map((image, imageIndex) => (
-                            <button type="button" key={item.issue_id + "-image-" + imageIndex} onClick={() => setIssueImagePreview({ src: reportImageSrc(image), alt: item.issue + " 첨부 이미지 " + (imageIndex + 1) })}>
-                              <img src={reportImageSrc(image)} alt={item.issue + " 첨부 이미지 " + (imageIndex + 1)} />
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  </details>
+                {loadingProgress && <div className="issue-resolution-empty">Progress를 불러오는 중입니다.</div>}
+                {!loadingProgress && progressItems.length === 0 && <div className="issue-resolution-empty">연동할 Done Progress가 없습니다.</div>}
+                {!loadingProgress && progressItems.length > 0 && (
+                  <div className="issue-resolution-progress-list">
+                    {progressItems.map((progress) => {
+                      const progressId = progress.progress_id || progress.history_id;
+                      const checked = resolutionModal.selectedIds.includes(progressId);
+                      return (
+                        <button type="button" key={progressId} className={checked ? "selected" : ""} onClick={() => toggleResolutionProgress(progressId)}>
+                          <span className="issue-resolution-check">{checked && <Check size={12} />}</span>
+                          <span className="issue-resolution-progress-main">
+                            <b>{progress.log}</b>
+                            <small>{progress.occurred_on} · {progress.reported_by} · {progress.report_start_date} ~ {progress.report_end_date}</small>
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
                 )}
-                <div className="issue-management-footer">
-                  <span>보고 주간 {item.report_start_date} ~ {item.report_end_date}</span>
-                  {item.confluence_url && <a href={item.confluence_url} target="_blank" rel="noopener noreferrer">Confluence 상세 <ExternalLink size={12} /></a>}
-                </div>
-              </article>
-            );
-          })}
+              </section>
+              <label className="issue-resolution-comment-field">
+                <span>종합 의견</span>
+                <textarea value={resolutionModal.comment} onChange={(event) => setResolutionModal((prev) => prev ? { ...prev, comment: event.target.value } : prev)} placeholder="Issue가 어떻게 해결되었는지, 남은 확인 사항이 있는지 작성하세요." maxLength={4000} />
+              </label>
+            </div>
+            <div className="issue-resolution-actions">
+              <button className="issue-resolution-cancel" type="button" onClick={() => setResolutionModal(null)}>취소</button>
+              <button className="issue-resolution-submit" type="button" disabled={updatingIssueId === resolutionModal.issue.issue_id} onClick={submitIssueResolution}>해결</button>
+            </div>
+          </div>
         </div>
       )}
 

@@ -16,3 +16,4 @@ frontend/.vite/
 *_test.py
 backend/workspace/*
 /app.db
+presentation/

@@ -287,6 +287,76 @@ def init_db():
             )
             """
         )
+
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS project_issue (
+                issue_id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                entry_id TEXT NOT NULL,
+                issue_index INTEGER NOT NULL,
+                status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open', 'resolved')),
+                issue TEXT NOT NULL DEFAULT '',
+                importance TEXT NOT NULL DEFAULT '중',
+                detail TEXT NOT NULL DEFAULT '',
+                images TEXT NOT NULL DEFAULT '[]',
+                confluence_url TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT '',
+                resolved_at TEXT NOT NULL DEFAULT '',
+                resolution_progress_ids TEXT NOT NULL DEFAULT '[]',
+                resolution_comment TEXT NOT NULL DEFAULT '',
+                UNIQUE(entry_id, project_id, issue_index),
+                FOREIGN KEY (entry_id) REFERENCES report_entries(entry_id) ON DELETE CASCADE,
+                FOREIGN KEY (project_id) REFERENCES project(project_id) ON DELETE CASCADE
+            )
+            """
+        )
+        if not has_column(conn, "project_issue", "resolution_progress_ids"):
+            conn.execute("ALTER TABLE project_issue ADD COLUMN resolution_progress_ids TEXT NOT NULL DEFAULT '[]'")
+        if not has_column(conn, "project_issue", "resolution_comment"):
+            conn.execute("ALTER TABLE project_issue ADD COLUMN resolution_comment TEXT NOT NULL DEFAULT ''")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS project_progress (
+                progress_id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                entry_id TEXT NOT NULL,
+                progress_index INTEGER NOT NULL,
+                log TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'done' CHECK(status IN ('done', 'in_progress')),
+                date TEXT NOT NULL DEFAULT '',
+                detail TEXT NOT NULL DEFAULT '',
+                images TEXT NOT NULL DEFAULT '[]',
+                confluence_url TEXT NOT NULL DEFAULT '',
+                is_history_hidden INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT '',
+                UNIQUE(entry_id, project_id, progress_index),
+                FOREIGN KEY (entry_id) REFERENCES report_entries(entry_id) ON DELETE CASCADE,
+                FOREIGN KEY (project_id) REFERENCES project(project_id) ON DELETE CASCADE
+            )
+            """
+        )
+        if not has_column(conn, "project_progress", "is_history_hidden"):
+            conn.execute("ALTER TABLE project_progress ADD COLUMN is_history_hidden INTEGER NOT NULL DEFAULT 0")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS project_plan (
+                plan_id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                entry_id TEXT NOT NULL,
+                plan_index INTEGER NOT NULL,
+                plan TEXT NOT NULL DEFAULT '',
+                due TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT '',
+                UNIQUE(entry_id, project_id, plan_index),
+                FOREIGN KEY (entry_id) REFERENCES report_entries(entry_id) ON DELETE CASCADE,
+                FOREIGN KEY (project_id) REFERENCES project(project_id) ON DELETE CASCADE
+            )
+            """
+        )
         if has_table(conn, "report_entries_legacy"):
             legacy_rows = conn.execute(
                 """
@@ -349,7 +419,259 @@ def init_db():
                         "UPDATE users SET sort_order = ? WHERE user_id = ?",
                         (index, user_row["user_id"]),
                     )
+        backfill_project_tracking(conn)
 
+
+
+def normalize_project_issue_item(item):
+    if isinstance(item, str):
+        issue = item.strip()
+        importance = "중"
+        detail = ""
+        images = []
+        confluence_url = ""
+    else:
+        issue = str(item.get("issue") or item.get("text") or "").strip()
+        importance = str(item.get("importance") or "중").strip()
+        if importance not in ("상", "중", "하"):
+            importance = "중"
+        detail = str(item.get("detail") or "").strip()
+        images = normalize_report_images(item.get("images") or [])
+        confluence_url = normalize_confluence_url(item.get("confluence_url"))
+    if not (issue or detail or images or confluence_url):
+        return None
+    return {
+        "issue": issue or "Issue 내용 없음",
+        "importance": importance,
+        "detail": detail,
+        "images": images,
+        "confluence_url": confluence_url,
+    }
+
+
+def upsert_project_issue(conn, entry_id, project_id, issue_index, item, now):
+    images = json.dumps(item.get("images") or [], ensure_ascii=False)
+    conn.execute(
+        """
+        INSERT INTO project_issue (
+            issue_id, project_id, entry_id, issue_index, status,
+            issue, importance, detail, images, confluence_url,
+            created_at, updated_at, resolved_at, resolution_progress_ids, resolution_comment
+        )
+        VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, '', '[]', '')
+        ON CONFLICT(entry_id, project_id, issue_index) DO UPDATE SET
+            issue = excluded.issue,
+            importance = excluded.importance,
+            detail = excluded.detail,
+            images = excluded.images,
+            confluence_url = excluded.confluence_url,
+            updated_at = excluded.updated_at
+        """,
+        (
+            str(uuid.uuid4()),
+            project_id,
+            entry_id,
+            issue_index,
+            item["issue"],
+            item["importance"],
+            item["detail"],
+            images,
+            item["confluence_url"],
+            now,
+            now,
+        ),
+    )
+
+
+def sync_project_issues_for_entry(conn, entry_id, project_id, risk_issue, now=None):
+    now = now or datetime.utcnow().isoformat()
+    normalized = []
+    for item in risk_issue or []:
+        normalized_item = normalize_project_issue_item(item)
+        if normalized_item:
+            normalized.append(normalized_item)
+    for index, item in enumerate(normalized):
+        upsert_project_issue(conn, entry_id, project_id, index, item, now)
+    conn.execute(
+        """
+        DELETE FROM project_issue
+        WHERE entry_id = ? AND project_id = ? AND issue_index >= ?
+        """,
+        (entry_id, project_id, len(normalized)),
+    )
+
+
+
+def normalize_project_progress_item(item):
+    if isinstance(item, str):
+        log = item.strip()
+        status = "done"
+        date_value = ""
+        detail = ""
+        images = []
+        confluence_url = ""
+    else:
+        log = str(item.get("log") or item.get("text") or "").strip()
+        status = normalize_progress_status(item.get("status"))
+        date_value = normalize_report_date(item.get("date"))
+        detail = str(item.get("detail") or "").strip()
+        images = normalize_report_images(item.get("images") or [])
+        confluence_url = normalize_confluence_url(item.get("confluence_url"))
+    if not (log or date_value or detail or images or confluence_url):
+        return None
+    return {
+        "log": log,
+        "status": status,
+        "date": date_value,
+        "detail": detail,
+        "images": images,
+        "confluence_url": confluence_url,
+    }
+
+
+def upsert_project_progress(conn, entry_id, project_id, progress_index, item, now):
+    images = json.dumps(item.get("images") or [], ensure_ascii=False)
+    conn.execute(
+        """
+        INSERT INTO project_progress (
+            progress_id, project_id, entry_id, progress_index,
+            log, status, date, detail, images, confluence_url,
+            created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(entry_id, project_id, progress_index) DO UPDATE SET
+            log = excluded.log,
+            status = excluded.status,
+            date = excluded.date,
+            detail = excluded.detail,
+            images = excluded.images,
+            confluence_url = excluded.confluence_url,
+            updated_at = excluded.updated_at
+        """,
+        (
+            str(uuid.uuid4()),
+            project_id,
+            entry_id,
+            progress_index,
+            item["log"],
+            item["status"],
+            item["date"],
+            item["detail"],
+            images,
+            item["confluence_url"],
+            now,
+            now,
+        ),
+    )
+
+
+def sync_project_progress_for_entry(conn, entry_id, project_id, progress_log, now=None):
+    now = now or datetime.utcnow().isoformat()
+    normalized = []
+    for item in progress_log or []:
+        normalized_item = normalize_project_progress_item(item)
+        if normalized_item:
+            normalized.append(normalized_item)
+    for index, item in enumerate(normalized):
+        upsert_project_progress(conn, entry_id, project_id, index, item, now)
+    conn.execute(
+        """
+        DELETE FROM project_progress
+        WHERE entry_id = ? AND project_id = ? AND progress_index >= ?
+        """,
+        (entry_id, project_id, len(normalized)),
+    )
+
+
+def normalize_project_plan_item(item):
+    if isinstance(item, str):
+        plan = item.strip()
+        due = ""
+    else:
+        plan = str(item.get("plan") or item.get("text") or "").strip()
+        due = normalize_report_date(item.get("due"))
+    if not (plan or due):
+        return None
+    return {"plan": plan, "due": due}
+
+
+def upsert_project_plan(conn, entry_id, project_id, plan_index, item, now):
+    conn.execute(
+        """
+        INSERT INTO project_plan (
+            plan_id, project_id, entry_id, plan_index,
+            plan, due, created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(entry_id, project_id, plan_index) DO UPDATE SET
+            plan = excluded.plan,
+            due = excluded.due,
+            updated_at = excluded.updated_at
+        """,
+        (
+            str(uuid.uuid4()),
+            project_id,
+            entry_id,
+            plan_index,
+            item["plan"],
+            item["due"],
+            now,
+            now,
+        ),
+    )
+
+
+def sync_project_plans_for_entry(conn, entry_id, project_id, next_plan, now=None):
+    now = now or datetime.utcnow().isoformat()
+    normalized = []
+    for item in next_plan or []:
+        normalized_item = normalize_project_plan_item(item)
+        if normalized_item:
+            normalized.append(normalized_item)
+    for index, item in enumerate(normalized):
+        upsert_project_plan(conn, entry_id, project_id, index, item, now)
+    conn.execute(
+        """
+        DELETE FROM project_plan
+        WHERE entry_id = ? AND project_id = ? AND plan_index >= ?
+        """,
+        (entry_id, project_id, len(normalized)),
+    )
+
+
+def backfill_project_tracking(conn):
+    rows = conn.execute(
+        """
+        SELECT pe.entry_id, pe.project_id, pe.progress_log, pe.risk_issue, pe.next_plan,
+               pe.updated_at, re.created_at
+        FROM project_entry pe
+        JOIN report_entries re ON re.entry_id = pe.entry_id
+        WHERE pe.is_excluded = 0
+        """
+    ).fetchall()
+    for row in rows:
+        now = row["updated_at"] or row["created_at"] or datetime.utcnow().isoformat()
+        sync_project_progress_for_entry(
+            conn,
+            row["entry_id"],
+            row["project_id"],
+            parse_json_list(row["progress_log"]),
+            now,
+        )
+        sync_project_issues_for_entry(
+            conn,
+            row["entry_id"],
+            row["project_id"],
+            parse_json_list(row["risk_issue"], "issue"),
+            now,
+        )
+        sync_project_plans_for_entry(
+            conn,
+            row["entry_id"],
+            row["project_id"],
+            parse_json_list(row["next_plan"], "plan"),
+            now,
+        )
 
 
 def scheduled_weekly_report_period(now_kst=None):
@@ -540,6 +862,16 @@ class ReportEntryIn(BaseModel):
 
 class ProjectEntryStatusIn(BaseModel):
     is_excluded: bool
+
+
+class ProjectIssueStatusIn(BaseModel):
+    status: str = Field(pattern="^(open|resolved)$")
+    resolution_progress_ids: list[str] = Field(default_factory=list)
+    resolution_comment: str = ""
+
+
+class ProjectProgressHistoryVisibilityIn(BaseModel):
+    is_hidden: bool = True
 
 
 class TeamEventIn(BaseModel):
@@ -2175,6 +2507,9 @@ def save_project_entry(entry_id: str, project_id: str, payload: ReportEntryIn):
                 project_id,
             ),
         )
+        sync_project_progress_for_entry(conn, entry_id, project_id, progress_log, now)
+        sync_project_issues_for_entry(conn, entry_id, project_id, risk_issue, now)
+        sync_project_plans_for_entry(conn, entry_id, project_id, next_plan, now)
         delete_workspace_images(old_image_ids - new_image_ids)
         recompute_report_entry_status(conn, entry_id)
         return report_for_entry(conn, entry_id)
@@ -2199,6 +2534,18 @@ def update_project_entry_exclusion(entry_id: str, project_id: str, payload: Proj
                 """,
                 (now, entry_id, project_id),
             )
+            conn.execute(
+                "DELETE FROM project_progress WHERE entry_id = ? AND project_id = ?",
+                (entry_id, project_id),
+            )
+            conn.execute(
+                "DELETE FROM project_issue WHERE entry_id = ? AND project_id = ?",
+                (entry_id, project_id),
+            )
+            conn.execute(
+                "DELETE FROM project_plan WHERE entry_id = ? AND project_id = ?",
+                (entry_id, project_id),
+            )
             delete_workspace_images(old_image_ids)
         else:
             conn.execute(
@@ -2214,75 +2561,171 @@ def update_project_entry_exclusion(entry_id: str, project_id: str, payload: Proj
 
 
 @app.get("/api/projects/{project_id}/progress-history")
-def get_project_progress_history(project_id: str):
+def get_project_progress_history(project_id: str, include_hidden: bool = False):
     with get_conn() as conn:
         project = ensure_team_project(conn, project_id)
         rows = conn.execute(
             """
             SELECT
+                pp.progress_id,
+                pp.project_id,
+                pp.entry_id,
+                pp.progress_index,
+                pp.log,
+                pp.status AS progress_status,
+                pp.date AS progress_date,
+                pp.detail,
+                pp.images,
+                pp.confluence_url,
+                pp.is_history_hidden,
+                pp.created_at,
+                pp.updated_at,
                 r.report_id,
                 r.start_date AS report_start_date,
                 r.end_date AS report_end_date,
                 r.status AS report_status,
-                re.entry_id,
                 re.status AS entry_status,
                 u.user_id,
                 u.name,
-                u.role,
-                pe.progress_log,
-                pe.updated_at
-            FROM reports r
-            JOIN report_entries re ON re.report_id = r.report_id
+                u.role
+            FROM project_progress pp
+            JOIN project_entry pe ON pe.entry_id = pp.entry_id AND pe.project_id = pp.project_id
+            JOIN report_entries re ON re.entry_id = pp.entry_id
+            JOIN reports r ON r.report_id = re.report_id
             JOIN users u ON u.user_id = re.user_id
-            JOIN project_entry pe ON pe.entry_id = re.entry_id
-            WHERE r.team_id = ?
-              AND pe.project_id = ?
+            WHERE pp.project_id = ?
+              AND r.team_id = ?
               AND pe.is_excluded = 0
-            ORDER BY r.end_date DESC, r.start_date DESC, u.sort_order ASC, u.name
+              AND pp.status = 'done'
+              AND (? OR pp.is_history_hidden = 0)
+            ORDER BY r.end_date DESC, r.start_date DESC, u.sort_order ASC, pp.progress_index ASC
             """,
-            (project["team_id"], project_id),
+            (project_id, project["team_id"], 1 if include_hidden else 0),
         ).fetchall()
         history = []
         for row in rows:
-            for index, item in enumerate(parse_json_list(row["progress_log"])):
-                if isinstance(item, str):
-                    log = item.strip()
-                    status = "done"
-                    date_value = ""
-                    detail = ""
-                    images = []
-                    confluence_url = ""
-                else:
-                    log = str(item.get("log") or item.get("text") or "").strip()
-                    status = normalize_progress_status(item.get("status"))
-                    date_value = str(item.get("date") or "").strip()
-                    detail = str(item.get("detail") or "").strip()
-                    images = normalize_report_images(item.get("images") or [])
-                    confluence_url = normalize_confluence_url(item.get("confluence_url"))
-                if status != "done" or not (log or detail or images):
-                    continue
-                normalized_date = date_value.replace("/", "-").replace(".", "-") if date_value else ""
-                occurred_on = normalized_date or row["report_end_date"]
-                history.append({
-                    "history_id": f"{row["report_id"]}:{row["entry_id"]}:{index}",
-                    "report_id": row["report_id"],
-                    "report_start_date": row["report_start_date"],
-                    "report_end_date": row["report_end_date"],
-                    "report_status": row["report_status"],
-                    "occurred_on": occurred_on,
-                    "log": log or "진행 내용 없음",
-                    "status": status,
-                    "detail": detail,
-                    "images": images,
-                    "confluence_url": confluence_url,
-                    "reported_by": row["name"],
-                    "reported_role": row["role"],
-                })
+            normalized_date = str(row["progress_date"] or "").replace("/", "-").replace(".", "-")
+            occurred_on = normalized_date or row["report_end_date"]
+            history.append({
+                "history_id": row["progress_id"],
+                "progress_id": row["progress_id"],
+                "project_id": row["project_id"],
+                "entry_id": row["entry_id"],
+                "progress_index": row["progress_index"],
+                "report_id": row["report_id"],
+                "report_start_date": row["report_start_date"],
+                "report_end_date": row["report_end_date"],
+                "report_status": row["report_status"],
+                "entry_status": row["entry_status"],
+                "occurred_on": occurred_on,
+                "log": row["log"] or "진행 내용 없음",
+                "status": row["progress_status"],
+                "detail": row["detail"] or "",
+                "images": parse_json_list(row["images"]),
+                "confluence_url": row["confluence_url"] or "",
+                "is_history_hidden": bool(row["is_history_hidden"]),
+                "reported_by": row["name"],
+                "reported_role": row["role"],
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+            })
         history.sort(
             key=lambda item: (item["occurred_on"], item["report_end_date"], item["reported_by"], item["log"]),
             reverse=True,
         )
         return history
+
+
+@app.put("/api/project-progress/{progress_id}/history-visibility")
+def update_project_progress_history_visibility(progress_id: str, payload: ProjectProgressHistoryVisibilityIn):
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM project_progress WHERE progress_id = ?", (progress_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Progress not found")
+        now = datetime.utcnow().isoformat()
+        conn.execute(
+            """
+            UPDATE project_progress
+            SET is_history_hidden = ?, updated_at = ?
+            WHERE progress_id = ?
+            """,
+            (1 if payload.is_hidden else 0, now, progress_id),
+        )
+        updated = conn.execute("SELECT * FROM project_progress WHERE progress_id = ?", (progress_id,)).fetchone()
+        data = row_to_dict(updated)
+        data["images"] = parse_json_list(data.get("images"))
+        data["is_history_hidden"] = bool(data.get("is_history_hidden"))
+        return data
+
+
+@app.get("/api/projects/{project_id}/upcoming-next-plans")
+def get_project_upcoming_next_plans(project_id: str):
+    today = datetime.now(KST).date()
+    with get_conn() as conn:
+        project = ensure_team_project(conn, project_id)
+        rows = conn.execute(
+            """
+            SELECT
+                pp.plan_id,
+                pp.project_id,
+                pp.entry_id,
+                pp.plan_index,
+                pp.plan,
+                pp.due,
+                pp.created_at,
+                pp.updated_at,
+                r.report_id,
+                r.start_date AS report_start_date,
+                r.end_date AS report_end_date,
+                r.status AS report_status,
+                re.status AS entry_status,
+                u.user_id,
+                u.name,
+                u.role
+            FROM project_plan pp
+            JOIN project_entry pe ON pe.entry_id = pp.entry_id AND pe.project_id = pp.project_id
+            JOIN report_entries re ON re.entry_id = pp.entry_id
+            JOIN reports r ON r.report_id = re.report_id
+            JOIN users u ON u.user_id = re.user_id
+            WHERE pp.project_id = ?
+              AND r.team_id = ?
+              AND pe.is_excluded = 0
+              AND re.status = 'done'
+              AND TRIM(pp.plan) != ''
+              AND TRIM(pp.due) != ''
+            ORDER BY r.end_date DESC, r.start_date DESC, u.sort_order ASC, pp.plan_index ASC
+            """,
+            (project_id, project["team_id"]),
+        ).fetchall()
+        plans = []
+        for row in rows:
+            due_text = str(row["due"] or "").strip()
+            normalized_due = due_text.replace("/", "-").replace(".", "-")
+            try:
+                due_date = date.fromisoformat(normalized_due)
+            except ValueError:
+                continue
+            if due_date < today:
+                continue
+            plans.append({
+                "plan_id": row["plan_id"],
+                "project_id": row["project_id"],
+                "entry_id": row["entry_id"],
+                "plan_index": row["plan_index"],
+                "report_id": row["report_id"],
+                "report_start_date": row["report_start_date"],
+                "report_end_date": row["report_end_date"],
+                "report_status": row["report_status"],
+                "entry_status": row["entry_status"],
+                "due": normalized_due,
+                "plan": row["plan"] or "계획 내용 없음",
+                "reported_by": row["name"],
+                "reported_role": row["role"],
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+            })
+        plans.sort(key=lambda item: (item["due"], item["report_end_date"], item["reported_by"], item["plan"]))
+        return plans
 
 
 @app.get("/api/projects/{project_id}/issue-management")
@@ -2292,68 +2735,125 @@ def get_project_issue_management(project_id: str):
         rows = conn.execute(
             """
             SELECT
+                pi.issue_id,
+                pi.project_id,
+                pi.entry_id,
+                pi.issue_index,
+                pi.status AS issue_status,
+                pi.issue,
+                pi.importance,
+                pi.detail,
+                pi.images,
+                pi.confluence_url,
+                pi.created_at,
+                pi.updated_at,
+                pi.resolved_at,
+                pi.resolution_progress_ids,
+                pi.resolution_comment,
                 r.report_id,
                 r.start_date AS report_start_date,
                 r.end_date AS report_end_date,
                 r.status AS report_status,
-                re.entry_id,
                 re.status AS entry_status,
                 u.user_id,
                 u.name,
-                u.role,
-                pe.risk_issue,
-                pe.updated_at
-            FROM reports r
-            JOIN report_entries re ON re.report_id = r.report_id
+                u.role
+            FROM project_issue pi
+            JOIN project_entry pe ON pe.entry_id = pi.entry_id AND pe.project_id = pi.project_id
+            JOIN report_entries re ON re.entry_id = pi.entry_id
+            JOIN reports r ON r.report_id = re.report_id
             JOIN users u ON u.user_id = re.user_id
-            JOIN project_entry pe ON pe.entry_id = re.entry_id
-            WHERE r.team_id = ?
-              AND pe.project_id = ?
+            WHERE pi.project_id = ?
+              AND r.team_id = ?
               AND pe.is_excluded = 0
-            ORDER BY r.end_date DESC, r.start_date DESC, u.sort_order ASC, u.name
+            ORDER BY
+              CASE pi.status WHEN 'open' THEN 0 ELSE 1 END,
+              r.end_date DESC,
+              r.start_date DESC,
+              u.sort_order ASC,
+              pi.issue_index ASC
             """,
-            (project["team_id"], project_id),
+            (project_id, project["team_id"]),
         ).fetchall()
         issues = []
         for row in rows:
-            for index, item in enumerate(parse_json_list(row["risk_issue"], "issue")):
-                if isinstance(item, str):
-                    issue = item.strip()
-                    importance = "중"
-                    detail = ""
-                    images = []
-                    confluence_url = ""
-                else:
-                    issue = str(item.get("issue") or item.get("text") or "").strip()
-                    importance = str(item.get("importance") or "중").strip()
-                    if importance not in ("상", "중", "하"):
-                        importance = "중"
-                    detail = str(item.get("detail") or "").strip()
-                    images = normalize_report_images(item.get("images") or [])
-                    confluence_url = normalize_confluence_url(item.get("confluence_url"))
-                if not (issue or detail or images or confluence_url):
-                    continue
-                issues.append({
-                    "issue_id": f"{row["report_id"]}:{row["entry_id"]}:{index}",
-                    "report_id": row["report_id"],
-                    "report_start_date": row["report_start_date"],
-                    "report_end_date": row["report_end_date"],
-                    "report_status": row["report_status"],
-                    "entry_status": row["entry_status"],
-                    "issue": issue or "Issue 내용 없음",
-                    "importance": importance,
-                    "detail": detail,
-                    "images": images,
-                    "confluence_url": confluence_url,
-                    "reported_by": row["name"],
-                    "reported_role": row["role"],
-                })
+            issues.append({
+                "issue_id": row["issue_id"],
+                "project_id": row["project_id"],
+                "entry_id": row["entry_id"],
+                "issue_index": row["issue_index"],
+                "status": row["issue_status"],
+                "report_id": row["report_id"],
+                "report_start_date": row["report_start_date"],
+                "report_end_date": row["report_end_date"],
+                "report_status": row["report_status"],
+                "entry_status": row["entry_status"],
+                "issue": row["issue"] or "Issue 내용 없음",
+                "importance": row["importance"] if row["importance"] in ("상", "중", "하") else "중",
+                "detail": row["detail"] or "",
+                "images": parse_json_list(row["images"]),
+                "confluence_url": row["confluence_url"] or "",
+                "reported_by": row["name"],
+                "reported_role": row["role"],
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+                "resolved_at": row["resolved_at"],
+                "resolution_progress_ids": parse_json_list(row["resolution_progress_ids"]),
+                "resolution_comment": row["resolution_comment"] or "",
+            })
         issues.sort(
-            key=lambda item: (item["report_end_date"], item["report_start_date"], item["reported_by"]),
-            reverse=True,
+            key=lambda item: (
+                0 if item["status"] == "open" else 1,
+                report_importance_sort_value(item["importance"]),
+                item["report_end_date"],
+                item["report_start_date"],
+                item["reported_by"],
+            )
         )
-        issues.sort(key=lambda item: report_importance_sort_value(item["importance"]))
         return issues
+
+
+@app.put("/api/project-issues/{issue_id}/status")
+def update_project_issue_status(issue_id: str, payload: ProjectIssueStatusIn):
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM project_issue WHERE issue_id = ?", (issue_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Issue not found")
+        now = datetime.utcnow().isoformat()
+        resolved_at = now if payload.status == "resolved" else ""
+        progress_ids = []
+        if payload.status == "resolved":
+            candidates = [str(value or "").strip() for value in payload.resolution_progress_ids or []]
+            candidates = [value for value in candidates if value]
+            if candidates:
+                placeholders = ",".join("?" for _ in candidates)
+                progress_rows = conn.execute(
+                    f"SELECT progress_id FROM project_progress WHERE project_id = ? AND progress_id IN ({placeholders})",
+                    (row["project_id"], *candidates),
+                ).fetchall()
+                valid_ids = {progress_row["progress_id"] for progress_row in progress_rows}
+                progress_ids = [value for value in candidates if value in valid_ids]
+        resolution_comment = payload.resolution_comment.strip()[:4000] if payload.status == "resolved" else row["resolution_comment"]
+        conn.execute(
+            """
+            UPDATE project_issue
+            SET status = ?, resolved_at = ?, resolution_progress_ids = ?, resolution_comment = ?, updated_at = ?
+            WHERE issue_id = ?
+            """,
+            (
+                payload.status,
+                resolved_at,
+                json.dumps(progress_ids, ensure_ascii=False) if payload.status == "resolved" else row["resolution_progress_ids"],
+                resolution_comment,
+                now,
+                issue_id,
+            ),
+        )
+        updated = conn.execute("SELECT * FROM project_issue WHERE issue_id = ?", (issue_id,)).fetchone()
+        data = row_to_dict(updated)
+        data["images"] = parse_json_list(data.get("images"))
+        data["resolution_progress_ids"] = parse_json_list(data.get("resolution_progress_ids"))
+        return data
 
 @app.get("/api/projects/{project_id}/weekly-reports")
 def list_project_weekly_reports(project_id: str):
