@@ -23,7 +23,9 @@ const ACCENTS = [
 const STATUS_STYLE = {
   planned: { label: '예정', bg: '#F1F0EC', text: '#6B6A63' },
   in_progress: { label: '진행중', bg: '#EEEDFE', text: '#4F46E5' },
+  in_progress_delayed: { label: '진행 지연', bg: '#FFF4D6', text: '#9A5B00' },
   done: { label: '완료', bg: '#E4F5EC', text: '#0E8F52' },
+  done_delayed: { label: '완료 지연', bg: '#FCF1EC', text: '#B0331C' },
   blocked: { label: '차단', bg: '#FCF1EC', text: '#B0331C' },
 };
 const ROLE_LABELS = { L: '리더', CM: '책임매니저', M: '매니저' };
@@ -51,6 +53,12 @@ function isoOf(date) {
 
 function todayIso() {
   return isoOf(new Date());
+}
+
+function kstTodayIso() {
+  const parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Seoul', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date());
+  const values = Object.fromEntries(parts.filter((part) => part.type !== 'literal').map((part) => [part.type, part.value]));
+  return `${values.year}-${values.month}-${values.day}`;
 }
 
 function plusDays(iso, days) {
@@ -121,7 +129,9 @@ function businessDaysBetween(startIso, endIso) {
 function normalizeStatus(status) {
   if (status === '예정') return 'planned';
   if (status === '진행중') return 'in_progress';
+  if (status === '진행 지연') return 'in_progress_delayed';
   if (status === '완료') return 'done';
+  if (status === '완료 지연') return 'done_delayed';
   return status || 'planned';
 }
 
@@ -633,7 +643,7 @@ function App() {
         body: JSON.stringify({
           title: draft.name.trim(),
           owner: draft.owner.trim(),
-          status: 'planned',
+          status: draft.status || 'planned',
           color: accent.bar,
           start_date: draft.start_date,
           end_date: draft.end_date,
@@ -3150,10 +3160,11 @@ function ProjectTimeline({
   onRemoveEpic,
 }) {
   const [workModal, setWorkModal] = useState(null);
+  const [milestoneModal, setMilestoneModal] = useState(null);
   const [epicDraft, setEpicDraft] = useState({ name: '', owner: '', status: 'planned', start_date: todayIso(), end_date: todayIso() });
-  const [editingMilestoneId, setEditingMilestoneId] = useState(null);
   const [milestoneEditDraft, setMilestoneEditDraft] = useState({ title: '', start_date: todayIso(), end_date: todayIso() });
   const [editDraft, setEditDraft] = useState({ name: '', owner: '', status: 'planned', start_date: todayIso(), end_date: todayIso() });
+  const [timelineActionId, setTimelineActionId] = useState('');
   const timelineScrollRef = useRef(null);
 
   const range = useMemo(() => {
@@ -3170,8 +3181,30 @@ function ProjectTimeline({
     return map;
   }, [days]);
   const dateGridTemplate = 'repeat(' + colCount + ', minmax(64px, 1fr))';
-  const today = todayIso();
+  const today = kstTodayIso();
   const todayIndex = dayIndex.has(today) ? dayIndex.get(today) : -1;
+  const timelineAlerts = useMemo(() => {
+    const alerts = [];
+    milestones.forEach((milestone) => {
+      (milestone.epics || []).forEach((epic) => {
+        const status = normalizeStatus(epic.status);
+        const isDone = status === 'done' || status === 'done_delayed';
+        const isActive = status === 'in_progress' || status === 'in_progress_delayed';
+        if (epic.end_date < today && !isDone) {
+          alerts.push({ type: 'ended', milestone, epic });
+          return;
+        }
+        if (epic.start_date <= today && !isActive && !isDone) {
+          alerts.push({ type: 'started', milestone, epic });
+        }
+      });
+    });
+    return alerts.sort((a, b) => {
+      const aDate = a.type === 'ended' ? a.epic.end_date : a.epic.start_date;
+      const bDate = b.type === 'ended' ? b.epic.end_date : b.epic.start_date;
+      return aDate.localeCompare(bDate) || a.epic.title.localeCompare(b.epic.title);
+    });
+  }, [milestones, today]);
 
   useEffect(() => {
     const scroller = timelineScrollRef.current;
@@ -3199,7 +3232,6 @@ function ProjectTimeline({
   }
 
   function startAddEpic(milestone) {
-    setEditingMilestoneId(null);
     setEpicDraft({ name: '', owner: '', status: 'planned', start_date: milestone.start_date, end_date: milestone.start_date });
     setWorkModal({ mode: 'add', milestone });
   }
@@ -3215,7 +3247,6 @@ function ProjectTimeline({
   }
 
   function startEditEpic(epic, milestone) {
-    setEditingMilestoneId(null);
     setEditDraft({
       name: epic.title,
       owner: epic.owner || '',
@@ -3235,48 +3266,74 @@ function ProjectTimeline({
     setWorkModal(null);
   }
 
+  async function updateWorkStatusFromAlert(epic, status) {
+    setTimelineActionId(epic.id + ':' + status);
+    try {
+      await onUpdateEpic(epic, {
+        name: epic.title,
+        owner: epic.owner || '',
+        status,
+        start_date: epic.start_date,
+        end_date: epic.end_date,
+      });
+    } finally {
+      setTimelineActionId('');
+    }
+  }
+
+  function openAddMilestoneModal() {
+    setWorkModal(null);
+    setMilestoneDraft((prev) => ({
+      ...prev,
+      title: prev.title || '',
+      start_date: prev.start_date || todayIso(),
+      end_date: prev.end_date || prev.start_date || todayIso(),
+    }));
+    setAddingMilestone(true);
+    setMilestoneModal({ mode: 'add' });
+  }
+
   function startEditMilestone(milestone) {
     setWorkModal(null);
-    setEditingMilestoneId(milestone.id);
+    setAddingMilestone(false);
     setMilestoneEditDraft({ title: milestone.title, start_date: milestone.start_date, end_date: milestone.end_date });
+    setMilestoneModal({ mode: 'edit', milestone });
   }
 
-  function commitEditMilestone(milestone) {
-    if (!milestoneEditDraft.title.trim()) {
-      setEditingMilestoneId(null);
+  function closeMilestoneModal() {
+    setMilestoneModal(null);
+    setAddingMilestone(false);
+  }
+
+  function commitAddMilestoneModal() {
+    if (!milestoneDraft.title.trim()) {
+      closeMilestoneModal();
       return;
     }
-    onUpdateMilestone(milestone, milestoneEditDraft);
-    setEditingMilestoneId(null);
+    onAddMilestone();
+    closeMilestoneModal();
   }
 
-  function renderMilestoneLabel(milestone, isEditingMilestone) {
+  function commitEditMilestoneModal() {
+    if (!milestoneModal?.milestone || !milestoneEditDraft.title.trim()) {
+      closeMilestoneModal();
+      return;
+    }
+    onUpdateMilestone(milestoneModal.milestone, milestoneEditDraft);
+    closeMilestoneModal();
+  }
+
+  function renderMilestoneLabel(milestone) {
     return (
-      <div className={`mt-row-label milestone-label${isEditingMilestone ? ' editing' : ''}`} key={`axis-${milestone.id}`}>
-        {isEditingMilestone ? (
-          <div className="milestone-edit-fields">
-            <input value={milestoneEditDraft.title} autoFocus onChange={(e) => setMilestoneEditDraft({ ...milestoneEditDraft, title: e.target.value })} onKeyDown={(e) => e.key === 'Enter' && commitEditMilestone(milestone)} />
-            <div className="meta">{milestone.start_date} → {milestone.end_date}</div>
-          </div>
-        ) : (
-          <div>
-            <div className="name">{milestone.title}</div>
-            <div className="meta">{milestone.start_date} → {milestone.end_date}</div>
-          </div>
-        )}
+      <div className="mt-row-label milestone-label" key={`axis-${milestone.id}`}>
+        <div>
+          <div className="name">{milestone.title}</div>
+          <div className="meta">{milestone.start_date} → {milestone.end_date}</div>
+        </div>
         <div className="row-actions">
-          {isEditingMilestone ? (
-            <>
-              <button className="mt-icon-action save" onClick={() => commitEditMilestone(milestone)} aria-label="마일스톤 저장"><Save size={13} /></button>
-              <button className="mt-icon-action" onClick={() => setEditingMilestoneId(null)} aria-label="마일스톤 편집 취소"><X size={13} /></button>
-            </>
-          ) : (
-            <>
-              <button className="mt-add-work-inline" onClick={() => startAddEpic(milestone)}><Plus size={12} />Work</button>
-              <button className="mt-icon-action always" onClick={() => startEditMilestone(milestone)} aria-label="마일스톤 편집"><Pencil size={13} /></button>
-              <button className="mt-delete always" onClick={() => onRemoveMilestone(milestone.id)} aria-label="마일스톤 삭제"><Trash2 size={13} /></button>
-            </>
-          )}
+          <button className="mt-add-work-inline" onClick={() => startAddEpic(milestone)}><Plus size={12} />Work</button>
+          <button className="mt-icon-action always" onClick={() => startEditMilestone(milestone)} aria-label="마일스톤 편집"><Pencil size={13} /></button>
+          <button className="mt-delete always" onClick={() => onRemoveMilestone(milestone.id)} aria-label="마일스톤 삭제"><Trash2 size={13} /></button>
         </div>
       </div>
     );
@@ -3307,26 +3364,56 @@ function ProjectTimeline({
         <p className="mt-card-sub mono">{range.start} → {range.end} · Milestone {milestones.length}개</p>
       </div>
 
+      {timelineAlerts.length > 0 && (
+        <section className="timeline-alert-panel" aria-label="Project Timeline 알림">
+          <div className="timeline-alert-head">
+            <div>
+              <h3>오늘 확인할 Work</h3>
+              <p>한국 날짜 {today.replaceAll('-', '.')} 기준으로 시작 또는 종료된 Work입니다.</p>
+            </div>
+            <span>{timelineAlerts.length}건</span>
+          </div>
+          <div className="timeline-alert-list">
+            {timelineAlerts.map(({ type, milestone, epic }) => {
+              const isEnded = type === 'ended';
+              return (
+                <article className={"timeline-alert-item " + (isEnded ? 'ended' : 'started')} key={epic.id + '-' + type}>
+                  <div className="timeline-alert-copy">
+                    <span>{isEnded ? '수행 기간 종료' : '수행 시작'}</span>
+                    <h4>{epic.title}</h4>
+                    <p>{milestone.title} · {epic.owner || '담당 미지정'} · {epic.start_date} ~ {epic.end_date}</p>
+                  </div>
+                  <div className="timeline-alert-actions">
+                    {isEnded ? (
+                      <>
+                        <button type="button" disabled={!!timelineActionId} onClick={() => updateWorkStatusFromAlert(epic, 'done')}>완료</button>
+                        <button type="button" className="delay" disabled={!!timelineActionId} onClick={() => updateWorkStatusFromAlert(epic, 'done_delayed')}>완료 지연</button>
+                      </>
+                    ) : (
+                      <>
+                        <button type="button" disabled={!!timelineActionId} onClick={() => updateWorkStatusFromAlert(epic, 'in_progress')}>진행중</button>
+                        <button type="button" className="delay" disabled={!!timelineActionId} onClick={() => updateWorkStatusFromAlert(epic, 'in_progress_delayed')}>진행 지연</button>
+                      </>
+                    )}
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        </section>
+      )}
+
       <div className="mt-split-wrap">
         <div className="mt-axis-col">
           <div className="mt-headercell">Milestone / Work</div>
-          {milestones.map((milestone) => {
-            const isEditingMilestone = editingMilestoneId === milestone.id;
-            return (
-              <React.Fragment key={`axis-${milestone.id}`}>
-                {renderMilestoneLabel(milestone, isEditingMilestone)}
-                {milestone.epics.map((epic, index) => renderEpicLabel(epic, milestone, index === milestone.epics.length - 1))}
-              </React.Fragment>
-            );
-          })}
-          <div className={`timeline-add-milestone axis${addingMilestone ? ' editing' : ''}`}>
-            {addingMilestone ? (
-              <div className="add-milestone-form axis-form">
-                <input name="mtitle" placeholder="마일스톤 이름" value={milestoneDraft.title} autoFocus onChange={(e) => setMilestoneDraft({ ...milestoneDraft, title: e.target.value })} onKeyDown={(e) => e.key === 'Enter' && onAddMilestone()} />
-              </div>
-            ) : (
-              <button className="add-milestone-btn" onClick={() => setAddingMilestone(true)}><Plus size={15} />마일스톤 추가</button>
-            )}
+          {milestones.map((milestone) => (
+            <React.Fragment key={`axis-${milestone.id}`}>
+              {renderMilestoneLabel(milestone)}
+              {milestone.epics.map((epic, index) => renderEpicLabel(epic, milestone, index === milestone.epics.length - 1))}
+            </React.Fragment>
+          ))}
+          <div className="timeline-add-milestone axis">
+            <button className="add-milestone-btn" onClick={openAddMilestoneModal}><Plus size={15} />마일스톤 추가</button>
           </div>
         </div>
 
@@ -3344,23 +3431,14 @@ function ProjectTimeline({
 
             {milestones.map((milestone) => {
               const milestoneSpan = spanFor(milestone.start_date, milestone.end_date);
-              const isEditingMilestone = editingMilestoneId === milestone.id;
               return (
                 <React.Fragment key={`calendar-${milestone.id}`}>
-                  <div className={`mt-track milestone-track${isEditingMilestone ? ' editing' : ''}`} style={{ gridColumn: `1 / span ${colCount}`, gridTemplateColumns: dateGridTemplate }}>
-                    {isEditingMilestone ? (
-                      <div className="mt-date-inputs milestone-edit-track" style={{ gridColumn: `1 / span ${colCount}` }}>
-                        <input type="date" value={milestoneEditDraft.start_date} onChange={(e) => setMilestoneEditDraft({ ...milestoneEditDraft, start_date: e.target.value })} />
-                        <span>→</span>
-                        <input type="date" value={milestoneEditDraft.end_date} onChange={(e) => setMilestoneEditDraft({ ...milestoneEditDraft, end_date: e.target.value })} />
-                      </div>
-                    ) : (
-                      <div className="milestone-bar" style={{ gridColumn: `${milestoneSpan.startCol + 1} / span ${milestoneSpan.colSpan}` }}>
-                        <AudioWaveform size={14} className="icon" />
-                        <span className="label">{milestone.title}</span>
-                        <span className="count">{milestone.epics.length} works</span>
-                      </div>
-                    )}
+                  <div className="mt-track milestone-track" style={{ gridColumn: `1 / span ${colCount}`, gridTemplateColumns: dateGridTemplate }}>
+                    <div className="milestone-bar" style={{ gridColumn: `${milestoneSpan.startCol + 1} / span ${milestoneSpan.colSpan}` }}>
+                      <AudioWaveform size={14} className="icon" />
+                      <span className="label">{milestone.title}</span>
+                      <span className="count">{milestone.epics.length} works</span>
+                    </div>
                   </div>
 
                   {milestone.epics.map((epic, index) => {
@@ -3377,21 +3455,43 @@ function ProjectTimeline({
               );
             })}
 
-            <div className={`timeline-add-milestone calendar${addingMilestone ? ' editing' : ''}`} style={{ gridColumn: `1 / span ${colCount}` }}>
-              {addingMilestone && (
-                <div className="add-milestone-form calendar-form">
-                  <input type="date" value={milestoneDraft.start_date} onChange={(e) => setMilestoneDraft({ ...milestoneDraft, start_date: e.target.value })} />
-                  <span>→</span>
-                  <input type="date" value={milestoneDraft.end_date} onChange={(e) => setMilestoneDraft({ ...milestoneDraft, end_date: e.target.value })} />
-                  <button className="mt-btn primary sm" onClick={onAddMilestone}>추가</button>
-                  <button className="mt-btn sm" onClick={() => setAddingMilestone(false)}>취소</button>
-                </div>
-              )}
-            </div>
+            <div className="timeline-add-milestone calendar" style={{ gridColumn: `1 / span ${colCount}` }}></div>
           </div>
         </div>
       </div>
     </article>
+
+    {milestoneModal && (
+      <div className="modal-backdrop" role="presentation">
+        <div className="project-modal work-modal milestone-modal" role="dialog" aria-modal="true" aria-labelledby="milestone-modal-title">
+          <div className="project-modal-head">
+            <div>
+              <h2 id="milestone-modal-title">{milestoneModal.mode === 'edit' ? '마일스톤 수정' : '마일스톤 추가'}</h2>
+              <p>{project?.title || 'Project Timeline'}</p>
+            </div>
+            <button className="icon-btn" type="button" onClick={closeMilestoneModal} aria-label="닫기"><X size={16} /></button>
+          </div>
+          <div className="work-modal-form">
+            <label>
+              <span>마일스톤 이름</span>
+              <input value={milestoneModal.mode === 'edit' ? milestoneEditDraft.title : milestoneDraft.title} autoFocus onChange={(e) => milestoneModal.mode === 'edit' ? setMilestoneEditDraft({ ...milestoneEditDraft, title: e.target.value }) : setMilestoneDraft({ ...milestoneDraft, title: e.target.value })} onKeyDown={(e) => e.key === 'Enter' && (milestoneModal.mode === 'edit' ? commitEditMilestoneModal() : commitAddMilestoneModal())} />
+            </label>
+            <label>
+              <span>시작일</span>
+              <input type="date" value={milestoneModal.mode === 'edit' ? milestoneEditDraft.start_date : milestoneDraft.start_date} onChange={(e) => milestoneModal.mode === 'edit' ? setMilestoneEditDraft({ ...milestoneEditDraft, start_date: e.target.value }) : setMilestoneDraft({ ...milestoneDraft, start_date: e.target.value })} />
+            </label>
+            <label>
+              <span>종료일</span>
+              <input type="date" value={milestoneModal.mode === 'edit' ? milestoneEditDraft.end_date : milestoneDraft.end_date} onChange={(e) => milestoneModal.mode === 'edit' ? setMilestoneEditDraft({ ...milestoneEditDraft, end_date: e.target.value }) : setMilestoneDraft({ ...milestoneDraft, end_date: e.target.value })} />
+            </label>
+          </div>
+          <div className="project-modal-actions">
+            <button className="mt-btn" type="button" onClick={closeMilestoneModal}>취소</button>
+            <button className="mt-btn primary" type="button" onClick={milestoneModal.mode === 'edit' ? commitEditMilestoneModal : commitAddMilestoneModal}>{milestoneModal.mode === 'edit' ? '저장' : '추가'}</button>
+          </div>
+        </div>
+      </div>
+    )}
 
     {workModal && (
       <div className="modal-backdrop" role="presentation">
@@ -3417,7 +3517,9 @@ function ProjectTimeline({
               <select value={activeWorkDraft.status} onChange={(e) => setActiveWorkDraft({ ...activeWorkDraft, status: e.target.value })}>
                 <option value="planned">예정</option>
                 <option value="in_progress">진행중</option>
+                <option value="in_progress_delayed">진행 지연</option>
                 <option value="done">완료</option>
+                <option value="done_delayed">완료 지연</option>
               </select>
             </label>
             <label>
