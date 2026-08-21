@@ -1,9 +1,15 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { Plus, Trash2, AudioWaveform, User, ChevronRight, Pencil, Save, X, KeyRound, LogOut, Users, ClipboardList, GripVertical, HelpCircle, Check } from 'lucide-react';
+import { Plus, Trash2, AudioWaveform, User, ChevronRight, Pencil, Save, X, KeyRound, LogOut, Users, ClipboardList, GripVertical, HelpCircle, Check, FileText, Link2, ImagePlus, AlertTriangle, History, ExternalLink } from 'lucide-react';
 import './styles.css';
 
-const API_BASE = import.meta.env.VITE_API_BASE || `${window.location.protocol}//${window.location.hostname}:9601`;
+const API_BASE = import.meta.env.VITE_API_BASE || `${window.location.protocol}//${window.location.hostname}:9801`;
+
+function reportImageSrc(value) {
+  const image = String(value || "");
+  if (!image || image.startsWith("data:") || image.startsWith("http://") || image.startsWith("https://") || image.startsWith("blob:")) return image;
+  return API_BASE + "/api/report-images/" + image.split("/").map(encodeURIComponent).join("/");
+}
 const DAY = 24 * 60 * 60 * 1000;
 const DOW = ['일', '월', '화', '수', '목', '금', '토'];
 const INITIAL_PASSWORD = 'wia1234!';
@@ -71,8 +77,8 @@ function weeklyCompletionText(members) {
 
 function emptyWeeklyEntryDraft() {
   return {
-    progress_log: [{ log: "", status: "done", date: "" }],
-    risk_issue: [{ issue: "", importance: "중" }],
+    progress_log: [{ log: "", status: "done", date: "", detail: "", images: [], confluence_url: "" }],
+    risk_issue: [{ issue: "", importance: "중", detail: "", images: [], confluence_url: "" }],
     next_plan: [{ plan: "", due: "" }],
   };
 }
@@ -85,16 +91,16 @@ function normalizeWeeklyList(value, emptyItem) {
 
 function weeklyDraftFromProject(project = {}) {
   return {
-    progress_log: normalizeWeeklyList(project.progress_log, { log: "", status: "done", date: "" }).map((item) => (typeof item === "string" ? { log: item, status: "done", date: "" } : { log: item.log || item.text || "", status: item.status === "in_progress" ? "in_progress" : "done", date: slashDateToInput(item.date || "") })),
-    risk_issue: normalizeWeeklyList(project.risk_issue, { issue: "", importance: "중" }).map((item) => (typeof item === "string" ? { issue: item, importance: "중" } : { issue: item.issue || "", importance: item.importance || "중" })),
+    progress_log: normalizeWeeklyList(project.progress_log, { log: "", status: "done", date: "", detail: "", images: [], confluence_url: "" }).map((item) => (typeof item === "string" ? { log: item, status: "done", date: "", detail: "", images: [], confluence_url: "" } : { log: item.log || item.text || "", status: item.status === "in_progress" ? "in_progress" : "done", date: slashDateToInput(item.date || ""), detail: item.detail || "", images: Array.isArray(item.images) ? item.images : [], confluence_url: item.confluence_url || "" })),
+    risk_issue: normalizeWeeklyList(project.risk_issue, { issue: "", importance: "중", detail: "", images: [], confluence_url: "" }).map((item) => (typeof item === "string" ? { issue: item, importance: "중", detail: "", images: [], confluence_url: "" } : { issue: item.issue || "", importance: item.importance || "중", detail: item.detail || "", images: Array.isArray(item.images) ? item.images : [], confluence_url: item.confluence_url || "" })),
     next_plan: normalizeWeeklyList(project.next_plan, { plan: "", due: "" }).map((item) => (typeof item === "string" ? { plan: item, due: "" } : { plan: item.plan || "", due: slashDateToInput(item.due || "") })),
   };
 }
 
 function compactWeeklyDraft(draft) {
   return {
-    progress_log: (draft.progress_log || []).map((item) => ({ log: String(item.log || "").trim(), status: item.status === "in_progress" ? "in_progress" : "done", date: inputDateToSlash(item.date || "") })).filter((item) => item.log || item.date),
-    risk_issue: (draft.risk_issue || []).map((item) => ({ issue: String(item.issue || "").trim(), importance: item.importance || "중" })).filter((item) => item.issue),
+    progress_log: (draft.progress_log || []).map((item) => ({ log: String(item.log || "").trim(), status: item.status === "in_progress" ? "in_progress" : "done", date: inputDateToSlash(item.date || ""), detail: String(item.detail || "").trim(), images: Array.isArray(item.images) ? item.images : [], confluence_url: String(item.confluence_url || "").trim() })).filter((item) => item.log || item.date || item.detail || item.images.length || item.confluence_url),
+    risk_issue: (draft.risk_issue || []).map((item) => ({ issue: String(item.issue || "").trim(), importance: item.importance || "중", detail: String(item.detail || "").trim(), images: Array.isArray(item.images) ? item.images : [], confluence_url: String(item.confluence_url || "").trim() })).filter((item) => item.issue || item.detail || item.images.length || item.confluence_url),
     next_plan: (draft.next_plan || []).map((item) => ({ plan: String(item.plan || "").trim(), due: inputDateToSlash(item.due || "") })).filter((item) => item.plan || item.due),
   };
 }
@@ -701,8 +707,10 @@ function App() {
       closeWeeklyEntryModal();
       setWeeklyReportPreview(null);
       setError('');
+      return true;
     } catch (err) {
       setError(err.message);
+      return false;
     }
   }
 
@@ -919,7 +927,8 @@ function App() {
                   onUpdateEpic={updateEpic}
                   onRemoveEpic={deleteEpic}
                 />
-                <ProjectWeeklyReports project={selectedProject} />
+                <ProjectProgressHistory project={selectedProject} />
+                <ProjectIssueManagement project={selectedProject} />
               </>
             )}
           </>
@@ -1607,6 +1616,10 @@ function WeeklyReportPage({
   const writingEntryName = weeklyWritingEntry ? `${weeklyWritingEntry.name} ${weeklyWritingEntry.role}` : '';
   const [isWeeklyProjectPickerOpen, setIsWeeklyProjectPickerOpen] = useState(false);
   const [weeklySelectionDraft, setWeeklySelectionDraft] = useState([]);
+  const [detailEditor, setDetailEditor] = useState(null);
+  const [confluenceEditor, setConfluenceEditor] = useState(null);
+  const [deleteConfirmReport, setDeleteConfirmReport] = useState(null);
+  const [isDeletingReport, setIsDeletingReport] = useState(false);
   const regularWeeklyProjects = weeklyEntryProjects.filter((project) => project.project_name !== OTHER_WORK_PROJECT_NAME);
   const otherWeeklyProject = weeklyEntryProjects.find((project) => project.project_name === OTHER_WORK_PROJECT_NAME) || null;
   const writableWeeklyProjects = weeklyEntryProjects.filter((project) => !project.is_excluded);
@@ -1621,8 +1634,9 @@ function WeeklyReportPage({
       setWeeklySelectionDraft([]);
       return;
     }
-    setWeeklySelectionDraft(regularWeeklyProjects.filter((project) => !project.is_excluded).map((project) => project.project_id));
-    setIsWeeklyProjectPickerOpen(regularWeeklyProjects.length > 0);
+    const selectedProjectIds = regularWeeklyProjects.filter((project) => !project.is_excluded).map((project) => project.project_id);
+    setWeeklySelectionDraft(selectedProjectIds);
+    setIsWeeklyProjectPickerOpen(regularWeeklyProjects.length > 0 && selectedProjectIds.length === 0);
   }, [weeklyWritingEntry?.report_id, weeklyWritingEntry?.user_id]);
 
   function toggleWeeklySelectionDraft(projectId) {
@@ -1648,18 +1662,75 @@ function WeeklyReportPage({
     onSelectWeeklyProject(otherWeeklyProject);
   }
 
+  function updateStructuredItem(kind, index, patch) {
+    setWeeklyEntryDraft((prev) => ({ ...prev, [kind]: prev[kind].map((item, itemIndex) => (itemIndex === index ? { ...item, ...patch } : item)) }));
+  }
+
+  function openDetailEditor(kind, index) {
+    const item = weeklyEntryDraft[kind][index];
+    setDetailEditor({ kind, index, detail: item.detail || "", images: Array.isArray(item.images) ? [...item.images] : [] });
+  }
+
+  function saveDetailEditor() {
+    if (!detailEditor) return;
+    updateStructuredItem(detailEditor.kind, detailEditor.index, { detail: detailEditor.detail, images: detailEditor.images });
+    setDetailEditor(null);
+  }
+
+  async function addDetailImages(event) {
+    const files = Array.from(event.target.files || []);
+    event.target.value = "";
+    if (!files.length || !detailEditor) return;
+    if (files.some((file) => !["image/png", "image/jpeg", "image/webp", "image/gif"].includes(file.type))) {
+      window.alert("PNG, JPG, WEBP, GIF 이미지만 첨부할 수 있습니다.");
+      return;
+    }
+    if (files.some((file) => file.size > 5 * 1024 * 1024)) {
+      window.alert("이미지는 파일당 5MB 이하로 첨부해 주세요.");
+      return;
+    }
+    const remaining = Math.max(0, 8 - detailEditor.images.length);
+    if (!remaining) {
+      window.alert("이미지는 항목당 최대 8장까지 첨부할 수 있습니다.");
+      return;
+    }
+    const dataUrls = await Promise.all(files.slice(0, remaining).map((file) => new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ""));
+      reader.onerror = () => reject(new Error("이미지를 읽지 못했습니다"));
+      reader.readAsDataURL(file);
+    })));
+    setDetailEditor((prev) => prev ? { ...prev, images: [...prev.images, ...dataUrls] } : prev);
+  }
+
+  function openConfluenceEditor(kind, index) {
+    const item = weeklyEntryDraft[kind][index];
+    setConfluenceEditor({ kind, index, url: item.confluence_url || "" });
+  }
+
+  function saveConfluenceEditor() {
+    if (!confluenceEditor) return;
+    let url = confluenceEditor.url.trim();
+    if (url && !/^https?:\/\//i.test(url)) url = "https://" + url;
+    if (url) {
+      try { new URL(url); } catch { window.alert("올바른 URL을 입력해 주세요."); return; }
+    }
+    updateStructuredItem(confluenceEditor.kind, confluenceEditor.index, { confluence_url: url });
+    setConfluenceEditor(null);
+  }
+
   function updateProgressItem(index, key, value) {
     setWeeklyEntryDraft((prev) => ({ ...prev, progress_log: prev.progress_log.map((item, i) => (i === index ? { ...item, [key]: value } : item)) }));
   }
 
   function addProgressItem() {
-    setWeeklyEntryDraft((prev) => ({ ...prev, progress_log: [...prev.progress_log, { log: '', status: 'done', date: '' }] }));
+    setWeeklyEntryDraft((prev) => ({ ...prev, progress_log: [...prev.progress_log, { log: '', status: 'done', date: '', detail: '', images: [], confluence_url: '' }] }));
   }
 
   function removeProgressItem(index) {
     setWeeklyEntryDraft((prev) => {
       const next = prev.progress_log.filter((_, i) => i !== index);
-      return { ...prev, progress_log: next.length ? next : [{ log: '', status: 'done', date: '' }] };
+      return { ...prev, progress_log: next.length ? next : [{ log: '', status: 'done', date: '', detail: '', images: [], confluence_url: '' }] };
     });
   }
 
@@ -1668,13 +1739,13 @@ function WeeklyReportPage({
   }
 
   function addRiskItem() {
-    setWeeklyEntryDraft((prev) => ({ ...prev, risk_issue: [...prev.risk_issue, { issue: '', importance: '중' }] }));
+    setWeeklyEntryDraft((prev) => ({ ...prev, risk_issue: [...prev.risk_issue, { issue: '', importance: '중', detail: '', images: [], confluence_url: '' }] }));
   }
 
   function removeRiskItem(index) {
     setWeeklyEntryDraft((prev) => {
       const next = prev.risk_issue.filter((_, i) => i !== index);
-      return { ...prev, risk_issue: next.length ? next : [{ issue: '', importance: '중' }] };
+      return { ...prev, risk_issue: next.length ? next : [{ issue: '', importance: '중', detail: '', images: [], confluence_url: '' }] };
     });
   }
 
@@ -1691,6 +1762,14 @@ function WeeklyReportPage({
       const next = prev.next_plan.filter((_, i) => i !== index);
       return { ...prev, next_plan: next.length ? next : [{ plan: '', due: '' }] };
     });
+  }
+
+  async function confirmWeeklyReportDelete() {
+    if (!deleteConfirmReport || isDeletingReport) return;
+    setIsDeletingReport(true);
+    const deleted = await onDeleteWeeklyReport(deleteConfirmReport.report_id);
+    setIsDeletingReport(false);
+    if (deleted) setDeleteConfirmReport(null);
   }
 
   return (
@@ -1715,7 +1794,7 @@ function WeeklyReportPage({
                 </div>
                 <div className="weekly-report-head-actions">
                   <button className="weekly-complete-btn" type="button" disabled={!canCompleteReport} title={canCompleteReport ? '보고를 완료합니다' : '모든 멤버가 작성 완료 또는 부재 상태여야 활성화됩니다'} onClick={() => onCompleteWeeklyReport(weeklyReport.report_id)}>완료</button>
-                  <button className="weekly-delete-btn" type="button" onClick={() => onDeleteWeeklyReport(weeklyReport.report_id)}>삭제</button>
+                  <button className="weekly-delete-btn" type="button" onClick={() => setDeleteConfirmReport(weeklyReport)}>삭제</button>
                 </div>
               </div>
               <div className="weekly-member-grid">
@@ -1746,6 +1825,29 @@ function WeeklyReportPage({
             </div>
           </div>
         </section>
+      )}
+
+      {deleteConfirmReport && (
+        <div className="modal-backdrop" role="presentation">
+          <div className="weekly-report-modal compact-modal weekly-delete-confirm-modal" role="alertdialog" aria-modal="true" aria-labelledby="weekly-delete-confirm-title" aria-describedby="weekly-delete-confirm-description">
+            <div className="weekly-delete-confirm-icon" aria-hidden="true"><AlertTriangle size={24} /></div>
+            <div className="weekly-delete-confirm-copy">
+              <h2 id="weekly-delete-confirm-title">이 보고 주간을 삭제할까요?</h2>
+              <p className="weekly-delete-period">{deleteConfirmReport.start_date} ~ {deleteConfirmReport.end_date}</p>
+              <p id="weekly-delete-confirm-description">이 주간에 멤버들이 작성한 모든 보고 내용이 영구적으로 사라집니다.</p>
+              <ul>
+                <li>Progress Log, Risk & Issue, Next Plan</li>
+                <li>상세 작성 내용과 첨부 이미지</li>
+                <li>연결된 Confluence 링크</li>
+              </ul>
+              <strong>삭제 후에는 복구할 수 없습니다.</strong>
+            </div>
+            <div className="project-modal-actions">
+              <button className="mt-btn" type="button" disabled={isDeletingReport} onClick={() => setDeleteConfirmReport(null)}>취소</button>
+              <button className="mt-btn weekly-delete-confirm-btn" type="button" disabled={isDeletingReport} onClick={confirmWeeklyReportDelete}>{isDeletingReport ? "삭제 중..." : "보고 주간 삭제"}</button>
+            </div>
+          </div>
+        </div>
       )}
 
       {isWeeklyReportModalOpen && (
@@ -1915,6 +2017,10 @@ function WeeklyReportPage({
                                 <option value="in_progress">In Progress</option>
                               </select>
                               <input className="weekly-due-input" type="date" disabled={selectedWeeklyProject.status === 'excluded'} value={item.date} onChange={(e) => updateProgressItem(index, 'date', e.target.value)} aria-label="Progress Log 날짜" />
+                              <div className="weekly-item-actions">
+                                <button className={(item.detail || item.images?.length) ? 'has-content' : ''} type="button" disabled={selectedWeeklyProject.status === 'excluded'} onClick={() => openDetailEditor('progress_log', index)} title="상세 글과 이미지를 작성합니다"><FileText size={14} />상세</button>
+                                <button className={item.confluence_url ? 'has-content' : ''} type="button" disabled={selectedWeeklyProject.status === 'excluded'} onClick={() => openConfluenceEditor('progress_log', index)} title="Confluence 링크를 연결합니다"><Link2 size={14} />Confluence</button>
+                              </div>
                               <button className="weekly-row-remove" type="button" disabled={selectedWeeklyProject.status === 'excluded'} onClick={() => removeProgressItem(index)} aria-label="Progress Log 삭제"><Trash2 size={15} /></button>
                             </div>
                           ))}
@@ -1935,6 +2041,10 @@ function WeeklyReportPage({
                                 <option value="중">중</option>
                                 <option value="하">하</option>
                               </select>
+                              <div className="weekly-item-actions">
+                                <button className={(item.detail || item.images?.length) ? 'has-content' : ''} type="button" disabled={selectedWeeklyProject.status === 'excluded'} onClick={() => openDetailEditor('risk_issue', index)} title="상세 글과 이미지를 작성합니다"><FileText size={14} />상세</button>
+                                <button className={item.confluence_url ? 'has-content' : ''} type="button" disabled={selectedWeeklyProject.status === 'excluded'} onClick={() => openConfluenceEditor('risk_issue', index)} title="Confluence 링크를 연결합니다"><Link2 size={14} />Confluence</button>
+                              </div>
                               <button className="weekly-row-remove" type="button" disabled={selectedWeeklyProject.status === 'excluded'} onClick={() => removeRiskItem(index)} aria-label="Risk & Issue 삭제"><Trash2 size={15} /></button>
                             </div>
                           ))}
@@ -1968,6 +2078,58 @@ function WeeklyReportPage({
               </section>
             </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {detailEditor && (
+        <div className="modal-backdrop weekly-submodal-backdrop" role="presentation">
+          <div className="weekly-detail-modal" role="dialog" aria-modal="true" aria-labelledby="weekly-detail-title">
+            <div className="project-modal-head">
+              <div>
+                <h2 id="weekly-detail-title">{detailEditor.kind === 'progress_log' ? 'Progress Log 상세 작성' : 'Risk & Issue 상세 작성'}</h2>
+                <p>긴 설명과 현장 사진을 자유롭게 남겨 주세요.</p>
+              </div>
+              <button className="icon-btn" type="button" onClick={() => setDetailEditor(null)} aria-label="닫기"><X size={16} /></button>
+            </div>
+            <label className="weekly-detail-textarea">
+              <span>상세 내용</span>
+              <textarea value={detailEditor.detail} onChange={(event) => setDetailEditor((prev) => ({ ...prev, detail: event.target.value }))} placeholder="진행 과정, 결과, 의사결정, 대응 내용 등을 자유롭게 작성하세요." />
+            </label>
+            <div className="weekly-image-area">
+              <div className="weekly-image-head">
+                <div><strong>사진 첨부</strong><span>PNG, JPG, WEBP, GIF · 장당 5MB · 최대 8장</span></div>
+                <label className="weekly-image-add"><ImagePlus size={15} />사진 선택<input type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple onChange={addDetailImages} /></label>
+              </div>
+              {detailEditor.images.length > 0 ? (
+                <div className="weekly-image-grid">
+                  {detailEditor.images.map((image, index) => (
+                    <figure key={"detail-image-" + index}><img src={reportImageSrc(image)} alt={"첨부 이미지 " + (index + 1)} /><button type="button" onClick={() => setDetailEditor((prev) => ({ ...prev, images: prev.images.filter((_, imageIndex) => imageIndex !== index) }))} aria-label="이미지 삭제"><X size={13} /></button></figure>
+                  ))}
+                </div>
+              ) : <div className="weekly-image-empty">첨부된 사진이 없습니다.</div>}
+            </div>
+            <div className="project-modal-actions">
+              <button className="mt-btn" type="button" onClick={() => setDetailEditor(null)}>취소</button>
+              <button className="mt-btn primary" type="button" onClick={saveDetailEditor}>상세 저장</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {confluenceEditor && (
+        <div className="modal-backdrop weekly-submodal-backdrop" role="presentation">
+          <div className="weekly-link-modal" role="dialog" aria-modal="true" aria-labelledby="weekly-link-title">
+            <div className="project-modal-head">
+              <div><h2 id="weekly-link-title">Confluence 링크 연결</h2><p>업무 상세 페이지 URL을 입력하세요.</p></div>
+              <button className="icon-btn" type="button" onClick={() => setConfluenceEditor(null)} aria-label="닫기"><X size={16} /></button>
+            </div>
+            <label className="weekly-link-field"><span>Confluence URL</span><div><Link2 size={16} /><input autoFocus type="url" value={confluenceEditor.url} onChange={(event) => setConfluenceEditor((prev) => ({ ...prev, url: event.target.value }))} onKeyDown={(event) => { if (event.key === 'Enter') saveConfluenceEditor(); }} placeholder="https://your-domain.atlassian.net/wiki/..." /></div></label>
+            <div className="project-modal-actions">
+              {confluenceEditor.url && <button className="mt-btn danger-link" type="button" onClick={() => setConfluenceEditor((prev) => ({ ...prev, url: '' }))}>링크 제거</button>}
+              <button className="mt-btn" type="button" onClick={() => setConfluenceEditor(null)}>취소</button>
+              <button className="mt-btn primary" type="button" onClick={saveConfluenceEditor}>연결</button>
+            </div>
           </div>
         </div>
       )}
@@ -2123,86 +2285,6 @@ function ProjectMemberPanel({ project, teamProject }) {
           </div>
         </div>
       </div>
-    </section>
-  );
-}
-
-function ProjectWeeklyReports({ project }) {
-  const [reports, setReports] = useState([]);
-  const [selectedReport, setSelectedReport] = useState(null);
-  const [reportHtml, setReportHtml] = useState('');
-  const [loadingReports, setLoadingReports] = useState(false);
-  const [loadingHtml, setLoadingHtml] = useState(false);
-  const [reportError, setReportError] = useState('');
-
-  useEffect(() => {
-    let alive = true;
-    setReports([]);
-    setSelectedReport(null);
-    setReportHtml('');
-    setReportError('');
-    if (!project?.id) return undefined;
-    setLoadingReports(true);
-    request(`/api/projects/${project.id}/weekly-reports`)
-      .then((list) => {
-        if (!alive) return;
-        setReports(list || []);
-      })
-      .catch((err) => {
-        if (alive) setReportError(err.message || '과제 주간보고를 불러오지 못했습니다');
-      })
-      .finally(() => {
-        if (alive) setLoadingReports(false);
-      });
-    return () => { alive = false; };
-  }, [project?.id]);
-
-  async function openProjectReport(report) {
-    setSelectedReport(report);
-    setReportHtml('');
-    setReportError('');
-    setLoadingHtml(true);
-    try {
-      const result = await request(`/api/reports/${report.report_id}/projects/${project.id}/html-report`);
-      setReportHtml(result.html || '');
-    } catch (err) {
-      setReportError(err.message || '과제 리포트를 불러오지 못했습니다');
-    } finally {
-      setLoadingHtml(false);
-    }
-  }
-
-  return (
-    <section className="project-weekly-section">
-      <section className="weekly-lounge-layout project-weekly-layout">
-        <div className="weekly-lounge-list">
-          <div className="weekly-lounge-head">
-            <h2>진행중 보고</h2>
-            <span>{reports.length}</span>
-          </div>
-          {loadingReports && <div className="empty compact">불러오는 중입니다</div>}
-          {!loadingReports && reports.length === 0 && <div className="empty compact">이 과제의 주간보고가 없습니다</div>}
-          {!loadingReports && reports.map((report) => (
-            <button className={`weekly-lounge-card${selectedReport?.report_id === report.report_id ? ' active' : ''}`} type="button" key={report.report_id} onClick={() => openProjectReport(report)}>
-              <strong>{report.start_date} ~ {report.end_date}</strong>
-              <span>{report.status === 'done' ? '완료된 보고' : '진행중 보고'} · 작성 {report.member_count || 0}명</span>
-            </button>
-          ))}
-        </div>
-
-        <div className="weekly-lounge-viewer">
-          {selectedReport ? (
-            <>
-              {reportError && <div className="error compact">{reportError}</div>}
-              {loadingHtml && <div className="empty">리포트를 불러오는 중입니다</div>}
-              {!loadingHtml && reportHtml && <iframe className="weekly-lounge-frame" title="과제 주간보고 리포트" srcDoc={reportHtml} />}
-              {!loadingHtml && !reportHtml && !reportError && <div className="empty">리포트를 선택하세요</div>}
-            </>
-          ) : (
-            <div className="empty weekly-lounge-empty">보고 주차 카드를 선택하세요</div>
-          )}
-        </div>
-      </section>
     </section>
   );
 }
@@ -2563,6 +2645,231 @@ function PasswordChangeModal({ passwordDraft, setPasswordDraft, onChangePassword
     </div>
   );
 }
+
+function ProjectProgressHistory({ project }) {
+  const [history, setHistory] = useState([]);
+  const [loadingHistory, setLoadingHistory] = useState(false);
+  const [historyError, setHistoryError] = useState("");
+  const [historyImagePreview, setHistoryImagePreview] = useState(null);
+
+  useEffect(() => {
+    let active = true;
+    if (!project?.id) {
+      setHistory([]);
+      return () => { active = false; };
+    }
+    setHistoryImagePreview(null);
+    setLoadingHistory(true);
+    setHistoryError("");
+    request("/api/projects/" + project.id + "/progress-history")
+      .then((items) => { if (active) setHistory(items || []); })
+      .catch((err) => { if (active) { setHistory([]); setHistoryError(err.message || "Progress History를 불러오지 못했습니다"); } })
+      .finally(() => { if (active) setLoadingHistory(false); });
+    return () => { active = false; };
+  }, [project?.id]);
+
+  useEffect(() => {
+    if (!historyImagePreview) return undefined;
+    const closeOnEscape = (event) => { if (event.key === "Escape") setHistoryImagePreview(null); };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [historyImagePreview]);
+
+  return (
+    <section className="progress-history-card" aria-labelledby="progress-history-title">
+      <div className="progress-history-head">
+        <div>
+          <p className="mt-card-eyebrow"><History size={15} />Progress History</p>
+          <h2 id="progress-history-title">과제 진행 이력</h2>
+          <p>주간보고에서 Done 처리된 Progress Log를 최신 수행일 순으로 확인합니다.</p>
+        </div>
+        <span className="progress-history-count"><b>{history.length}</b> logs</span>
+      </div>
+
+      {loadingHistory && <div className="progress-history-empty">진행 이력을 불러오는 중입니다.</div>}
+      {!loadingHistory && historyError && <div className="error compact">{historyError}</div>}
+      {!loadingHistory && !historyError && history.length === 0 && <div className="progress-history-empty">아직 Done 처리된 Progress Log가 없습니다.</div>}
+      {!loadingHistory && !historyError && history.length > 0 && (
+        <div className="progress-history-list">
+          {history.map((item) => (
+            <article className="progress-history-item" key={item.history_id}>
+              <div className="progress-history-rail" aria-hidden="true"><span className="done"></span></div>
+              <div className="progress-history-content">
+                <div className="progress-history-meta">
+                  <time dateTime={item.occurred_on}>{String(item.occurred_on || "").replaceAll("-", ".")}</time>
+                  <span className="progress-history-status done">Done</span>
+                  <span className="progress-history-author">{item.reported_by} {ROLE_LABELS[item.reported_role] || item.reported_role}</span>
+                </div>
+                <h3>{item.log}</h3>
+                {(item.detail || item.images?.length > 0) && (
+                  <details className="progress-history-details">
+                    <summary><span>상세 내용{item.images?.length ? " · 이미지 " + item.images.length + "장" : ""}</span></summary>
+                    <div className="progress-history-detail-body">
+                      {item.detail && <p className="progress-history-detail">{item.detail}</p>}
+                      {item.images?.length > 0 && (
+                        <div className="progress-history-images">
+                          {item.images.map((image, imageIndex) => (
+                            <button type="button" key={item.history_id + "-image-" + imageIndex} onClick={() => setHistoryImagePreview({ src: reportImageSrc(image), alt: item.log + " 첨부 이미지 " + (imageIndex + 1) })}>
+                              <img src={reportImageSrc(image)} alt={item.log + " 첨부 이미지 " + (imageIndex + 1)} />
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </details>
+                )}
+                <div className="progress-history-footer">
+                  <span>보고 주간 {item.report_start_date} ~ {item.report_end_date}</span>
+                  {item.confluence_url && <a href={item.confluence_url} target="_blank" rel="noopener noreferrer">Confluence 상세 <ExternalLink size={12} /></a>}
+                </div>
+              </div>
+            </article>
+          ))}
+        </div>
+      )}
+
+      {historyImagePreview && (
+        <div className="modal-backdrop progress-history-image-backdrop" role="presentation" onClick={(event) => { if (event.target === event.currentTarget) setHistoryImagePreview(null); }}>
+          <div className="progress-history-image-modal" role="dialog" aria-modal="true" aria-label="Progress History 첨부 이미지 확대">
+            <button type="button" onClick={() => setHistoryImagePreview(null)} aria-label="확대 이미지 닫기"><X size={18} /></button>
+            <img src={historyImagePreview.src} alt={historyImagePreview.alt} />
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+
+function ProjectIssueManagement({ project }) {
+  const [issues, setIssues] = useState([]);
+  const [loadingIssues, setLoadingIssues] = useState(false);
+  const [issueError, setIssueError] = useState("");
+  const [importanceFilter, setImportanceFilter] = useState("all");
+  const [issueImagePreview, setIssueImagePreview] = useState(null);
+
+  useEffect(() => {
+    let active = true;
+    if (!project?.id) {
+      setIssues([]);
+      return () => { active = false; };
+    }
+    setImportanceFilter("all");
+    setIssueImagePreview(null);
+    setLoadingIssues(true);
+    setIssueError("");
+    request("/api/projects/" + project.id + "/issue-management")
+      .then((items) => { if (active) setIssues(items || []); })
+      .catch((err) => { if (active) { setIssues([]); setIssueError(err.message || "Issue & Risk를 불러오지 못했습니다"); } })
+      .finally(() => { if (active) setLoadingIssues(false); });
+    return () => { active = false; };
+  }, [project?.id]);
+
+  useEffect(() => {
+    if (!issueImagePreview) return undefined;
+    const closeOnEscape = (event) => { if (event.key === "Escape") setIssueImagePreview(null); };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [issueImagePreview]);
+
+  const issueCounts = useMemo(() => ({
+    all: issues.length,
+    high: issues.filter((item) => item.importance === "상").length,
+    medium: issues.filter((item) => item.importance === "중").length,
+    low: issues.filter((item) => item.importance === "하").length,
+  }), [issues]);
+
+  const visibleIssues = useMemo(() => {
+    const value = { high: "상", medium: "중", low: "하" }[importanceFilter];
+    return value ? issues.filter((item) => item.importance === value) : issues;
+  }, [issues, importanceFilter]);
+
+  function importanceClass(value) {
+    if (value === "상") return "high";
+    if (value === "하") return "low";
+    return "medium";
+  }
+
+  return (
+    <section className="issue-management-card" aria-labelledby="issue-management-title">
+      <div className="issue-management-head">
+        <div>
+          <p className="mt-card-eyebrow"><AlertTriangle size={15} />Issue Management</p>
+          <h2 id="issue-management-title">Issue &amp; Risk 관리</h2>
+          <p>모든 주간보고에 작성된 Issue &amp; Risk를 중요도별로 모아 확인합니다.</p>
+        </div>
+        <span className="issue-management-count"><b>{issueCounts.all}</b> issues</span>
+      </div>
+
+      <div className="issue-management-toolbar">
+        <div className="issue-management-summary" aria-label="Issue 중요도 요약">
+          <span className="high"><b>{issueCounts.high}</b> 상</span>
+          <span className="medium"><b>{issueCounts.medium}</b> 중</span>
+          <span className="low"><b>{issueCounts.low}</b> 하</span>
+        </div>
+        <div className="issue-management-filters" aria-label="Issue 중요도 필터">
+          {[["all", "전체"], ["high", "상"], ["medium", "중"], ["low", "하"]].map(([value, label]) => (
+            <button type="button" key={value} className={importanceFilter === value ? "active" : ""} onClick={() => setImportanceFilter(value)}>
+              {label} <b>{issueCounts[value]}</b>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {loadingIssues && <div className="issue-management-empty">Issue &amp; Risk를 불러오는 중입니다.</div>}
+      {!loadingIssues && issueError && <div className="error compact">{issueError}</div>}
+      {!loadingIssues && !issueError && issues.length === 0 && <div className="issue-management-empty">아직 작성된 Issue &amp; Risk가 없습니다.</div>}
+      {!loadingIssues && !issueError && issues.length > 0 && visibleIssues.length === 0 && <div className="issue-management-empty">선택한 중요도의 Issue &amp; Risk가 없습니다.</div>}
+      {!loadingIssues && !issueError && visibleIssues.length > 0 && (
+        <div className="issue-management-list">
+          {visibleIssues.map((item) => {
+            const level = importanceClass(item.importance);
+            return (
+              <article className={"issue-management-item " + level} key={item.issue_id}>
+                <div className="issue-management-item-head">
+                  <span className={"issue-importance " + level}>중요도 {item.importance}</span>
+                  <span className="issue-management-author">{item.reported_by} {ROLE_LABELS[item.reported_role] || item.reported_role}</span>
+                </div>
+                <h3>{item.issue}</h3>
+                {(item.detail || item.images?.length > 0) && (
+                  <details className="progress-history-details">
+                    <summary><span>상세 내용{item.images?.length ? " · 이미지 " + item.images.length + "장" : ""}</span></summary>
+                    <div className="progress-history-detail-body">
+                      {item.detail && <p className="progress-history-detail">{item.detail}</p>}
+                      {item.images?.length > 0 && (
+                        <div className="progress-history-images">
+                          {item.images.map((image, imageIndex) => (
+                            <button type="button" key={item.issue_id + "-image-" + imageIndex} onClick={() => setIssueImagePreview({ src: reportImageSrc(image), alt: item.issue + " 첨부 이미지 " + (imageIndex + 1) })}>
+                              <img src={reportImageSrc(image)} alt={item.issue + " 첨부 이미지 " + (imageIndex + 1)} />
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </details>
+                )}
+                <div className="issue-management-footer">
+                  <span>보고 주간 {item.report_start_date} ~ {item.report_end_date}</span>
+                  {item.confluence_url && <a href={item.confluence_url} target="_blank" rel="noopener noreferrer">Confluence 상세 <ExternalLink size={12} /></a>}
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      )}
+
+      {issueImagePreview && (
+        <div className="modal-backdrop progress-history-image-backdrop" role="presentation" onClick={(event) => { if (event.target === event.currentTarget) setIssueImagePreview(null); }}>
+          <div className="progress-history-image-modal" role="dialog" aria-modal="true" aria-label="Issue & Risk 첨부 이미지 확대">
+            <button type="button" onClick={() => setIssueImagePreview(null)} aria-label="확대 이미지 닫기"><X size={18} /></button>
+            <img src={issueImagePreview.src} alt={issueImagePreview.alt} />
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
 
 function ProjectTimeline({
   project,

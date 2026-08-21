@@ -1,4 +1,6 @@
 import asyncio
+import base64
+import binascii
 from contextlib import asynccontextmanager, suppress
 from datetime import date, datetime, timedelta
 import html
@@ -6,11 +8,13 @@ from pathlib import Path
 import hashlib
 import json
 import secrets
+import shutil
 import sqlite3
 import uuid
 from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from string import Template
@@ -19,6 +23,8 @@ from string import Template
 DB_PATH = Path(__file__).resolve().parent.parent / "app.db"
 WEEKLY_REPORT_TEMPLATE_PATH = Path(__file__).resolve().parent / "templates" / "weekly_report_static.html"
 PROJECT_REPORT_TEMPLATE_PATH = Path(__file__).resolve().parent / "templates" / "project_report_static.html"
+WORKSPACE_PATH = Path(__file__).resolve().parent / "workspace"
+WORKSPACE_PATH.mkdir(parents=True, exist_ok=True)
 INITIAL_PASSWORD = "wia1234!"
 OTHER_WORK_PROJECT_NAME = "기타 업무 (교육/출장 등)"
 KST = ZoneInfo("Asia/Seoul")
@@ -412,8 +418,10 @@ app.add_middleware(
         "http://localhost:9602",
         "http://127.0.0.1:9602",
         "http://10.217.183.34:9602",
+        "http://localhost:9802",
+        "http://127.0.0.1:9802",
     ],
-    allow_origin_regex=r"^http://(10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[0-1])\.\d+\.\d+|192\.168\.\d+\.\d+):(5173|9602)$",
+    allow_origin_regex=r"^http://(10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[0-1])\.\d+\.\d+|192\.168\.\d+\.\d+):(5173|9602|9802)$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -506,11 +514,17 @@ class ProgressLogIn(BaseModel):
     log: str = ""
     status: str = "done"
     date: str = ""
+    detail: str = ""
+    images: list[str] = Field(default_factory=list)
+    confluence_url: str = ""
 
 
 class RiskIssueIn(BaseModel):
     issue: str = ""
     importance: str = "중"
+    detail: str = ""
+    images: list[str] = Field(default_factory=list)
+    confluence_url: str = ""
 
 
 class NextPlanIn(BaseModel):
@@ -695,13 +709,116 @@ def normalize_report_date(value):
     return str(value or "").strip().replace("-", "/")
 
 
+IMAGE_DATA_PREFIXES = {
+    "data:image/png;base64,": ("png", "image/png"),
+    "data:image/jpeg;base64,": ("jpg", "image/jpeg"),
+    "data:image/webp;base64,": ("webp", "image/webp"),
+    "data:image/gif;base64,": ("gif", "image/gif"),
+}
+
+
+def workspace_image_path(image_id):
+    image_id = str(image_id or "").strip()
+    if not image_id or image_id.startswith("data:"):
+        return None
+    root = WORKSPACE_PATH.resolve()
+    candidate = (root / image_id).resolve()
+    if candidate == root or root not in candidate.parents:
+        return None
+    return candidate
+
+
+def normalize_report_images(values):
+    images = []
+    for value in values or []:
+        image = str(value or "").strip()
+        if any(image.startswith(prefix) for prefix in IMAGE_DATA_PREFIXES) and len(image) <= 8 * 1024 * 1024:
+            images.append(image)
+            continue
+        path = workspace_image_path(image)
+        if path and path.is_file():
+            images.append(image)
+    return images[:8]
+
+
+def persist_report_images(values, report_id, project_id, entry_id):
+    stored = []
+    target_dir = WORKSPACE_PATH / report_id / project_id / entry_id
+    for image in normalize_report_images(values):
+        prefix = next((candidate for candidate in IMAGE_DATA_PREFIXES if image.startswith(candidate)), None)
+        if not prefix:
+            stored.append(image)
+            continue
+        try:
+            raw = base64.b64decode(image[len(prefix):], validate=True)
+        except (ValueError, binascii.Error):
+            continue
+        if not raw or len(raw) > 5 * 1024 * 1024:
+            continue
+        extension, _ = IMAGE_DATA_PREFIXES[prefix]
+        target_dir.mkdir(parents=True, exist_ok=True)
+        image_path = target_dir / f"{uuid.uuid4()}.{extension}"
+        image_path.write_bytes(raw)
+        stored.append(image_path.relative_to(WORKSPACE_PATH).as_posix())
+    return stored[:8]
+
+
+def collect_stored_image_ids(items):
+    image_ids = set()
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        for image in item.get("images") or []:
+            path = workspace_image_path(image)
+            if path and path.is_file():
+                image_ids.add(str(image))
+    return image_ids
+
+
+def delete_workspace_images(image_ids):
+    root = WORKSPACE_PATH.resolve()
+    for image_id in image_ids:
+        path = workspace_image_path(image_id)
+        if not path or not path.is_file():
+            continue
+        path.unlink()
+        parent = path.parent
+        while parent != root and root in parent.parents:
+            try:
+                parent.rmdir()
+            except OSError:
+                break
+            parent = parent.parent
+
+
+def report_image_data_url(image):
+    image = str(image or "").strip()
+    if image.startswith("data:image/"):
+        return image
+    path = workspace_image_path(image)
+    if not path or not path.is_file():
+        return ""
+    mime = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif"}.get(path.suffix.lower())
+    if not mime:
+        return ""
+    return f"data:{mime};base64,{base64.b64encode(path.read_bytes()).decode('ascii')}"
+
+
+def normalize_confluence_url(value):
+    url = str(value or "").strip()
+    return url if url.startswith(("http://", "https://")) else ""
+
+
 def normalize_progress_log(items):
     normalized = []
     for item in items:
         log = item.log.strip()
         date_value = normalize_report_date(item.date)
-        if log or date_value:
-            normalized.append({"log": log, "status": normalize_progress_status(item.status), "date": date_value})
+        detail = item.detail.strip()
+        images = normalize_report_images(item.images)
+        confluence_url = normalize_confluence_url(item.confluence_url)
+        if log or date_value or detail or images or confluence_url:
+            normalized.append({"log": log, "status": normalize_progress_status(item.status), "date": date_value, "detail": detail, "images": images, "confluence_url": confluence_url})
     return normalized
 
 
@@ -709,8 +826,11 @@ def normalize_risk_issue(items):
     normalized = []
     for item in items:
         issue = item.issue.strip()
-        if issue:
-            normalized.append({"issue": issue, "importance": item.importance if item.importance in ("상", "중", "하") else "중"})
+        detail = item.detail.strip()
+        images = normalize_report_images(item.images)
+        confluence_url = normalize_confluence_url(item.confluence_url)
+        if issue or detail or images or confluence_url:
+            normalized.append({"issue": issue, "importance": item.importance if item.importance in ("상", "중", "하") else "중", "detail": detail, "images": images, "confluence_url": confluence_url})
     return normalized
 
 
@@ -793,19 +913,44 @@ def progress_status_class(value):
     return "in-progress" if value == "in_progress" else "done"
 
 
+def render_report_confluence_link(item):
+    confluence_url = normalize_confluence_url(item.get("confluence_url"))
+    if not confluence_url:
+        return ""
+    return f'<a class="confluence-link" href="{escape_html(confluence_url)}" target="_blank" rel="noopener noreferrer">Confluence 상세 보기 ↗</a>'
+
+
+def render_report_item_extras(item):
+    detail = str(item.get("detail") or "").strip()
+    images = [source for source in (report_image_data_url(image) for image in normalize_report_images(item.get("images") or [])) if source]
+    if not (detail or images):
+        return ""
+    detail_html = f'<div class="item-detail">{escape_html(detail)}</div>' if detail else ""
+    images_html = ""
+    if images:
+        images_html = '<div class="item-gallery">' + "".join(
+            f'<button class="report-image-open" type="button" aria-label="첨부 이미지 {index + 1} 확대"><img src="{escape_html(image)}" alt="첨부 이미지 {index + 1}" /></button>'
+            for index, image in enumerate(images)
+        ) + "</div>"
+    return f'<details class="item-extras"><summary><span>상세 내용</span></summary><div class="item-extras-body">{detail_html}{images_html}</div></details>'
+
+
 def render_report_progress(items):
     rows = []
     for item in items:
         if isinstance(item, str):
-            log = item.strip()
-            status = "done"
-            date_value = ""
+            row = {"log": item.strip(), "status": "done", "date": "", "detail": "", "images": [], "confluence_url": ""}
         else:
-            log = str(item.get("log") or item.get("text") or "").strip()
-            status = normalize_progress_status(item.get("status"))
-            date_value = str(item.get("date") or "").strip()
-        if log or date_value:
-            rows.append({"log": log, "status": status, "date": date_value})
+            row = {
+                "log": str(item.get("log") or item.get("text") or "").strip(),
+                "status": normalize_progress_status(item.get("status")),
+                "date": str(item.get("date") or "").strip(),
+                "detail": str(item.get("detail") or "").strip(),
+                "images": item.get("images") or [],
+                "confluence_url": str(item.get("confluence_url") or "").strip(),
+            }
+        if row["log"] or row["date"] or row["detail"] or row["images"] or row["confluence_url"]:
+            rows.append(row)
     rows.sort(key=report_progress_sort_value)
     if not rows:
         return ""
@@ -814,11 +959,10 @@ def render_report_progress(items):
         date_html = f'<span class="pdate">{escape_html(format_report_due(row["date"]))}</span>' if row["date"] else ""
         log_html = escape_html(row["log"]) if row["log"] else "진행 내용 없음"
         items_html.append(
-            '<li class="pline progress">'
+            '<li class="pline progress report-item"><div class="item-head">'
             f'<span class="status {progress_status_class(row["status"])}">{escape_html(progress_status_label(row["status"]))}</span>'
-            f'{date_html}'
-            f'<div class="ptxt">{log_html}</div>'
-            '</li>'
+            f'{date_html}<div class="ptxt">{log_html}</div>{render_report_confluence_link(row)}</div>'
+            f'{render_report_item_extras(row)}</li>'
         )
     return f"<ul>{''.join(items_html)}</ul>"
 
@@ -835,24 +979,29 @@ def render_report_risks(items):
     rows = []
     for item in items:
         if isinstance(item, str):
-            issue = item.strip()
-            importance = "중"
+            row = {"issue": item.strip(), "importance": "중", "detail": "", "images": [], "confluence_url": ""}
         else:
-            issue = str(item.get("issue") or "").strip()
-            importance = str(item.get("importance") or "중").strip()
-        if issue:
-            rows.append({"issue": issue, "importance": importance})
+            row = {
+                "issue": str(item.get("issue") or "").strip(),
+                "importance": str(item.get("importance") or "중").strip(),
+                "detail": str(item.get("detail") or "").strip(),
+                "images": item.get("images") or [],
+                "confluence_url": str(item.get("confluence_url") or "").strip(),
+            }
+        if row["issue"] or row["detail"] or row["images"] or row["confluence_url"]:
+            rows.append(row)
     rows.sort(key=lambda row: (report_importance_sort_value(row["importance"]), row["issue"]))
     if not rows:
         return ""
     items_html = []
     for row in rows:
         level = report_importance_class(row["importance"])
+        issue_html = escape_html(row["issue"]) if row["issue"] else "리스크 내용 없음"
         items_html.append(
-            f'<li class="rline {level}">'
+            f'<li class="rline {level} report-item"><div class="item-head">'
             f'<span class="badge {level}">{escape_html(row["importance"])}</span>'
-            f'<div class="rtxt">{escape_html(row["issue"])}</div>'
-            '</li>'
+            f'<div class="rtxt">{issue_html}</div>{render_report_confluence_link(row)}</div>'
+            f'{render_report_item_extras(row)}</li>'
         )
     return f"<ul>{''.join(items_html)}</ul>"
 
@@ -890,7 +1039,7 @@ def count_report_progress(items):
         if isinstance(item, str):
             has_content = bool(item.strip())
         else:
-            has_content = bool(str(item.get("log") or item.get("text") or "").strip() or str(item.get("date") or "").strip())
+            has_content = bool(str(item.get("log") or item.get("text") or "").strip() or str(item.get("date") or "").strip() or str(item.get("detail") or "").strip() or item.get("images") or str(item.get("confluence_url") or "").strip())
         if has_content:
             count += 1
     return count
@@ -900,7 +1049,8 @@ def count_report_risks(items):
     count = 0
     for item in items:
         issue = item if isinstance(item, str) else item.get("issue", "")
-        if str(issue).strip():
+        has_content = str(issue).strip() if isinstance(item, str) else (str(issue).strip() or str(item.get("detail") or "").strip() or item.get("images") or str(item.get("confluence_url") or "").strip())
+        if has_content:
             count += 1
     return count
 
@@ -993,24 +1143,33 @@ def collect_project_report_items(members):
         source = report_member_label(member)
         for item in parse_json_list(member["progress_log"]):
             if isinstance(item, str):
-                log = item.strip()
-                status = "done"
-                date_value = ""
+                row = {"log": item.strip(), "status": "done", "date": "", "detail": "", "images": [], "confluence_url": "", "source": source}
             else:
-                log = str(item.get("log") or item.get("text") or "").strip()
-                status = normalize_progress_status(item.get("status"))
-                date_value = str(item.get("date") or "").strip()
-            if log or date_value:
-                progress_rows.append({"log": log, "status": status, "date": date_value, "source": source})
+                row = {
+                    "log": str(item.get("log") or item.get("text") or "").strip(),
+                    "status": normalize_progress_status(item.get("status")),
+                    "date": str(item.get("date") or "").strip(),
+                    "detail": str(item.get("detail") or "").strip(),
+                    "images": item.get("images") or [],
+                    "confluence_url": str(item.get("confluence_url") or "").strip(),
+                    "source": source,
+                }
+            if row["log"] or row["date"] or row["detail"] or row["images"] or row["confluence_url"]:
+                progress_rows.append(row)
         for item in parse_json_list(member["risk_issue"], "issue"):
             if isinstance(item, str):
-                issue = item.strip()
-                importance = "중"
+                row = {"issue": item.strip(), "importance": "중", "detail": "", "images": [], "confluence_url": "", "source": source}
             else:
-                issue = str(item.get("issue") or "").strip()
-                importance = str(item.get("importance") or "중").strip()
-            if issue:
-                risk_rows.append({"issue": issue, "importance": importance, "source": source})
+                row = {
+                    "issue": str(item.get("issue") or "").strip(),
+                    "importance": str(item.get("importance") or "중").strip(),
+                    "detail": str(item.get("detail") or "").strip(),
+                    "images": item.get("images") or [],
+                    "confluence_url": str(item.get("confluence_url") or "").strip(),
+                    "source": source,
+                }
+            if row["issue"] or row["detail"] or row["images"] or row["confluence_url"]:
+                risk_rows.append(row)
         for item in parse_json_list(member["next_plan"], "plan"):
             if isinstance(item, str):
                 plan = item.strip()
@@ -1034,11 +1193,11 @@ def render_project_report_progress(rows):
         date_html = f'<span class="pdate">{escape_html(format_report_due(row["date"]))}</span>' if row["date"] else ""
         log_html = escape_html(row["log"]) if row["log"] else "진행 내용 없음"
         items.append(
-            '<li class="pline progress">'
+            '<li class="pline progress report-item"><div class="item-head">'
             f'<span class="status {progress_status_class(row["status"])}">{escape_html(progress_status_label(row["status"]))}</span>'
-            f'{date_html}'
-            f'<div class="ptxt">{log_html}</div>'
-            f'<span class="source">{escape_html(row["source"])}</span></li>'
+            f'{date_html}<div class="ptxt">{log_html}</div>{render_report_confluence_link(row)}'
+            f'<span class="source">{escape_html(row["source"])}</span></div>'
+            f'{render_report_item_extras(row)}</li>'
         )
     return f"<ul>{''.join(items)}</ul>"
 
@@ -1049,11 +1208,13 @@ def render_project_report_risks(rows):
     items = []
     for row in rows:
         level = report_importance_class(row["importance"])
+        issue_html = escape_html(row["issue"]) if row["issue"] else "리스크 내용 없음"
         items.append(
-            f'<li class="rline {level}">'
+            f'<li class="rline {level} report-item"><div class="item-head">'
             f'<span class="badge {level}">{escape_html(row["importance"])}</span>'
-            f'<div class="rtxt">{escape_html(row["issue"])}</div>'
-            f'<span class="source">{escape_html(row["source"])}</span></li>'
+            f'<div class="rtxt">{issue_html}</div>{render_report_confluence_link(row)}'
+            f'<span class="source">{escape_html(row["source"])}</span></div>'
+            f'{render_report_item_extras(row)}</li>'
         )
     return f"<ul>{''.join(items)}</ul>"
 
@@ -1888,8 +2049,17 @@ def delete_report(report_id: str):
         )
         conn.execute("DELETE FROM report_entries WHERE report_id = ?", (report_id,))
         conn.execute("DELETE FROM reports WHERE report_id = ?", (report_id,))
+    shutil.rmtree(WORKSPACE_PATH / report_id, ignore_errors=True)
 
 
+
+
+@app.get("/api/report-images/{image_id:path}")
+def get_report_image(image_id: str):
+    path = workspace_image_path(image_id)
+    if not path or not path.is_file():
+        raise HTTPException(status_code=404, detail="Report image not found")
+    return FileResponse(path)
 
 
 @app.get("/api/reports/{report_id}/users/{user_id}/html-report")
@@ -1978,11 +2148,18 @@ def save_project_entry(entry_id: str, project_id: str, payload: ReportEntryIn):
         entry = ensure_report_entry(conn, entry_id)
         if entry["status"] == "absent":
             raise HTTPException(status_code=422, detail="부재 상태에서는 보고를 저장할 수 없습니다")
-        ensure_entry_project(conn, entry, project_id)
+        project_entry = ensure_entry_project(conn, entry, project_id)
+        existing_payload = project_entry_payload(project_entry)
+        old_image_ids = collect_stored_image_ids(existing_payload["progress_log"]) | collect_stored_image_ids(existing_payload["risk_issue"])
         now = datetime.utcnow().isoformat()
         progress_log = normalize_progress_log(payload.progress_log)
         risk_issue = normalize_risk_issue(payload.risk_issue)
         next_plan = normalize_next_plan(payload.next_plan)
+        for item in progress_log:
+            item["images"] = persist_report_images(item.get("images"), entry["report_id"], project_id, entry_id)
+        for item in risk_issue:
+            item["images"] = persist_report_images(item.get("images"), entry["report_id"], project_id, entry_id)
+        new_image_ids = collect_stored_image_ids(progress_log) | collect_stored_image_ids(risk_issue)
         conn.execute(
             """
             UPDATE project_entry
@@ -1998,6 +2175,7 @@ def save_project_entry(entry_id: str, project_id: str, payload: ReportEntryIn):
                 project_id,
             ),
         )
+        delete_workspace_images(old_image_ids - new_image_ids)
         recompute_report_entry_status(conn, entry_id)
         return report_for_entry(conn, entry_id)
 
@@ -2008,7 +2186,9 @@ def update_project_entry_exclusion(entry_id: str, project_id: str, payload: Proj
         entry = ensure_report_entry(conn, entry_id)
         if entry["status"] == "absent":
             raise HTTPException(status_code=422, detail="부재 상태에서는 과제 제외를 변경할 수 없습니다")
-        ensure_entry_project(conn, entry, project_id)
+        project_entry = ensure_entry_project(conn, entry, project_id)
+        existing_payload = project_entry_payload(project_entry)
+        old_image_ids = collect_stored_image_ids(existing_payload["progress_log"]) | collect_stored_image_ids(existing_payload["risk_issue"])
         now = datetime.utcnow().isoformat()
         if payload.is_excluded:
             conn.execute(
@@ -2019,6 +2199,7 @@ def update_project_entry_exclusion(entry_id: str, project_id: str, payload: Proj
                 """,
                 (now, entry_id, project_id),
             )
+            delete_workspace_images(old_image_ids)
         else:
             conn.execute(
                 """
@@ -2031,6 +2212,148 @@ def update_project_entry_exclusion(entry_id: str, project_id: str, payload: Proj
         recompute_report_entry_status(conn, entry_id)
         return report_for_entry(conn, entry_id)
 
+
+@app.get("/api/projects/{project_id}/progress-history")
+def get_project_progress_history(project_id: str):
+    with get_conn() as conn:
+        project = ensure_team_project(conn, project_id)
+        rows = conn.execute(
+            """
+            SELECT
+                r.report_id,
+                r.start_date AS report_start_date,
+                r.end_date AS report_end_date,
+                r.status AS report_status,
+                re.entry_id,
+                re.status AS entry_status,
+                u.user_id,
+                u.name,
+                u.role,
+                pe.progress_log,
+                pe.updated_at
+            FROM reports r
+            JOIN report_entries re ON re.report_id = r.report_id
+            JOIN users u ON u.user_id = re.user_id
+            JOIN project_entry pe ON pe.entry_id = re.entry_id
+            WHERE r.team_id = ?
+              AND pe.project_id = ?
+              AND pe.is_excluded = 0
+            ORDER BY r.end_date DESC, r.start_date DESC, u.sort_order ASC, u.name
+            """,
+            (project["team_id"], project_id),
+        ).fetchall()
+        history = []
+        for row in rows:
+            for index, item in enumerate(parse_json_list(row["progress_log"])):
+                if isinstance(item, str):
+                    log = item.strip()
+                    status = "done"
+                    date_value = ""
+                    detail = ""
+                    images = []
+                    confluence_url = ""
+                else:
+                    log = str(item.get("log") or item.get("text") or "").strip()
+                    status = normalize_progress_status(item.get("status"))
+                    date_value = str(item.get("date") or "").strip()
+                    detail = str(item.get("detail") or "").strip()
+                    images = normalize_report_images(item.get("images") or [])
+                    confluence_url = normalize_confluence_url(item.get("confluence_url"))
+                if status != "done" or not (log or detail or images):
+                    continue
+                normalized_date = date_value.replace("/", "-").replace(".", "-") if date_value else ""
+                occurred_on = normalized_date or row["report_end_date"]
+                history.append({
+                    "history_id": f"{row["report_id"]}:{row["entry_id"]}:{index}",
+                    "report_id": row["report_id"],
+                    "report_start_date": row["report_start_date"],
+                    "report_end_date": row["report_end_date"],
+                    "report_status": row["report_status"],
+                    "occurred_on": occurred_on,
+                    "log": log or "진행 내용 없음",
+                    "status": status,
+                    "detail": detail,
+                    "images": images,
+                    "confluence_url": confluence_url,
+                    "reported_by": row["name"],
+                    "reported_role": row["role"],
+                })
+        history.sort(
+            key=lambda item: (item["occurred_on"], item["report_end_date"], item["reported_by"], item["log"]),
+            reverse=True,
+        )
+        return history
+
+
+@app.get("/api/projects/{project_id}/issue-management")
+def get_project_issue_management(project_id: str):
+    with get_conn() as conn:
+        project = ensure_team_project(conn, project_id)
+        rows = conn.execute(
+            """
+            SELECT
+                r.report_id,
+                r.start_date AS report_start_date,
+                r.end_date AS report_end_date,
+                r.status AS report_status,
+                re.entry_id,
+                re.status AS entry_status,
+                u.user_id,
+                u.name,
+                u.role,
+                pe.risk_issue,
+                pe.updated_at
+            FROM reports r
+            JOIN report_entries re ON re.report_id = r.report_id
+            JOIN users u ON u.user_id = re.user_id
+            JOIN project_entry pe ON pe.entry_id = re.entry_id
+            WHERE r.team_id = ?
+              AND pe.project_id = ?
+              AND pe.is_excluded = 0
+            ORDER BY r.end_date DESC, r.start_date DESC, u.sort_order ASC, u.name
+            """,
+            (project["team_id"], project_id),
+        ).fetchall()
+        issues = []
+        for row in rows:
+            for index, item in enumerate(parse_json_list(row["risk_issue"], "issue")):
+                if isinstance(item, str):
+                    issue = item.strip()
+                    importance = "중"
+                    detail = ""
+                    images = []
+                    confluence_url = ""
+                else:
+                    issue = str(item.get("issue") or item.get("text") or "").strip()
+                    importance = str(item.get("importance") or "중").strip()
+                    if importance not in ("상", "중", "하"):
+                        importance = "중"
+                    detail = str(item.get("detail") or "").strip()
+                    images = normalize_report_images(item.get("images") or [])
+                    confluence_url = normalize_confluence_url(item.get("confluence_url"))
+                if not (issue or detail or images or confluence_url):
+                    continue
+                issues.append({
+                    "issue_id": f"{row["report_id"]}:{row["entry_id"]}:{index}",
+                    "report_id": row["report_id"],
+                    "report_start_date": row["report_start_date"],
+                    "report_end_date": row["report_end_date"],
+                    "report_status": row["report_status"],
+                    "entry_status": row["entry_status"],
+                    "issue": issue or "Issue 내용 없음",
+                    "importance": importance,
+                    "detail": detail,
+                    "images": images,
+                    "confluence_url": confluence_url,
+                    "reported_by": row["name"],
+                    "reported_role": row["role"],
+                })
+        issues.sort(
+            key=lambda item: (item["report_end_date"], item["report_start_date"], item["reported_by"]),
+            reverse=True,
+        )
+        issues.sort(key=lambda item: report_importance_sort_value(item["importance"]))
+        return issues
 
 @app.get("/api/projects/{project_id}/weekly-reports")
 def list_project_weekly_reports(project_id: str):

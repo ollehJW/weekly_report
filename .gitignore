@@ -14,3 +14,5 @@ frontend/dist/
 frontend/.vite/
 .DS_Store
 *_test.py
+backend/workspace/*
+/app.db
