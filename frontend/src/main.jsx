@@ -3165,6 +3165,7 @@ function ProjectTimeline({
   const [milestoneEditDraft, setMilestoneEditDraft] = useState({ title: '', start_date: todayIso(), end_date: todayIso() });
   const [editDraft, setEditDraft] = useState({ name: '', owner: '', status: 'planned', start_date: todayIso(), end_date: todayIso() });
   const [timelineActionId, setTimelineActionId] = useState('');
+  const [hideDoneWorks, setHideDoneWorks] = useState(false);
   const timelineScrollRef = useRef(null);
 
   const range = useMemo(() => {
@@ -3183,12 +3184,27 @@ function ProjectTimeline({
   const dateGridTemplate = 'repeat(' + colCount + ', minmax(64px, 1fr))';
   const today = kstTodayIso();
   const todayIndex = dayIndex.has(today) ? dayIndex.get(today) : -1;
+  function isDoneWork(epic) {
+    const status = normalizeStatus(epic.status);
+    return status === 'done' || status === 'done_delayed';
+  }
+  const completedMilestoneCount = useMemo(() => milestones.filter((milestone) => {
+    const works = milestone.epics || [];
+    return works.length > 0 && works.every(isDoneWork);
+  }).length, [milestones]);
+  const visibleMilestones = useMemo(() => {
+    if (!hideDoneWorks) return milestones;
+    return milestones.filter((milestone) => {
+      const works = milestone.epics || [];
+      return !(works.length > 0 && works.every(isDoneWork));
+    });
+  }, [milestones, hideDoneWorks]);
   const timelineAlerts = useMemo(() => {
     const alerts = [];
-    milestones.forEach((milestone) => {
+    visibleMilestones.forEach((milestone) => {
       (milestone.epics || []).forEach((epic) => {
         const status = normalizeStatus(epic.status);
-        const isDone = status === 'done' || status === 'done_delayed';
+        const isDone = isDoneWork(epic);
         const isActive = status === 'in_progress' || status === 'in_progress_delayed';
         if (epic.end_date < today && !isDone) {
           alerts.push({ type: 'ended', milestone, epic });
@@ -3204,7 +3220,7 @@ function ProjectTimeline({
       const bDate = b.type === 'ended' ? b.epic.end_date : b.epic.start_date;
       return aDate.localeCompare(bDate) || a.epic.title.localeCompare(b.epic.title);
     });
-  }, [milestones, today]);
+  }, [visibleMilestones, today]);
 
   useEffect(() => {
     const scroller = timelineScrollRef.current;
@@ -3361,7 +3377,7 @@ function ProjectTimeline({
     <article className="mt-card project-card">
       <div className="mt-card-head">
         <p className="mt-card-eyebrow"><AudioWaveform size={14} color="#4F46E5" />Project Timeline</p>
-        <p className="mt-card-sub mono">{range.start} → {range.end} · Milestone {milestones.length}개</p>
+        <p className="mt-card-sub mono">{range.start} → {range.end} · Milestone {visibleMilestones.length}/{milestones.length}개</p>
       </div>
 
       {timelineAlerts.length > 0 && (
@@ -3405,8 +3421,15 @@ function ProjectTimeline({
 
       <div className="mt-split-wrap">
         <div className="mt-axis-col">
-          <div className="mt-headercell">Milestone / Work</div>
-          {milestones.map((milestone) => (
+          <div className="mt-headercell timeline-axis-head">
+            <span>Milestone / Work</span>
+            <label className="timeline-hide-done-toggle">
+              <input type="checkbox" checked={hideDoneWorks} onChange={(e) => setHideDoneWorks(e.target.checked)} />
+              <span>완료 숨기기</span>
+              <b>{completedMilestoneCount}</b>
+            </label>
+          </div>
+          {visibleMilestones.map((milestone) => (
             <React.Fragment key={`axis-${milestone.id}`}>
               {renderMilestoneLabel(milestone)}
               {milestone.epics.map((epic, index) => renderEpicLabel(epic, milestone, index === milestone.epics.length - 1))}
@@ -3429,7 +3452,7 @@ function ProjectTimeline({
               </div>
             ))}
 
-            {milestones.map((milestone) => {
+            {visibleMilestones.map((milestone) => {
               const milestoneSpan = spanFor(milestone.start_date, milestone.end_date);
               return (
                 <React.Fragment key={`calendar-${milestone.id}`}>
