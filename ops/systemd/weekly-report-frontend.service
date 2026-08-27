@@ -1,0 +1,14 @@
+[Unit]
+Description=Weekly Report frontend
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/wia/projects/weekly_report/frontend
+ExecStart=/usr/bin/npm run dev -- --host 0.0.0.0 --port 9602
+Restart=always
+RestartSec=3
+KillSignal=SIGINT
+
+[Install]
+WantedBy=default.target

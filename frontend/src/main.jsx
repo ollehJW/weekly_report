@@ -1,0 +1,3568 @@
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { createRoot } from 'react-dom/client';
+import { Plus, Trash2, AudioWaveform, User, ChevronRight, Pencil, Save, X, KeyRound, LogOut, Users, ClipboardList, GripVertical, HelpCircle, Check, FileText, Link2, ImagePlus, AlertTriangle, History, ExternalLink } from 'lucide-react';
+import './styles.css';
+
+const API_BASE = import.meta.env.VITE_API_BASE || `${window.location.protocol}//${window.location.hostname}:9601`;
+
+function reportImageSrc(value) {
+  const image = String(value || "");
+  if (!image || image.startsWith("data:") || image.startsWith("http://") || image.startsWith("https://") || image.startsWith("blob:")) return image;
+  return API_BASE + "/api/report-images/" + image.split("/").map(encodeURIComponent).join("/");
+}
+const DAY = 24 * 60 * 60 * 1000;
+const DOW = ['일', '월', '화', '수', '목', '금', '토'];
+const INITIAL_PASSWORD = 'wia1234!';
+const OTHER_WORK_PROJECT_NAME = '기타 업무 (교육/출장 등)';
+const ACCENTS = [
+  { id: 'indigo', bar: '#4F46E5' },
+  { id: 'teal', bar: '#0F8B8D' },
+  { id: 'coral', bar: '#D8592F' },
+  { id: 'amber', bar: '#B8790F' },
+];
+const STATUS_STYLE = {
+  planned: { label: '예정', bg: '#F1F0EC', text: '#6B6A63' },
+  in_progress: { label: '진행중', bg: '#EEEDFE', text: '#4F46E5' },
+  in_progress_delayed: { label: '진행 지연', bg: '#FFF4D6', text: '#9A5B00' },
+  done: { label: '완료', bg: '#E4F5EC', text: '#0E8F52' },
+  done_delayed: { label: '완료 지연', bg: '#FCF1EC', text: '#B0331C' },
+  blocked: { label: '차단', bg: '#FCF1EC', text: '#B0331C' },
+};
+const ROLE_LABELS = { L: '리더', CM: '책임매니저', M: '매니저' };
+const CALENDAR_EVENT_TYPES = {
+  team: { label: '팀 일정', className: 'team' },
+  vacation: { label: '휴가', className: 'vacation' },
+  training: { label: '교육', className: 'training' },
+  trip: { label: '출장', className: 'trip' },
+  personal: { label: '휴가', className: 'vacation' },
+};
+const PERSONAL_CALENDAR_EVENT_TYPES = ['vacation', 'training', 'trip'];
+
+function calendarEventTypeMeta(type) {
+  return CALENDAR_EVENT_TYPES[type] || CALENDAR_EVENT_TYPES.team;
+}
+
+function toDate(iso) {
+  const [y, m, d] = iso.split('-').map(Number);
+  return new Date(y, m - 1, d);
+}
+
+function isoOf(date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+
+function todayIso() {
+  return isoOf(new Date());
+}
+
+function kstTodayIso() {
+  const parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Seoul', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date());
+  const values = Object.fromEntries(parts.filter((part) => part.type !== 'literal').map((part) => [part.type, part.value]));
+  return `${values.year}-${values.month}-${values.day}`;
+}
+
+function plusDays(iso, days) {
+  const date = toDate(iso);
+  date.setDate(date.getDate() + days);
+  return isoOf(date);
+}
+
+function slashDateToInput(value) {
+  return typeof value === "string" ? value.replaceAll("/", "-") : "";
+}
+
+function inputDateToSlash(value) {
+  return value ? value.replaceAll("-", "/") : "";
+}
+
+function weeklyCompletionText(members) {
+  const list = members || [];
+  const doneCount = list.filter((member) => member.status === 'done').length;
+  const absentCount = list.filter((member) => member.status === 'absent').length;
+  const targetCount = Math.max(0, list.length - absentCount);
+  return `작성 ${doneCount}/${targetCount} 명${absentCount ? ` (부재 ${absentCount}명)` : ''}`;
+}
+
+function emptyWeeklyEntryDraft() {
+  return {
+    progress_log: [{ log: "", status: "done", date: "", detail: "", images: [], confluence_url: "" }],
+    risk_issue: [{ issue: "", importance: "중", detail: "", images: [], confluence_url: "" }],
+    next_plan: [{ plan: "", due: "" }],
+  };
+}
+
+function normalizeWeeklyList(value, emptyItem) {
+  if (Array.isArray(value)) return value.length ? value : [emptyItem];
+  if (typeof value === "string" && value.trim()) return [value.trim()];
+  return [emptyItem];
+}
+
+function weeklyDraftFromProject(project = {}) {
+  return {
+    progress_log: normalizeWeeklyList(project.progress_log, { log: "", status: "done", date: "", detail: "", images: [], confluence_url: "" }).map((item) => (typeof item === "string" ? { log: item, status: "done", date: "", detail: "", images: [], confluence_url: "" } : { log: item.log || item.text || "", status: item.status === "in_progress" ? "in_progress" : "done", date: slashDateToInput(item.date || ""), detail: item.detail || "", images: Array.isArray(item.images) ? item.images : [], confluence_url: item.confluence_url || "" })),
+    risk_issue: normalizeWeeklyList(project.risk_issue, { issue: "", importance: "중", detail: "", images: [], confluence_url: "" }).map((item) => (typeof item === "string" ? { issue: item, importance: "중", detail: "", images: [], confluence_url: "" } : { issue: item.issue || "", importance: item.importance || "중", detail: item.detail || "", images: Array.isArray(item.images) ? item.images : [], confluence_url: item.confluence_url || "" })),
+    next_plan: normalizeWeeklyList(project.next_plan, { plan: "", due: "" }).map((item) => (typeof item === "string" ? { plan: item, due: "" } : { plan: item.plan || "", due: slashDateToInput(item.due || "") })),
+  };
+}
+
+function compactWeeklyDraft(draft) {
+  return {
+    progress_log: (draft.progress_log || []).map((item) => ({ log: String(item.log || "").trim(), status: item.status === "in_progress" ? "in_progress" : "done", date: inputDateToSlash(item.date || ""), detail: String(item.detail || "").trim(), images: Array.isArray(item.images) ? item.images : [], confluence_url: String(item.confluence_url || "").trim() })).filter((item) => item.log || item.date || item.detail || item.images.length || item.confluence_url),
+    risk_issue: (draft.risk_issue || []).map((item) => ({ issue: String(item.issue || "").trim(), importance: item.importance || "중", detail: String(item.detail || "").trim(), images: Array.isArray(item.images) ? item.images : [], confluence_url: String(item.confluence_url || "").trim() })).filter((item) => item.issue || item.detail || item.images.length || item.confluence_url),
+    next_plan: (draft.next_plan || []).map((item) => ({ plan: String(item.plan || "").trim(), due: inputDateToSlash(item.due || "") })).filter((item) => item.plan || item.due),
+  };
+}
+
+function businessDaysBetween(startIso, endIso) {
+  const start = toDate(startIso);
+  const end = toDate(endIso);
+  const days = [];
+  const cur = new Date(start);
+  while (cur <= end) {
+    const dow = cur.getDay();
+    if (dow !== 0 && dow !== 6) days.push(new Date(cur));
+    cur.setDate(cur.getDate() + 1);
+  }
+  return days;
+}
+
+function normalizeStatus(status) {
+  if (status === '예정') return 'planned';
+  if (status === '진행중') return 'in_progress';
+  if (status === '진행 지연') return 'in_progress_delayed';
+  if (status === '완료') return 'done';
+  if (status === '완료 지연') return 'done_delayed';
+  return status || 'planned';
+}
+
+function accentFor(index) {
+  return ACCENTS[index % ACCENTS.length];
+}
+
+async function request(path, options = {}) {
+  const res = await fetch(`${API_BASE}${path}`, {
+    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
+    ...options,
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    const detail = Array.isArray(body.detail)
+      ? body.detail.map((item) => item.msg || JSON.stringify(item)).join(', ')
+      : body.detail;
+    throw new Error(detail || `Request failed: ${res.status}`);
+  }
+  if (res.status === 204) return null;
+  return res.json();
+}
+
+
+function App() {
+  const [activePage, setActivePage] = useState('team-status');
+  const [activeTeamTab, setActiveTeamTab] = useState('members');
+  const [projects, setProjects] = useState([]);
+  const [selectedProjectId, setSelectedProjectId] = useState(null);
+  const [milestones, setMilestones] = useState([]);
+  const [teams, setTeams] = useState([]);
+  const [members, setMembers] = useState([]);
+  const [teamProjects, setTeamProjects] = useState([]);
+  const [currentTeam, setCurrentTeam] = useState(() => {
+    const stored = localStorage.getItem('wiareport_team');
+    if (!stored) return null;
+    try {
+      const parsed = JSON.parse(stored);
+      return parsed?.team_id ? parsed : null;
+    } catch {
+      return null;
+    }
+  });
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [addingMilestone, setAddingMilestone] = useState(false);
+  const [milestoneDraft, setMilestoneDraft] = useState({ title: '', start_date: todayIso(), end_date: plusDays(todayIso(), 14) });
+  const [weeklyReports, setWeeklyReports] = useState([]);
+  const [weeklyReportDraft, setWeeklyReportDraft] = useState({ start_date: todayIso(), end_date: plusDays(todayIso(), 7) });
+  const [isWeeklyReportModalOpen, setIsWeeklyReportModalOpen] = useState(false);
+  const [weeklyWarningMessage, setWeeklyWarningMessage] = useState('');
+  const [weeklyPasswordEntry, setWeeklyPasswordEntry] = useState(null);
+  const [weeklyPasswordDraft, setWeeklyPasswordDraft] = useState('');
+  const [weeklyWritingEntry, setWeeklyWritingEntry] = useState(null);
+  const [weeklyEntryProjects, setWeeklyEntryProjects] = useState([]);
+  const [selectedWeeklyEntryId, setSelectedWeeklyEntryId] = useState('');
+  const [weeklyEntryDraft, setWeeklyEntryDraft] = useState(emptyWeeklyEntryDraft());
+  const [weeklyReportPreview, setWeeklyReportPreview] = useState(null);
+  const [teamDraft, setTeamDraft] = useState({ department: '', login_id: '' });
+  const [memberDraft, setMemberDraft] = useState({ name: '', role: 'M' });
+  const [teamProjectDraft, setTeamProjectDraft] = useState({ project_name: '', leaderId: '', memberIds: [] });
+  const [isProjectModalOpen, setIsProjectModalOpen] = useState(false);
+  const [editingTeamProjectId, setEditingTeamProjectId] = useState(null);
+  const [projectAssignmentDrafts, setProjectAssignmentDrafts] = useState({});
+  const [memberPasswordDrafts, setMemberPasswordDrafts] = useState({});
+  const [draggingMemberId, setDraggingMemberId] = useState(null);
+  const [loginDraft, setLoginDraft] = useState({ login_id: '', password: '' });
+  const [passwordDraft, setPasswordDraft] = useState({ current_password: INITIAL_PASSWORD, new_password: '', confirm_password: '' });
+  const [isUsageGuideOpen, setIsUsageGuideOpen] = useState(false);
+
+  const selectedProject = projects.find((project) => project.id === selectedProjectId) || null;
+  const weeklyReport = weeklyReports[0] || null;
+  const selectedTeamProject = teamProjects.find((project) => project.project_id === selectedProjectId) || null;
+  const isAdminAccount = currentTeam?.login_id === 'admin';
+
+  useEffect(() => {
+    if (!isAdminAccount && activePage === 'accounts') {
+      setActivePage('tasks');
+    }
+  }, [isAdminAccount, activePage]);
+
+  async function loadProjects(nextProjectId, teamId = currentTeam?.team_id) {
+    if (!teamId) {
+      setProjects([]);
+      setSelectedProjectId(null);
+      return null;
+    }
+    const list = await request(`/api/teams/${teamId}/timeline-projects`);
+    setProjects(list);
+    const fallbackId = list[0]?.id || null;
+    const currentStillExists = selectedProjectId && list.some((project) => project.id === selectedProjectId);
+    const id = nextProjectId !== undefined ? nextProjectId : currentStillExists ? selectedProjectId : fallbackId;
+    setSelectedProjectId(id);
+    if (!id) setMilestones([]);
+    return id;
+  }
+
+  async function loadMilestones(projectId) {
+    if (!projectId) {
+      setMilestones([]);
+      return;
+    }
+    const list = await request(`/api/projects/${projectId}/milestones`);
+    const details = await Promise.all(list.map((item) => request(`/api/milestones/${item.id}`)));
+    setMilestones(details);
+  }
+
+  async function loadTeams() {
+    const list = await request('/api/teams');
+    setTeams(list);
+  }
+
+  async function loadMembers(teamId = currentTeam?.team_id) {
+    if (!teamId) {
+      setMembers([]);
+      return;
+    }
+    const list = await request(`/api/teams/${teamId}/users`);
+    setMembers(list);
+  }
+
+  async function loadTeamProjects(teamId = currentTeam?.team_id) {
+    if (!teamId) {
+      setTeamProjects([]);
+      return;
+    }
+    const list = await request(`/api/teams/${teamId}/team-projects`);
+    setTeamProjects(list);
+    setProjectAssignmentDrafts((prev) => {
+      const next = { ...prev };
+      list.forEach((project) => {
+        const leader = project.members.find((member) => member.role === 'L');
+        next[project.project_id] = {
+          leaderId: next[project.project_id]?.leaderId ?? leader?.user_id ?? '',
+          memberIds: next[project.project_id]?.memberIds ?? project.members.filter((member) => member.role === 'M').map((member) => member.user_id),
+        };
+      });
+      return next;
+    });
+  }
+
+  async function loadWeeklyReport(teamId = currentTeam?.team_id) {
+    if (!teamId) {
+      setWeeklyReports([]);
+      return;
+    }
+    const reports = await request(`/api/teams/${teamId}/reports/active-list`);
+    setWeeklyReports(reports || []);
+  }
+
+  function updateWeeklyReportState(report) {
+    if (!report?.report_id) return;
+    setWeeklyReports((prev) => prev.map((item) => (item.report_id === report.report_id ? report : item)));
+  }
+
+  async function refresh(projectId) {
+    setError('');
+    const id = await loadProjects(projectId, currentTeam?.team_id);
+    await Promise.all([
+      loadMilestones(id),
+      loadTeams(),
+      currentTeam?.team_id ? loadMembers(currentTeam.team_id) : Promise.resolve(),
+      currentTeam?.team_id ? loadTeamProjects(currentTeam.team_id) : Promise.resolve(),
+      currentTeam?.team_id ? loadWeeklyReport(currentTeam.team_id) : Promise.resolve(),
+    ]);
+  }
+
+  useEffect(() => {
+    refresh()
+      .catch((err) => setError(err.message))
+      .finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => {
+    if (!selectedProjectId) return;
+    loadMilestones(selectedProjectId).catch((err) => setError(err.message));
+  }, [selectedProjectId]);
+
+  useEffect(() => {
+    if (currentTeam) localStorage.setItem('wiareport_team', JSON.stringify(currentTeam));
+    else localStorage.removeItem('wiareport_team');
+  }, [currentTeam]);
+
+  useEffect(() => {
+    if (!currentTeam?.team_id) return;
+    Promise.all([
+      loadMembers(currentTeam.team_id),
+      loadTeamProjects(currentTeam.team_id),
+      loadWeeklyReport(currentTeam.team_id),
+      loadProjects(undefined, currentTeam.team_id).then((projectId) => loadMilestones(projectId)),
+    ]).catch((err) => setError(err.message));
+  }, [currentTeam?.team_id]);
+
+  async function login() {
+    if (!loginDraft.login_id.trim() || !loginDraft.password) return;
+    try {
+      const team = await request('/api/auth/login', {
+        method: 'POST',
+        body: JSON.stringify({ login_id: loginDraft.login_id.trim(), password: loginDraft.password }),
+      });
+      setCurrentTeam(team);
+      setLoginDraft({ login_id: '', password: '' });
+      setPasswordDraft({ current_password: loginDraft.password, new_password: '', confirm_password: '' });
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  function logout() {
+    setCurrentTeam(null);
+    setPasswordDraft({ current_password: INITIAL_PASSWORD, new_password: '', confirm_password: '' });
+  }
+
+  async function changePassword() {
+    if (!currentTeam?.team_id) {
+      setError('로그인 정보가 올바르지 않습니다. 다시 로그인하세요');
+      logout();
+      return;
+    }
+    if (!passwordDraft.new_password.trim()) {
+      setError('새 비밀번호를 입력하세요');
+      return;
+    }
+    if (passwordDraft.new_password !== passwordDraft.confirm_password) {
+      setError('새 비밀번호 확인이 일치하지 않습니다');
+      return;
+    }
+    try {
+      const team = await request('/api/auth/change-password', {
+        method: 'POST',
+        body: JSON.stringify({
+          team_id: currentTeam.team_id,
+          current_password: passwordDraft.current_password,
+          new_password: passwordDraft.new_password,
+        }),
+      });
+      setCurrentTeam(team);
+      setPasswordDraft({ current_password: '', new_password: '', confirm_password: '' });
+      setError('');
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function createTeam() {
+    if (!teamDraft.department.trim() || !teamDraft.login_id.trim()) return;
+    try {
+      await request('/api/teams', {
+        method: 'POST',
+        body: JSON.stringify({
+          department: teamDraft.department.trim(),
+          login_id: teamDraft.login_id.trim(),
+        }),
+      });
+      setTeamDraft({ department: '', login_id: '' });
+      await loadTeams();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function createMember() {
+    if (!currentTeam?.team_id || !memberDraft.name.trim()) return;
+    try {
+      await request(`/api/teams/${currentTeam.team_id}/users`, {
+        method: 'POST',
+        body: JSON.stringify({ name: memberDraft.name.trim(), role: memberDraft.role }),
+      });
+      setMemberDraft({ name: '', role: 'M' });
+      await loadMembers(currentTeam.team_id);
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function createTeamProject() {
+    if (!currentTeam?.team_id || !teamProjectDraft.project_name.trim()) return;
+    const memberIds = (teamProjectDraft.memberIds || []).filter((userId) => userId && userId !== teamProjectDraft.leaderId);
+    const payload = {
+      project_name: teamProjectDraft.project_name.trim(),
+      status: teamProjectDraft.status || 'in_progress',
+      members: [
+        ...(teamProjectDraft.leaderId ? [{ user_id: teamProjectDraft.leaderId, role: 'L' }] : []),
+        ...memberIds.map((userId) => ({ user_id: userId, role: 'M' })),
+      ],
+    };
+    try {
+      if (editingTeamProjectId) {
+        await request(`/api/team-projects/${editingTeamProjectId}`, {
+          method: 'PUT',
+          body: JSON.stringify(payload),
+        });
+      } else {
+        await request(`/api/teams/${currentTeam.team_id}/team-projects`, {
+          method: 'POST',
+          body: JSON.stringify(payload),
+        });
+      }
+      setTeamProjectDraft({ project_name: '', leaderId: '', memberIds: [], status: 'in_progress' });
+      setEditingTeamProjectId(null);
+      setIsProjectModalOpen(false);
+      await loadTeamProjects(currentTeam.team_id);
+      const projectId = await loadProjects(undefined, currentTeam.team_id);
+      await loadMilestones(projectId);
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  function openTeamProjectEditor(project) {
+    const leader = project.members.find((member) => member.role === 'L');
+    setTeamProjectDraft({
+      project_name: project.project_name,
+      leaderId: leader?.user_id || '',
+      memberIds: project.members.filter((member) => member.role === 'M').map((member) => member.user_id),
+      status: project.status || 'in_progress',
+    });
+    setEditingTeamProjectId(project.project_id);
+    setIsProjectModalOpen(true);
+  }
+
+  async function updateTeamProjectStatus(projectId, status) {
+    try {
+      await request(`/api/team-projects/${projectId}/status`, {
+        method: 'PUT',
+        body: JSON.stringify({ status }),
+      });
+      await loadTeamProjects(currentTeam.team_id);
+      const nextProjectId = await loadProjects(undefined, currentTeam.team_id);
+      await loadMilestones(nextProjectId);
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function saveProjectMembers(projectId) {
+    const draft = projectAssignmentDrafts[projectId] || { leaderId: '', memberIds: [] };
+    const memberIds = (draft.memberIds || []).filter((userId) => userId && userId !== draft.leaderId);
+    const payloadMembers = [
+      ...(draft.leaderId ? [{ user_id: draft.leaderId, role: 'L' }] : []),
+      ...memberIds.map((userId) => ({ user_id: userId, role: 'M' })),
+    ];
+    try {
+      await request(`/api/team-projects/${projectId}/members`, {
+        method: 'PUT',
+        body: JSON.stringify({ members: payloadMembers }),
+      });
+      await loadTeamProjects(currentTeam.team_id);
+      setError('');
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function deleteTeamProject(projectId) {
+    try {
+      await request(`/api/team-projects/${projectId}`, { method: 'DELETE' });
+      setProjectAssignmentDrafts((prev) => {
+        const next = { ...prev };
+        delete next[projectId];
+        return next;
+      });
+      if (editingTeamProjectId === projectId) {
+        setEditingTeamProjectId(null);
+        setIsProjectModalOpen(false);
+      }
+      await loadTeamProjects(currentTeam.team_id);
+      const nextProjectId = await loadProjects(undefined, currentTeam.team_id);
+      await loadMilestones(nextProjectId);
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function deleteMember(userId) {
+    try {
+      await request(`/api/users/${userId}`, { method: 'DELETE' });
+      await loadMembers(currentTeam.team_id);
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function updateMemberRole(userId, role) {
+    if (!currentTeam?.team_id) return;
+    const previousMembers = members;
+    setMembers((prev) => prev.map((member) => (member.user_id === userId ? { ...member, role } : member)));
+    try {
+      await request(`/api/users/${userId}/role`, {
+        method: 'PUT',
+        body: JSON.stringify({ role }),
+      });
+      await Promise.all([
+        loadMembers(currentTeam.team_id),
+        loadTeamProjects(currentTeam.team_id),
+      ]);
+      setError('');
+    } catch (err) {
+      setMembers(previousMembers);
+      setError(err.message);
+    }
+  }
+
+  async function setMemberPassword(userId) {
+    const password = memberPasswordDrafts[userId] || '';
+    if (!password.trim()) {
+      setError('설정할 비밀번호를 입력하세요');
+      return;
+    }
+    try {
+      await request(`/api/users/${userId}/password`, {
+        method: 'PUT',
+        body: JSON.stringify({ password }),
+      });
+      setMemberPasswordDrafts((prev) => ({ ...prev, [userId]: '' }));
+      await loadMembers(currentTeam.team_id);
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function resetMemberPassword(userId) {
+    try {
+      await request("/api/users/" + userId + "/password", {
+        method: 'PUT',
+        body: JSON.stringify({ password: INITIAL_PASSWORD }),
+      });
+      setMemberPasswordDrafts((prev) => ({ ...prev, [userId]: '' }));
+      await loadMembers(currentTeam.team_id);
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function reorderMembers(nextMembers) {
+    if (!currentTeam?.team_id) return;
+    const previousMembers = members;
+    setMembers(nextMembers);
+    try {
+      const savedMembers = await request(`/api/teams/${currentTeam.team_id}/users/order`, {
+        method: 'PUT',
+        body: JSON.stringify({ user_ids: nextMembers.map((member) => member.user_id) }),
+      });
+      setMembers(savedMembers);
+      setError('');
+    } catch (err) {
+      setMembers(previousMembers);
+      setError(err.message);
+      await loadMembers(currentTeam.team_id).catch(() => {});
+    }
+  }
+
+  async function createMilestone() {
+    if (!selectedProjectId || !milestoneDraft.title.trim()) {
+      setAddingMilestone(false);
+      return;
+    }
+    try {
+      await request(`/api/projects/${selectedProjectId}/milestones`, {
+        method: 'POST',
+        body: JSON.stringify({
+          title: milestoneDraft.title.trim(),
+          description: '',
+          start_date: milestoneDraft.start_date,
+          end_date: milestoneDraft.end_date,
+        }),
+      });
+      setMilestoneDraft({ title: '', start_date: todayIso(), end_date: plusDays(todayIso(), 14) });
+      setAddingMilestone(false);
+      await refresh(selectedProjectId);
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function updateMilestone(milestone, draft) {
+    if (!draft.title.trim()) return;
+    try {
+      await request(`/api/milestones/${milestone.id}`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          title: draft.title.trim(),
+          description: '',
+          start_date: draft.start_date,
+          end_date: draft.end_date,
+        }),
+      });
+      await refresh(selectedProjectId);
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function deleteMilestone(id) {
+    try {
+      await request(`/api/milestones/${id}`, { method: 'DELETE' });
+      await refresh(selectedProjectId);
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function createEpic(milestone, draft) {
+    if (!draft.name.trim()) return;
+    try {
+      const accent = accentFor(milestone.epics.length);
+      await request(`/api/milestones/${milestone.id}/epics`, {
+        method: 'POST',
+        body: JSON.stringify({
+          title: draft.name.trim(),
+          owner: draft.owner.trim(),
+          status: draft.status || 'planned',
+          color: accent.bar,
+          start_date: draft.start_date,
+          end_date: draft.end_date,
+        }),
+      });
+      await refresh(selectedProjectId);
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function updateEpic(epic, draft) {
+    if (!draft.name.trim()) return;
+    try {
+      await request(`/api/epics/${epic.id}`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          title: draft.name.trim(),
+          owner: draft.owner.trim(),
+          status: draft.status,
+          color: epic.color || accentFor(0).bar,
+          start_date: draft.start_date,
+          end_date: draft.end_date,
+        }),
+      });
+      await refresh(selectedProjectId);
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function deleteEpic(id) {
+    try {
+      await request(`/api/epics/${id}`, { method: 'DELETE' });
+      await refresh(selectedProjectId);
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function createWeeklyReportPeriod() {
+    if (!currentTeam?.team_id) return;
+    if (!weeklyReportDraft.start_date || !weeklyReportDraft.end_date) {
+      setError('보고 기간을 입력하세요');
+      return;
+    }
+    if (weeklyReportDraft.end_date < weeklyReportDraft.start_date) {
+      setError('종료일은 시작일 이후여야 합니다');
+      return;
+    }
+    try {
+      const report = await request(`/api/teams/${currentTeam.team_id}/reports`, {
+        method: 'POST',
+        body: JSON.stringify(weeklyReportDraft),
+      });
+      setWeeklyReports((prev) => [report, ...prev.filter((item) => item.report_id !== report.report_id)]);
+      setIsWeeklyReportModalOpen(false);
+      setError('');
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function deleteWeeklyReport(reportId) {
+    if (!reportId) return;
+    try {
+      await request(`/api/reports/${reportId}`, { method: 'DELETE' });
+      setWeeklyReports((prev) => prev.filter((report) => report.report_id !== reportId));
+      setWeeklyPasswordEntry(null);
+      setWeeklyPasswordDraft('');
+      closeWeeklyEntryModal();
+      setWeeklyReportPreview(null);
+      setError('');
+      return true;
+    } catch (err) {
+      setError(err.message);
+      return false;
+    }
+  }
+
+  async function completeWeeklyReport(reportId) {
+    if (!reportId) return;
+    try {
+      await request(`/api/reports/${reportId}/complete`, { method: 'PUT' });
+      setWeeklyReports((prev) => prev.filter((report) => report.report_id !== reportId));
+      setWeeklyPasswordEntry(null);
+      setWeeklyPasswordDraft('');
+      closeWeeklyEntryModal();
+      setWeeklyReportPreview(null);
+      setError('');
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function toggleWeeklyAbsence(report, member) {
+    if (!report?.report_id) return;
+    try {
+      const updatedReport = await request(`/api/reports/${report.report_id}/users/${member.user_id}/absence`, { method: 'PUT' });
+      updateWeeklyReportState(updatedReport);
+      setError('');
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function openWeeklyReportPreview(report, member) {
+    if (!report?.report_id || member.status !== 'done') return;
+    try {
+      const result = await request(`/api/reports/${report.report_id}/users/${member.user_id}/html-report`);
+      setWeeklyReportPreview({ member, html: result.html || '' });
+      setError('');
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  function openWeeklyPassword(report, entry) {
+    setWeeklyPasswordEntry({ ...entry, report_id: report.report_id, report_period: `${report.start_date} ~ ${report.end_date}` });
+    setWeeklyPasswordDraft('');
+    setError('');
+  }
+
+  async function authorizeWeeklyEntry() {
+    if (!weeklyPasswordEntry || !weeklyPasswordDraft || !weeklyPasswordEntry.report_id) {
+      setError('비밀번호를 입력하세요');
+      return;
+    }
+    try {
+      const result = await request(`/api/reports/${weeklyPasswordEntry.report_id}/users/${weeklyPasswordEntry.user_id}/authorize`, {
+        method: 'POST',
+        body: JSON.stringify({ password: weeklyPasswordDraft }),
+      });
+      const nextProjects = result.projects || [];
+      const firstProject = nextProjects.find((project) => !project.is_excluded && project.project_name !== OTHER_WORK_PROJECT_NAME) || nextProjects.find((project) => !project.is_excluded) || null;
+      setWeeklyEntryProjects(nextProjects);
+      setSelectedWeeklyEntryId(firstProject?.project_id || '');
+      setWeeklyWritingEntry(weeklyPasswordEntry);
+      setWeeklyEntryDraft(firstProject ? weeklyDraftFromProject(firstProject) : emptyWeeklyEntryDraft());
+      setWeeklyPasswordEntry(null);
+      setWeeklyPasswordDraft('');
+      setError('');
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  function selectWeeklyProject(project) {
+    setSelectedWeeklyEntryId(project.project_id);
+    setWeeklyEntryDraft(weeklyDraftFromProject(project));
+  }
+
+  async function saveWeeklyEntry(projectId = selectedWeeklyEntryId) {
+    const project = weeklyEntryProjects.find((item) => item.project_id === projectId);
+    if (!weeklyWritingEntry || !project) return;
+    try {
+      const payload = compactWeeklyDraft(weeklyEntryDraft);
+      const report = await request(`/api/report-entries/${project.entry_id}/projects/${project.project_id}`, {
+        method: 'PUT',
+        body: JSON.stringify(payload),
+      });
+      const savedStatus = payload.progress_log.length || payload.risk_issue.length || payload.next_plan.length ? 'done' : 'pending';
+      updateWeeklyReportState(report);
+      setWeeklyEntryProjects((prev) => prev.map((item) => (item.project_id === project.project_id ? { ...item, ...payload, is_excluded: false, status: savedStatus } : item)));
+      setError('');
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function updateWeeklyEntryStatus(projectId, isExcluded) {
+    const project = weeklyEntryProjects.find((item) => item.project_id === projectId);
+    if (!project) return;
+    try {
+      const report = await request(`/api/report-entries/${project.entry_id}/projects/${project.project_id}/exclusion`, {
+        method: 'PUT',
+        body: JSON.stringify({ is_excluded: isExcluded }),
+      });
+      updateWeeklyReportState(report);
+      setWeeklyEntryProjects((prev) => prev.map((item) => (item.project_id === project.project_id ? { ...item, is_excluded: isExcluded, status: isExcluded ? 'excluded' : 'pending', progress_log: isExcluded ? [] : item.progress_log, risk_issue: isExcluded ? [] : item.risk_issue, next_plan: isExcluded ? [] : item.next_plan } : item)));
+      if (selectedWeeklyEntryId === project.project_id && isExcluded) {
+        setWeeklyEntryDraft(emptyWeeklyEntryDraft());
+      }
+      setError('');
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  function closeWeeklyEntryModal() {
+    setWeeklyWritingEntry(null);
+    setWeeklyEntryProjects([]);
+    setSelectedWeeklyEntryId('');
+    setWeeklyEntryDraft(emptyWeeklyEntryDraft());
+  }
+
+  if (!currentTeam) {
+    return (
+      <LoginPage
+        loginDraft={loginDraft}
+        setLoginDraft={setLoginDraft}
+        onLogin={login}
+        teams={teams}
+        teamDraft={teamDraft}
+        setTeamDraft={setTeamDraft}
+        onCreateTeam={createTeam}
+        error={error}
+      />
+    );
+  }
+
+  return (
+    <main className="app-shell">
+      <aside className="sidebar">
+        <div className="brand">
+          <AudioWaveform size={22} />
+          <div>
+            <h1>WiaReport</h1>
+          </div>
+        </div>
+
+        <nav className="side-nav" aria-label="주요 메뉴">
+          <button className={`side-tab${activePage === 'team-status' ? ' active' : ''}`} type="button" onClick={() => setActivePage('team-status')}>팀 현황</button>
+          <button className={`side-tab${activePage === 'tasks' ? ' active' : ''}`} type="button" onClick={() => setActivePage('tasks')}>과제 현황</button>
+          <button className={`side-tab${activePage === 'weekly-report' ? ' active' : ''}`} type="button" onClick={() => setActivePage('weekly-report')}>주간 보고 작성</button>
+          <button className={`side-tab${activePage === 'weekly-lounge' ? ' active' : ''}`} type="button" onClick={() => setActivePage('weekly-lounge')}>주간 보고 라운지</button>
+          <button className={'side-tab' + (activePage === 'member-management' ? ' active' : '')} type="button" onClick={() => setActivePage('member-management')}>멤버 관리</button>
+          <button className={'side-tab' + (activePage === 'project-management' ? ' active' : '')} type="button" onClick={() => setActivePage('project-management')}>과제 관리</button>
+          {isAdminAccount && <button className={`side-tab${activePage === 'accounts' ? ' active' : ''}`} type="button" onClick={() => setActivePage('accounts')}>계정 관리</button>}
+        </nav>
+
+        <button className="side-help" type="button" onClick={() => setIsUsageGuideOpen(true)}>
+          <HelpCircle size={16} />
+          <span>사용 가이드</span>
+        </button>
+
+        <div className="side-user">
+          <div className="avatar">{currentTeam.department.slice(0, 1)}</div>
+          <div className="side-user-info">
+            <b>{currentTeam.department}</b>
+            <span>{currentTeam.login_id}</span>
+          </div>
+          <button className="side-logout" type="button" onClick={logout} aria-label="로그아웃"><LogOut size={16} /></button>
+        </div>
+      </aside>
+
+      <section className="workspace">
+        {error && <div className="error">{error}</div>}
+        {activePage === 'team-status' && (
+          <TeamStatusPage
+            currentTeam={currentTeam}
+            members={members}
+            projects={projects}
+            teamProjects={teamProjects}
+            weeklyReports={weeklyReports}
+          />
+        )}
+        {activePage === 'tasks' && (
+          <>
+            <div className="page-head">
+              <div>
+                <h1>과제 현황</h1>
+              </div>
+              <div className="project-toolbar" aria-label="과제 선택">
+                <div className="project-toolbar-meta">
+                  <span>진행중 과제</span>
+                  <b>{projects.length}개</b>
+                </div>
+                <select id="project-select" className="project-select" value={selectedProjectId || ''} onChange={(e) => setSelectedProjectId(e.target.value || null)} aria-label="과제 선택">
+                  {projects.length === 0 && <option value="">선택 가능한 과제 없음</option>}
+                  {projects.map((project) => <option key={project.id} value={project.id}>{project.title}</option>)}
+                </select>
+              </div>
+            </div>
+
+            {loading && <div className="empty">불러오는 중</div>}
+            {!loading && selectedProject && (
+              <>
+                <ProjectMemberPanel project={selectedProject} teamProject={selectedTeamProject} />
+                <ProjectTimeline
+                  project={selectedProject}
+                  milestones={milestones}
+                  addingMilestone={addingMilestone}
+                  setAddingMilestone={setAddingMilestone}
+                  milestoneDraft={milestoneDraft}
+                  setMilestoneDraft={setMilestoneDraft}
+                  onAddMilestone={createMilestone}
+                  onUpdateMilestone={updateMilestone}
+                  onRemoveMilestone={deleteMilestone}
+                  onAddEpic={createEpic}
+                  onUpdateEpic={updateEpic}
+                  onRemoveEpic={deleteEpic}
+                />
+                <ProjectProgressHistory project={selectedProject} />
+                <ProjectIssueManagement project={selectedProject} />
+                <ProjectNextPlan project={selectedProject} />
+              </>
+            )}
+          </>
+        )}
+        {activePage === 'weekly-report' && (
+          <WeeklyReportPage
+            members={members}
+            weeklyReports={weeklyReports}
+            weeklyReportDraft={weeklyReportDraft}
+            setWeeklyReportDraft={setWeeklyReportDraft}
+            isWeeklyReportModalOpen={isWeeklyReportModalOpen}
+            setIsWeeklyReportModalOpen={setIsWeeklyReportModalOpen}
+            onCreateWeeklyReportPeriod={createWeeklyReportPeriod}
+            weeklyWarningMessage={weeklyWarningMessage}
+            setWeeklyWarningMessage={setWeeklyWarningMessage}
+            onDeleteWeeklyReport={deleteWeeklyReport}
+            onCompleteWeeklyReport={completeWeeklyReport}
+            onToggleWeeklyAbsence={toggleWeeklyAbsence}
+            onOpenWeeklyPassword={openWeeklyPassword}
+            onOpenWeeklyReportPreview={openWeeklyReportPreview}
+            weeklyReportPreview={weeklyReportPreview}
+            setWeeklyReportPreview={setWeeklyReportPreview}
+            weeklyPasswordEntry={weeklyPasswordEntry}
+            weeklyPasswordDraft={weeklyPasswordDraft}
+            setWeeklyPasswordDraft={setWeeklyPasswordDraft}
+            onAuthorizeWeeklyEntry={authorizeWeeklyEntry}
+            setWeeklyPasswordEntry={setWeeklyPasswordEntry}
+            weeklyWritingEntry={weeklyWritingEntry}
+            weeklyEntryProjects={weeklyEntryProjects}
+            weeklyEntryDraft={weeklyEntryDraft}
+            setWeeklyEntryDraft={setWeeklyEntryDraft}
+            selectedWeeklyEntryId={selectedWeeklyEntryId}
+            onSelectWeeklyProject={selectWeeklyProject}
+            onSaveWeeklyEntry={saveWeeklyEntry}
+            onUpdateWeeklyEntryStatus={updateWeeklyEntryStatus}
+            onCloseWeeklyEntryModal={closeWeeklyEntryModal}
+          />
+        )}
+        {activePage === 'weekly-lounge' && <WeeklyReportLoungePage currentTeam={currentTeam} />}
+        {(activePage === 'member-management' || activePage === 'project-management') && (
+          <TeamManagementPage
+            activeTeamTab={activePage === 'member-management' ? 'members' : 'tasks'}
+            showTabs={false}
+            setActiveTeamTab={setActiveTeamTab}
+            currentTeam={currentTeam}
+            members={members}
+            teamProjects={teamProjects}
+            teamProjectDraft={teamProjectDraft}
+            setTeamProjectDraft={setTeamProjectDraft}
+            isProjectModalOpen={isProjectModalOpen}
+            setIsProjectModalOpen={setIsProjectModalOpen}
+            editingTeamProjectId={editingTeamProjectId}
+            setEditingTeamProjectId={setEditingTeamProjectId}
+            projectAssignmentDrafts={projectAssignmentDrafts}
+            setProjectAssignmentDrafts={setProjectAssignmentDrafts}
+            memberDraft={memberDraft}
+            setMemberDraft={setMemberDraft}
+            memberPasswordDrafts={memberPasswordDrafts}
+            setMemberPasswordDrafts={setMemberPasswordDrafts}
+            onCreateMember={createMember}
+            onCreateTeamProject={createTeamProject}
+            onEditTeamProject={openTeamProjectEditor}
+            onSaveProjectMembers={saveProjectMembers}
+            onUpdateTeamProjectStatus={updateTeamProjectStatus}
+            onDeleteTeamProject={deleteTeamProject}
+            onDeleteMember={deleteMember}
+            onUpdateMemberRole={updateMemberRole}
+            onSetMemberPassword={setMemberPassword}
+            onResetMemberPassword={resetMemberPassword}
+            onReorderMembers={reorderMembers}
+            draggingMemberId={draggingMemberId}
+            setDraggingMemberId={setDraggingMemberId}
+          />
+        )}
+        {isAdminAccount && activePage === 'accounts' && (
+          <AccountManagementPage teams={teams} teamDraft={teamDraft} setTeamDraft={setTeamDraft} onCreateTeam={createTeam} />
+        )}
+      </section>
+
+      {isUsageGuideOpen && <UsageGuideModal onClose={() => setIsUsageGuideOpen(false)} />}
+    </main>
+  );
+}
+
+function UsageGuideModal({ onClose }) {
+  return (
+    <div className="modal-backdrop usage-guide-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <article className="usage-guide-modal" role="dialog" aria-modal="true" aria-labelledby="usage-guide-title" onMouseDown={(event) => event.stopPropagation()}>
+        <header className="usage-guide-head">
+          <div>
+            <span>Markdown Guide</span>
+            <h2 id="usage-guide-title">사용 가이드</h2>
+          </div>
+          <button className="usage-guide-close" type="button" onClick={onClose} aria-label="사용 가이드 닫기"><X size={18} /></button>
+        </header>
+
+        <div className="usage-guide-markdown">
+          <p className="usage-guide-lead">WiaReport를 처음 세팅하고 주간보고를 완료본으로 확인하기까지의 기본 흐름입니다.</p>
+
+          <ol>
+            <li>
+              <h3>멤버 비밀번호 설정</h3>
+              <p><strong>멤버 관리</strong>에서 멤버를 추가한 뒤 초기 비밀번호 상태를 확인합니다.</p>
+              <ul>
+                <li>초기 비밀번호는 <code>wia1234!</code>입니다.</li>
+                <li>멤버가 처음 접속하면 개인 비밀번호로 변경해야 합니다.</li>
+                <li>필요하면 멤버 관리 화면에서 비밀번호를 초기화하거나 직접 설정합니다.</li>
+              </ul>
+            </li>
+            <li>
+              <h3>새로운 과제 생성</h3>
+              <p><strong>과제 관리</strong>에서 과제명을 입력하고 담당 리더와 참여 멤버를 지정합니다.</p>
+              <ul>
+                <li>리더는 1명을 선택하고, 매니저는 여러 명을 선택할 수 있습니다.</li>
+                <li>생성된 과제는 과제 현황과 주간보고 작성 화면에 연결됩니다.</li>
+              </ul>
+            </li>
+            <li>
+              <h3>팀 캘린더 작성</h3>
+              <p><strong>팀 현황</strong>의 캘린더에서 날짜를 선택해 팀 일정 또는 개인 일정을 등록합니다.</p>
+              <ul>
+                <li>개인 일정은 휴가, 교육, 출장으로 구분합니다.</li>
+                <li>기간 일정은 시작일과 종료일을 지정해 캘린더에 표시합니다.</li>
+              </ul>
+            </li>
+            <li>
+              <h3>과제 마일스톤 계획 생성</h3>
+              <p><strong>과제 현황</strong>에서 과제를 선택하고 마일스톤과 Work를 추가합니다.</p>
+              <ul>
+                <li>마일스톤은 과제의 큰 기간 계획입니다.</li>
+                <li>Work는 마일스톤 안에서 추적할 세부 작업입니다.</li>
+              </ul>
+            </li>
+            <li>
+              <h3>보고 주간 생성</h3>
+              <p><strong>주간 보고 작성</strong>에서 새 보고 주간을 생성합니다.</p>
+              <ul>
+                <li>시작일과 종료일을 지정하면 팀원별 작성 카드가 생성됩니다.</li>
+                <li>진행 중인 보고 주간이 있어도 새 보고 주간을 추가로 개설할 수 있습니다.</li>
+              </ul>
+            </li>
+            <li>
+              <h3>개인별 주간 보고 작성</h3>
+              <p>각 멤버 카드에서 비밀번호 확인 후, 먼저 이번 주에 실제로 진행한 정규 과제를 선택합니다. 선택한 과제만 작성 화면 왼쪽 목록에 배치되고, 과제를 하나씩 눌러 주간 내용을 입력합니다.</p>
+              <ul>
+                <li>내가 참여 멤버로 지정된 진행 중 과제가 선택 화면에 자동으로 표시됩니다.</li>
+                <li>작성 중에도 <strong>선택 수정</strong>을 눌러 이번 주 작성 대상 과제를 언제든지 다시 고를 수 있습니다.</li>
+                <li><strong>기타 업무 (교육/출장 등)</strong>는 정규 과제 선택 화면에는 포함되지 않고, 작성 화면의 <strong>기타 (교육, 출장 등) 업무 추가</strong> 버튼으로 별도 추가합니다.</li>
+                <li>정규 과제 외 교육, 출장, 회의, 지원 업무처럼 별도 과제로 묶기 어려운 내용을 기타 업무에 입력합니다.</li>
+              </ul>
+              <div className="usage-guide-format">
+                <h4>작성 포맷</h4>
+                <dl>
+                  <div>
+                    <dt>진행 실적</dt>
+                    <dd>이번 보고 주간에 실제로 수행한 업무입니다. 업무 내용, 완료/진행중 상태, 수행일을 함께 남깁니다.</dd>
+                  </div>
+                  <div>
+                    <dt>리스크/이슈</dt>
+                    <dd>일정 지연, 의사결정 필요, 외부 의존성, 품질 문제처럼 공유가 필요한 위험 요소입니다. 중요도와 함께 작성합니다.</dd>
+                  </div>
+                  <div>
+                    <dt>차주 계획</dt>
+                    <dd>다음 보고 주간에 진행할 예정 업무입니다. 실행할 작업과 목표 일정을 적어 다음 주 추적 기준으로 사용합니다.</dd>
+                  </div>
+                </dl>
+              </div>
+              <ul>
+                <li>모든 과제 입력이 끝나면 작성 완료 상태로 저장합니다.</li>
+              </ul>
+            </li>
+            <li>
+              <h3>보고 라운지 확인</h3>
+              <p>팀원 작성이 끝나면 보고 주간을 완료하고 <strong>주간 보고 라운지</strong>에서 결과를 확인합니다.</p>
+              <ul>
+                <li>완료된 보고 주간별로 멤버 리포트를 열람합니다.</li>
+                <li>과제 현황 하단에서는 과제 기준의 주간보고 이력도 확인할 수 있습니다.</li>
+              </ul>
+            </li>
+          </ol>
+        </div>
+      </article>
+    </div>
+  );
+}
+
+function TeamStatusPage({ currentTeam, members, projects, teamProjects, weeklyReports }) {
+  const weeklyReport = weeklyReports[0] || null;
+  const activeProjects = teamProjects.filter((project) => project.status !== 'done');
+  const doneProjects = teamProjects.filter((project) => project.status === 'done');
+  const reportEntries = weeklyReport?.members || [];
+
+  return (
+    <>
+      <section className="team-status-hero" aria-label="팀 현황 환영 메시지">
+        <div className="team-status-copy">
+          <span>WiaReport Team Workspace</span>
+          <h1>{currentTeam.department} 팀, WiaReport에 오신 것을 환영합니다.</h1>
+          <p>이곳에서 팀의 과제 흐름, 주간 보고 진행 상태, 구성원 기준 정보를 한 곳에서 확인합니다.</p>
+        </div>
+        <div className="team-status-identity">
+          <div className="team-status-avatar">{currentTeam.department.slice(0, 1)}</div>
+          <div>
+            <strong>{currentTeam.department}</strong>
+            <span>{currentTeam.login_id}</span>
+          </div>
+        </div>
+      </section>
+
+      <section className="team-status-grid" aria-label="팀 현황 요약">
+        <article className="team-status-metric">
+          <span>구성원</span>
+          <strong>{members.length}</strong>
+        </article>
+        <article className="team-status-metric">
+          <span>진행중 과제</span>
+          <strong>{activeProjects.length || projects.length}</strong>
+        </article>
+        <article className="team-status-metric">
+          <span>완료 과제</span>
+          <strong>{doneProjects.length}</strong>
+        </article>
+        <article className="team-status-metric report-period">
+          <span>금주 보고</span>
+          <strong>{weeklyReport ? `${weeklyReport.start_date} ~ ${weeklyReport.end_date}` : '-'}</strong>
+          <p>{weeklyReport ? weeklyCompletionText(reportEntries) : '개설된 보고 주간 없음'}</p>
+        </article>
+      </section>
+
+      <TeamCalendar currentTeam={currentTeam} members={members} />
+    </>
+  );
+}
+
+function TeamCalendar({ currentTeam, members }) {
+  const [monthIso, setMonthIso] = useState(todayIso().slice(0, 7) + '-01');
+  const [events, setEvents] = useState([]);
+  const [loadingEvents, setLoadingEvents] = useState(false);
+  const [calendarError, setCalendarError] = useState('');
+  const [selection, setSelection] = useState(null);
+  const [isSelecting, setIsSelecting] = useState(false);
+  const [draft, setDraft] = useState(null);
+
+  useEffect(() => {
+    if (!currentTeam?.team_id) return;
+    setLoadingEvents(true);
+    request(`/api/teams/${currentTeam.team_id}/events`)
+      .then((list) => {
+        setEvents(list);
+        setCalendarError('');
+      })
+      .catch((err) => setCalendarError(err.message))
+      .finally(() => setLoadingEvents(false));
+  }, [currentTeam?.team_id]);
+
+  const monthStart = useMemo(() => {
+    const base = toDate(monthIso);
+    return new Date(base.getFullYear(), base.getMonth(), 1);
+  }, [monthIso]);
+
+  const monthTitle = `${monthStart.getFullYear()}년 ${monthStart.getMonth() + 1}월`;
+  const calendarDays = useMemo(() => {
+    const start = new Date(monthStart);
+    start.setDate(1 - monthStart.getDay());
+    return Array.from({ length: 42 }).map((_, index) => {
+      const date = new Date(start);
+      date.setDate(start.getDate() + index);
+      const iso = isoOf(date);
+      return {
+        iso,
+        day: date.getDate(),
+        isCurrentMonth: date.getMonth() === monthStart.getMonth(),
+        isToday: iso === todayIso(),
+      };
+    });
+  }, [monthStart]);
+
+  function sortEvents(list) {
+    return [...list].sort((a, b) => `${a.start_date}${a.created_at || ''}`.localeCompare(`${b.start_date}${b.created_at || ''}`));
+  }
+
+  function moveMonth(delta) {
+    const next = new Date(monthStart);
+    next.setMonth(next.getMonth() + delta);
+    setMonthIso(isoOf(new Date(next.getFullYear(), next.getMonth(), 1)));
+  }
+
+  function normalizeRange(startIso, endIso) {
+    return startIso <= endIso ? { start_date: startIso, end_date: endIso } : { start_date: endIso, end_date: startIso };
+  }
+
+  function openDraft(startIso, endIso) {
+    const range = normalizeRange(startIso, endIso);
+    setDraft({
+      event_id: null,
+      mode: 'edit',
+      title: '',
+      event_type: 'team',
+      start_date: range.start_date,
+      end_date: range.end_date,
+      member_ids: [],
+    });
+    setCalendarError('');
+  }
+
+  function openEvent(item) {
+    setIsSelecting(false);
+    setSelection(null);
+    setDraft({
+      event_id: item.event_id,
+      mode: 'view',
+      title: item.title || '',
+      event_type: item.event_type === 'personal' ? 'vacation' : (item.event_type || 'team'),
+      start_date: item.start_date,
+      end_date: item.end_date,
+      member_ids: item.member_ids || item.members?.map((member) => member.user_id) || [],
+    });
+    setCalendarError('');
+  }
+
+  function beginSelection(iso) {
+    setSelection({ start: iso, end: iso });
+    setIsSelecting(true);
+  }
+
+  function updateSelection(iso) {
+    if (!isSelecting || !selection) return;
+    setSelection({ ...selection, end: iso });
+  }
+
+  function finishSelection(iso) {
+    if (!isSelecting) return;
+    const startIso = selection?.start || iso;
+    setIsSelecting(false);
+    setSelection(null);
+    openDraft(startIso, iso);
+  }
+
+  function isSelected(iso) {
+    if (!selection) return false;
+    const range = normalizeRange(selection.start, selection.end);
+    return range.start_date <= iso && iso <= range.end_date;
+  }
+
+  function eventsForDate(iso) {
+    return events.filter((item) => item.start_date <= iso && iso <= item.end_date);
+  }
+
+  const calendarEventLayout = useMemo(() => {
+    const layout = new Map();
+    calendarDays.forEach((day) => layout.set(day.iso, []));
+
+    for (let weekStart = 0; weekStart < calendarDays.length; weekStart += 7) {
+      const week = calendarDays.slice(weekStart, weekStart + 7);
+      const weekFirst = week[0]?.iso;
+      const weekLast = week[week.length - 1]?.iso;
+      if (!weekFirst || !weekLast) continue;
+
+      const lanes = [];
+      const weekEvents = sortEvents(events.filter((item) => item.start_date <= weekLast && item.end_date >= weekFirst));
+
+      week.forEach((day) => layout.set(day.iso, []));
+
+      weekEvents.forEach((item) => {
+        const start = item.start_date < weekFirst ? weekFirst : item.start_date;
+        const end = item.end_date > weekLast ? weekLast : item.end_date;
+        let laneIndex = lanes.findIndex((laneEnd) => laneEnd < start);
+        if (laneIndex === -1) {
+          laneIndex = lanes.length;
+          lanes.push(end);
+        } else {
+          lanes[laneIndex] = end;
+        }
+
+        week.forEach((day) => {
+          if (start <= day.iso && day.iso <= end) {
+            const slots = layout.get(day.iso) || [];
+            while (slots.length <= laneIndex) slots.push(null);
+            slots[laneIndex] = item;
+            layout.set(day.iso, slots);
+          }
+        });
+      });
+
+      week.forEach((day) => {
+        const slots = layout.get(day.iso) || [];
+        while (slots.length < lanes.length) slots.push(null);
+        layout.set(day.iso, slots);
+      });
+    }
+
+    return layout;
+  }, [calendarDays, events]);
+
+  function setMemberSelected(userId, selected) {
+    setDraft((prev) => {
+      const ids = new Set(prev.member_ids);
+      if (selected) ids.add(userId);
+      else ids.delete(userId);
+      return { ...prev, member_ids: Array.from(ids) };
+    });
+  }
+
+  async function saveEvent() {
+    if (!draft?.title.trim()) {
+      setCalendarError('일정명을 입력하세요');
+      return;
+    }
+    if (draft.end_date < draft.start_date) {
+      setCalendarError('종료일은 시작일보다 빠를 수 없습니다');
+      return;
+    }
+    const payload = {
+      title: draft.title.trim(),
+      event_type: draft.event_type,
+      start_date: draft.start_date,
+      end_date: draft.end_date,
+      member_ids: draft.event_type === 'team' ? [] : draft.member_ids,
+    };
+    try {
+      const saved = await request(draft.event_id ? `/api/team-events/${draft.event_id}` : `/api/teams/${currentTeam.team_id}/events`, {
+        method: draft.event_id ? 'PUT' : 'POST',
+        body: JSON.stringify(payload),
+      });
+      setEvents((prev) => sortEvents(draft.event_id ? prev.map((item) => (item.event_id === saved.event_id ? saved : item)) : [...prev, saved]));
+      setDraft(null);
+      setCalendarError('');
+    } catch (err) {
+      setCalendarError(err.message);
+    }
+  }
+
+  async function deleteEvent() {
+    if (!draft?.event_id) return;
+    if (!window.confirm('이 일정을 삭제할까요?')) return;
+    try {
+      await request(`/api/team-events/${draft.event_id}`, { method: 'DELETE' });
+      setEvents((prev) => prev.filter((item) => item.event_id !== draft.event_id));
+      setDraft(null);
+      setCalendarError('');
+    } catch (err) {
+      setCalendarError(err.message);
+    }
+  }
+
+  return (
+    <section className="team-calendar" aria-label="팀 캘린더">
+      <div className="team-calendar-head">
+        <div>
+          <span>Team Calendar</span>
+          <h2>팀 캘린더</h2>
+        </div>
+        <div className="team-calendar-controls" aria-label="월 이동">
+          <button className="team-calendar-nav" type="button" onClick={() => moveMonth(-1)} aria-label="이전 달">◀</button>
+          <strong>{monthTitle}</strong>
+          <button className="team-calendar-nav" type="button" onClick={() => moveMonth(1)} aria-label="다음 달">▶</button>
+        </div>
+      </div>
+      {calendarError && <div className="team-calendar-alert">{calendarError}</div>}
+      <div className="team-calendar-weekdays" aria-hidden="true">
+        {DOW.map((day) => <span key={day}>{day}</span>)}
+      </div>
+      <div className="team-calendar-grid">
+        {calendarDays.map((day) => {
+          const dayEvents = eventsForDate(day.iso);
+          const dayEventSlots = calendarEventLayout.get(day.iso) || [];
+          return (
+            <div
+              key={day.iso}
+              className={`team-calendar-day${day.isCurrentMonth ? '' : ' muted'}${day.isToday ? ' today' : ''}${isSelected(day.iso) ? ' selected' : ''}`}
+              role="button"
+              tabIndex={0}
+              onPointerDown={(e) => {
+                if (e.button !== 0) return;
+                beginSelection(day.iso);
+              }}
+              onPointerEnter={() => updateSelection(day.iso)}
+              onPointerUp={() => finishSelection(day.iso)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  openDraft(day.iso, day.iso);
+                }
+              }}
+            >
+              <span className="team-calendar-day-num">{day.day}</span>
+              <span className="team-calendar-events">
+                {dayEventSlots.slice(0, 3).map((item, laneIndex) => {
+                  if (!item) return <span key={`empty-${day.iso}-${laneIndex}`} className="team-calendar-event-placeholder" aria-hidden="true" />;
+                  const meta = calendarEventTypeMeta(item.event_type);
+                  const isPersonal = PERSONAL_CALENDAR_EVENT_TYPES.includes(item.event_type) || item.event_type === 'personal';
+                  const peopleLabel = item.members?.length ? item.members.map((member) => `${member.name} ${member.role}`).join(', ') : '인원 없음';
+                  const tooltip = isPersonal ? peopleLabel : item.title;
+                  const isMultiDay = item.start_date !== item.end_date;
+                  const dayOfWeek = toDate(day.iso).getDay();
+                  const startsHere = item.start_date === day.iso || dayOfWeek === 0;
+                  const endsHere = item.end_date === day.iso || dayOfWeek === 6;
+                  const spanClass = isMultiDay ? `${startsHere ? ' span-start' : ' span-mid'}${endsHere ? ' span-end' : ''}` : ' span-single';
+                  return (
+                    <button
+                      key={`${item.event_id}-${laneIndex}`}
+                      className={`team-calendar-event ${meta.className}${spanClass}`}
+                      type="button"
+                      title={tooltip}
+                      onPointerDown={(e) => e.stopPropagation()}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        openEvent(item);
+                      }}
+                    >
+                      <b>{startsHere || !isMultiDay ? item.title : ''}</b>
+                      <small>{startsHere || !isMultiDay ? (item.event_type === 'team' ? meta.label : `${meta.label} · ${item.members.length ? `${item.members.length}명` : '인원 없음'}`) : ''}</small>
+                    </button>
+                  );
+                })}
+                {dayEvents.length > 3 && <span className="team-calendar-more">+{dayEvents.length - 3}</span>}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+      {loadingEvents && <div className="team-calendar-loading">일정을 불러오는 중</div>}
+
+      {draft && (() => {
+        const isPersonalDraft = PERSONAL_CALENDAR_EVENT_TYPES.includes(draft.event_type);
+        const draftMeta = calendarEventTypeMeta(draft.event_type);
+        const selectedMembers = members.filter((member) => draft.member_ids.includes(member.user_id));
+        const periodLabel = draft.start_date === draft.end_date ? draft.start_date : `${draft.start_date} ~ ${draft.end_date}`;
+        return (
+          <div className="modal-backdrop" role="presentation">
+            <div className="team-calendar-modal" role="dialog" aria-modal="true" aria-labelledby="team-calendar-title">
+              <div className="project-modal-head">
+                <div>
+                  <span>Team Schedule</span>
+                  <h2 id="team-calendar-title">{draft.event_id ? '팀 일정 상세' : '팀 일정 추가'}</h2>
+                </div>
+                <button className="icon-btn" type="button" onClick={() => setDraft(null)} aria-label="닫기"><X size={16} /></button>
+              </div>
+
+              {draft.mode === 'view' ? (
+                <div className="team-calendar-detail">
+                  <div className={`team-calendar-detail-badge ${draftMeta.className}`}>{isPersonalDraft ? `개인 일정 · ${draftMeta.label}` : draftMeta.label}</div>
+                  <h3>{draft.title}</h3>
+                  <div className="team-calendar-detail-grid">
+                    <div>
+                      <span>일정 기간</span>
+                      <strong>{periodLabel}</strong>
+                    </div>
+                    <div>
+                      <span>일정 유형</span>
+                      <strong>{isPersonalDraft ? draftMeta.label : '팀 일정'}</strong>
+                    </div>
+                  </div>
+                  {isPersonalDraft && (
+                    <div className="team-calendar-detail-people">
+                      <span>참여 인원</span>
+                      <div>
+                        {selectedMembers.length ? selectedMembers.map((member) => (
+                          <span key={member.user_id} className="team-calendar-detail-person">{member.name} {member.role}</span>
+                        )) : <em>인원 없음</em>}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="team-calendar-form">
+                  <label>
+                    일정명
+                    <input value={draft.title} onChange={(e) => setDraft({ ...draft, title: e.target.value })} placeholder="예: 고객사 점검, 내부 리뷰" autoFocus />
+                  </label>
+                  <div className="team-calendar-scope" role="group" aria-label="일정 범위">
+                    <button className={draft.event_type === 'team' ? 'team active' : 'team'} type="button" onClick={() => setDraft({ ...draft, event_type: 'team', member_ids: [] })}>팀 일정</button>
+                    <button className={isPersonalDraft ? 'personal active' : 'personal'} type="button" onClick={() => setDraft({ ...draft, event_type: isPersonalDraft ? draft.event_type : 'vacation', member_ids: draft.member_ids })}>개인 일정</button>
+                  </div>
+                  {isPersonalDraft && (
+                    <div className="team-calendar-subtype" role="group" aria-label="개인 일정 유형">
+                      {PERSONAL_CALENDAR_EVENT_TYPES.map((type) => {
+                        const meta = calendarEventTypeMeta(type);
+                        return (
+                          <button
+                            key={type}
+                            className={`${meta.className}${draft.event_type === type ? ' active' : ''}`}
+                            type="button"
+                            onClick={() => setDraft({ ...draft, event_type: type, member_ids: draft.member_ids })}
+                          >
+                            {meta.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                  <div className="team-calendar-date-row">
+                    <label>
+                      시작일
+                      <input type="date" value={draft.start_date} onChange={(e) => setDraft({ ...draft, start_date: e.target.value })} />
+                    </label>
+                    <label>
+                      종료일
+                      <input type="date" value={draft.end_date} onChange={(e) => setDraft({ ...draft, end_date: e.target.value })} />
+                    </label>
+                  </div>
+                  {isPersonalDraft && (
+                    <>
+                      <div className="team-calendar-people-head">
+                        <strong>참여 인원</strong>
+                        <div>
+                          <button type="button" onClick={() => setDraft({ ...draft, member_ids: members.map((member) => member.user_id) })}>전체 선택</button>
+                          <button type="button" onClick={() => setDraft({ ...draft, member_ids: [] })}>선택 해제</button>
+                        </div>
+                      </div>
+                      <div className="team-calendar-people">
+                        {members.map((member) => {
+                          const selected = draft.member_ids.includes(member.user_id);
+                          return (
+                            <button key={member.user_id} className={`team-calendar-person${selected ? ' selected' : ''}`} type="button" onClick={() => setMemberSelected(member.user_id, !selected)}>
+                              <span className="avatar-mini">{member.name.slice(0, 1)}</span>
+                              <b>{member.name}</b>
+                              <small>{member.role}</small>
+                            </button>
+                          );
+                        })}
+                        {members.length === 0 && <div className="empty team-calendar-empty">선택 가능한 팀원이 없습니다</div>}
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
+
+              <div className={`project-modal-actions team-calendar-actions${draft.mode === 'view' ? ' view-actions' : ''}`}>
+                {draft.mode === 'view' ? (
+                  <>
+                    <button className="mt-btn danger" type="button" onClick={deleteEvent}>제거</button>
+                    <button className="mt-btn primary" type="button" onClick={() => setDraft({ ...draft, mode: 'edit' })}>수정</button>
+                  </>
+                ) : (
+                  <>
+                    {draft.event_id && <button className="mt-btn danger" type="button" onClick={deleteEvent}>제거</button>}
+                    <button className="mt-btn" type="button" onClick={() => draft.event_id ? setDraft({ ...draft, mode: 'view' }) : setDraft(null)}>취소</button>
+                    <button className="mt-btn primary" type="button" onClick={saveEvent}>{draft.event_id ? '수정 저장' : '저장'}</button>
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+    </section>
+  );
+}
+
+function WeeklyReportPage({
+  members,
+  weeklyReports,
+  weeklyReportDraft,
+  setWeeklyReportDraft,
+  isWeeklyReportModalOpen,
+  setIsWeeklyReportModalOpen,
+  onCreateWeeklyReportPeriod,
+  weeklyWarningMessage,
+  setWeeklyWarningMessage,
+  onDeleteWeeklyReport,
+  onCompleteWeeklyReport,
+  onToggleWeeklyAbsence,
+  onOpenWeeklyPassword,
+  onOpenWeeklyReportPreview,
+  weeklyReportPreview,
+  setWeeklyReportPreview,
+  weeklyPasswordEntry,
+  weeklyPasswordDraft,
+  setWeeklyPasswordDraft,
+  onAuthorizeWeeklyEntry,
+  setWeeklyPasswordEntry,
+  weeklyWritingEntry,
+  weeklyEntryProjects,
+  weeklyEntryDraft,
+  setWeeklyEntryDraft,
+  selectedWeeklyEntryId,
+  onSelectWeeklyProject,
+  onSaveWeeklyEntry,
+  onUpdateWeeklyEntryStatus,
+  onCloseWeeklyEntryModal,
+}) {
+  const activeEntryName = weeklyPasswordEntry ? `${weeklyPasswordEntry.name} ${weeklyPasswordEntry.role}` : '';
+  const writingEntryName = weeklyWritingEntry ? `${weeklyWritingEntry.name} ${weeklyWritingEntry.role}` : '';
+  const [isWeeklyProjectPickerOpen, setIsWeeklyProjectPickerOpen] = useState(false);
+  const [weeklySelectionDraft, setWeeklySelectionDraft] = useState([]);
+  const [detailEditor, setDetailEditor] = useState(null);
+  const [confluenceEditor, setConfluenceEditor] = useState(null);
+  const [deleteConfirmReport, setDeleteConfirmReport] = useState(null);
+  const [isDeletingReport, setIsDeletingReport] = useState(false);
+  const regularWeeklyProjects = weeklyEntryProjects.filter((project) => project.project_name !== OTHER_WORK_PROJECT_NAME);
+  const otherWeeklyProject = weeklyEntryProjects.find((project) => project.project_name === OTHER_WORK_PROJECT_NAME) || null;
+  const writableWeeklyProjects = weeklyEntryProjects.filter((project) => !project.is_excluded);
+  const selectedWeeklyProject = writableWeeklyProjects.find((project) => project.project_id === selectedWeeklyEntryId) || null;
+  const weeklySelectionMax = Math.max(regularWeeklyProjects.length, 1);
+  const weeklySelectionPercent = Math.round((weeklySelectionDraft.length / weeklySelectionMax) * 100);
+  const hasWeeklyReports = weeklyReports.length > 0;
+
+  useEffect(() => {
+    if (!weeklyWritingEntry) {
+      setIsWeeklyProjectPickerOpen(false);
+      setWeeklySelectionDraft([]);
+      return;
+    }
+    const selectedProjectIds = regularWeeklyProjects.filter((project) => !project.is_excluded).map((project) => project.project_id);
+    setWeeklySelectionDraft(selectedProjectIds);
+    setIsWeeklyProjectPickerOpen(regularWeeklyProjects.length > 0 && selectedProjectIds.length === 0);
+  }, [weeklyWritingEntry?.report_id, weeklyWritingEntry?.user_id]);
+
+  function toggleWeeklySelectionDraft(projectId) {
+    setWeeklySelectionDraft((prev) => (prev.includes(projectId) ? prev.filter((id) => id !== projectId) : [...prev, projectId]));
+  }
+
+  async function applyWeeklyProjectSelection() {
+    const selectedIds = new Set(weeklySelectionDraft);
+    for (const project of regularWeeklyProjects) {
+      const shouldBeExcluded = !selectedIds.has(project.project_id);
+      if (project.is_excluded !== shouldBeExcluded) {
+        await onUpdateWeeklyEntryStatus(project.project_id, shouldBeExcluded);
+      }
+    }
+    const firstSelectedProject = regularWeeklyProjects.find((project) => selectedIds.has(project.project_id));
+    if (firstSelectedProject) onSelectWeeklyProject(firstSelectedProject);
+    setIsWeeklyProjectPickerOpen(false);
+  }
+
+  async function addOtherWeeklyProject() {
+    if (!otherWeeklyProject) return;
+    await onUpdateWeeklyEntryStatus(otherWeeklyProject.project_id, false);
+    onSelectWeeklyProject(otherWeeklyProject);
+  }
+
+  function updateStructuredItem(kind, index, patch) {
+    setWeeklyEntryDraft((prev) => ({ ...prev, [kind]: prev[kind].map((item, itemIndex) => (itemIndex === index ? { ...item, ...patch } : item)) }));
+  }
+
+  function openDetailEditor(kind, index) {
+    const item = weeklyEntryDraft[kind][index];
+    setDetailEditor({ kind, index, detail: item.detail || "", images: Array.isArray(item.images) ? [...item.images] : [] });
+  }
+
+  function saveDetailEditor() {
+    if (!detailEditor) return;
+    updateStructuredItem(detailEditor.kind, detailEditor.index, { detail: detailEditor.detail, images: detailEditor.images });
+    setDetailEditor(null);
+  }
+
+  async function addDetailImages(event) {
+    const files = Array.from(event.target.files || []);
+    event.target.value = "";
+    if (!files.length || !detailEditor) return;
+    if (files.some((file) => !["image/png", "image/jpeg", "image/webp", "image/gif"].includes(file.type))) {
+      window.alert("PNG, JPG, WEBP, GIF 이미지만 첨부할 수 있습니다.");
+      return;
+    }
+    if (files.some((file) => file.size > 5 * 1024 * 1024)) {
+      window.alert("이미지는 파일당 5MB 이하로 첨부해 주세요.");
+      return;
+    }
+    const remaining = Math.max(0, 8 - detailEditor.images.length);
+    if (!remaining) {
+      window.alert("이미지는 항목당 최대 8장까지 첨부할 수 있습니다.");
+      return;
+    }
+    const dataUrls = await Promise.all(files.slice(0, remaining).map((file) => new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ""));
+      reader.onerror = () => reject(new Error("이미지를 읽지 못했습니다"));
+      reader.readAsDataURL(file);
+    })));
+    setDetailEditor((prev) => prev ? { ...prev, images: [...prev.images, ...dataUrls] } : prev);
+  }
+
+  function openConfluenceEditor(kind, index) {
+    const item = weeklyEntryDraft[kind][index];
+    setConfluenceEditor({ kind, index, url: item.confluence_url || "" });
+  }
+
+  function saveConfluenceEditor() {
+    if (!confluenceEditor) return;
+    let url = confluenceEditor.url.trim();
+    if (url && !/^https?:\/\//i.test(url)) url = "https://" + url;
+    if (url) {
+      try { new URL(url); } catch { window.alert("올바른 URL을 입력해 주세요."); return; }
+    }
+    updateStructuredItem(confluenceEditor.kind, confluenceEditor.index, { confluence_url: url });
+    setConfluenceEditor(null);
+  }
+
+  function updateProgressItem(index, key, value) {
+    setWeeklyEntryDraft((prev) => ({ ...prev, progress_log: prev.progress_log.map((item, i) => (i === index ? { ...item, [key]: value } : item)) }));
+  }
+
+  function addProgressItem() {
+    setWeeklyEntryDraft((prev) => ({ ...prev, progress_log: [...prev.progress_log, { log: '', status: 'done', date: '', detail: '', images: [], confluence_url: '' }] }));
+  }
+
+  function removeProgressItem(index) {
+    setWeeklyEntryDraft((prev) => {
+      const next = prev.progress_log.filter((_, i) => i !== index);
+      return { ...prev, progress_log: next.length ? next : [{ log: '', status: 'done', date: '', detail: '', images: [], confluence_url: '' }] };
+    });
+  }
+
+  function updateRiskItem(index, key, value) {
+    setWeeklyEntryDraft((prev) => ({ ...prev, risk_issue: prev.risk_issue.map((item, i) => (i === index ? { ...item, [key]: value } : item)) }));
+  }
+
+  function addRiskItem() {
+    setWeeklyEntryDraft((prev) => ({ ...prev, risk_issue: [...prev.risk_issue, { issue: '', importance: '중', detail: '', images: [], confluence_url: '' }] }));
+  }
+
+  function removeRiskItem(index) {
+    setWeeklyEntryDraft((prev) => {
+      const next = prev.risk_issue.filter((_, i) => i !== index);
+      return { ...prev, risk_issue: next.length ? next : [{ issue: '', importance: '중', detail: '', images: [], confluence_url: '' }] };
+    });
+  }
+
+  function updatePlanItem(index, key, value) {
+    setWeeklyEntryDraft((prev) => ({ ...prev, next_plan: prev.next_plan.map((item, i) => (i === index ? { ...item, [key]: value } : item)) }));
+  }
+
+  function addPlanItem() {
+    setWeeklyEntryDraft((prev) => ({ ...prev, next_plan: [...prev.next_plan, { plan: '', due: '' }] }));
+  }
+
+  function removePlanItem(index) {
+    setWeeklyEntryDraft((prev) => {
+      const next = prev.next_plan.filter((_, i) => i !== index);
+      return { ...prev, next_plan: next.length ? next : [{ plan: '', due: '' }] };
+    });
+  }
+
+  async function confirmWeeklyReportDelete() {
+    if (!deleteConfirmReport || isDeletingReport) return;
+    setIsDeletingReport(true);
+    const deleted = await onDeleteWeeklyReport(deleteConfirmReport.report_id);
+    setIsDeletingReport(false);
+    if (deleted) setDeleteConfirmReport(null);
+  }
+
+  return (
+    <>
+      <div className="page-head">
+        <div>
+          <h1>주간 보고 작성</h1>
+        </div>
+        <button className="weekly-open-btn" type="button" onClick={() => setIsWeeklyReportModalOpen(true)}><Plus size={16} />새 보고 주간 개설</button>
+      </div>
+
+      {hasWeeklyReports ? (
+        weeklyReports.map((weeklyReport, index) => {
+          const reportMembers = weeklyReport?.members || [];
+          const canCompleteReport = reportMembers.length > 0 && reportMembers.every((member) => member.status === 'done' || member.status === 'absent');
+          return (
+            <section className="weekly-report-section" key={weeklyReport.report_id}>
+              <div className="weekly-report-head">
+                <div>
+                  <h2>{weeklyReport.start_date} ~ {weeklyReport.end_date}</h2>
+                  <p>{weeklyCompletionText(reportMembers)}</p>
+                </div>
+                <div className="weekly-report-head-actions">
+                  <button className="weekly-complete-btn" type="button" disabled={!canCompleteReport} title={canCompleteReport ? '보고를 완료합니다' : '모든 멤버가 작성 완료 또는 부재 상태여야 활성화됩니다'} onClick={() => onCompleteWeeklyReport(weeklyReport.report_id)}>완료</button>
+                  <button className="weekly-delete-btn" type="button" onClick={() => setDeleteConfirmReport(weeklyReport)}>삭제</button>
+                </div>
+              </div>
+              <div className="weekly-member-grid">
+                {reportMembers.map((member) => (
+                  <article className={`weekly-member-card${member.status === 'absent' ? ' absent' : ''}${member.status === 'done' ? ' done' : ''}`} key={`${weeklyReport.report_id}-${member.user_id}`}>
+                    <div className="weekly-card-main">
+                      <strong>{member.name} {member.role}</strong>
+                      <span className={`weekly-status-pill ${member.status || 'pending'}`}>{member.status === 'done' ? '작성 완료' : member.status === 'progress' ? '작성중' : member.status === 'absent' ? '부재' : '대기'}</span>
+                    </div>
+                    <div className="weekly-card-actions three">
+                      <button className={`weekly-card-btn${member.status === 'absent' ? ' active' : ''}`} type="button" onClick={() => onToggleWeeklyAbsence(weeklyReport, member)}>부재</button>
+                      <button className="weekly-card-btn primary" type="button" disabled={member.status === 'absent'} onClick={() => onOpenWeeklyPassword(weeklyReport, member)}>작성</button>
+                      <button className="weekly-card-btn report" type="button" disabled={member.status !== 'done'} title={member.status === 'done' ? '작성 리포트를 봅니다' : '작성 완료 후 리포트를 볼 수 있습니다'} onClick={() => onOpenWeeklyReportPreview(weeklyReport, member)}>리포트</button>
+                    </div>
+                  </article>
+                ))}
+                {reportMembers.length === 0 && <div className="empty compact">보고 대상 멤버가 없습니다</div>}
+              </div>
+            </section>
+          );
+        })
+      ) : (
+        <section className="weekly-report-section">
+          <div className="weekly-report-head">
+            <div>
+              <h2>개설된 보고 주간이 없습니다</h2>
+              <p>새 보고 주간을 개설하면 보고 대상 멤버가 표시됩니다.</p>
+            </div>
+          </div>
+        </section>
+      )}
+
+      {deleteConfirmReport && (
+        <div className="modal-backdrop" role="presentation">
+          <div className="weekly-report-modal compact-modal weekly-delete-confirm-modal" role="alertdialog" aria-modal="true" aria-labelledby="weekly-delete-confirm-title" aria-describedby="weekly-delete-confirm-description">
+            <div className="weekly-delete-confirm-icon" aria-hidden="true"><AlertTriangle size={24} /></div>
+            <div className="weekly-delete-confirm-copy">
+              <h2 id="weekly-delete-confirm-title">이 보고 주간을 삭제할까요?</h2>
+              <p className="weekly-delete-period">{deleteConfirmReport.start_date} ~ {deleteConfirmReport.end_date}</p>
+              <p id="weekly-delete-confirm-description">이 주간에 멤버들이 작성한 모든 보고 내용이 영구적으로 사라집니다.</p>
+              <ul>
+                <li>Progress Log, Risk & Issue, Next Plan</li>
+                <li>상세 작성 내용과 첨부 이미지</li>
+                <li>연결된 Confluence 링크</li>
+              </ul>
+              <strong>삭제 후에는 복구할 수 없습니다.</strong>
+            </div>
+            <div className="project-modal-actions">
+              <button className="mt-btn" type="button" disabled={isDeletingReport} onClick={() => setDeleteConfirmReport(null)}>취소</button>
+              <button className="mt-btn weekly-delete-confirm-btn" type="button" disabled={isDeletingReport} onClick={confirmWeeklyReportDelete}>{isDeletingReport ? "삭제 중..." : "보고 주간 삭제"}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isWeeklyReportModalOpen && (
+        <div className="modal-backdrop" role="presentation">
+          <div className="weekly-report-modal" role="dialog" aria-modal="true" aria-labelledby="weekly-report-title">
+            <div className="project-modal-head">
+              <div>
+                <h2 id="weekly-report-title">새 보고 주간 개설</h2>
+                <p>멤버별 주간 보고를 작성할 업무 기간을 설정합니다.</p>
+              </div>
+              <button className="icon-btn" type="button" onClick={() => setIsWeeklyReportModalOpen(false)} aria-label="닫기"><X size={16} /></button>
+            </div>
+            <div className="weekly-period-fields">
+              <label>
+                <span>시작일</span>
+                <input type="date" value={weeklyReportDraft.start_date} onChange={(e) => setWeeklyReportDraft({ ...weeklyReportDraft, start_date: e.target.value })} />
+              </label>
+              <label>
+                <span>종료일</span>
+                <input type="date" value={weeklyReportDraft.end_date} onChange={(e) => setWeeklyReportDraft({ ...weeklyReportDraft, end_date: e.target.value })} />
+              </label>
+            </div>
+            <div className="project-modal-actions">
+              <button className="mt-btn" type="button" onClick={() => setIsWeeklyReportModalOpen(false)}>취소</button>
+              <button className="mt-btn primary" type="button" onClick={onCreateWeeklyReportPeriod}>개설</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {weeklyWarningMessage && (
+        <div className="modal-backdrop" role="presentation">
+          <div className="weekly-report-modal compact-modal" role="dialog" aria-modal="true" aria-labelledby="weekly-warning-title">
+            <div className="project-modal-head">
+              <div>
+                <h2 id="weekly-warning-title">확인 필요</h2>
+                <p>{weeklyWarningMessage}</p>
+              </div>
+              <button className="icon-btn" type="button" onClick={() => setWeeklyWarningMessage('')} aria-label="닫기"><X size={16} /></button>
+            </div>
+            <div className="project-modal-actions">
+              <button className="mt-btn primary" type="button" onClick={() => setWeeklyWarningMessage('')}>확인</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {weeklyPasswordEntry && (
+        <div className="modal-backdrop" role="presentation">
+          <div className="weekly-report-modal compact-modal" role="dialog" aria-modal="true" aria-labelledby="weekly-password-title">
+            <div className="project-modal-head">
+              <div>
+                <h2 id="weekly-password-title">비밀번호 확인</h2>
+                <p>{weeklyPasswordEntry?.report_period ? `${weeklyPasswordEntry.report_period} · ` : ''}{activeEntryName} 보고 작성을 시작합니다.</p>
+              </div>
+              <button className="icon-btn" type="button" onClick={() => setWeeklyPasswordEntry(null)} aria-label="닫기"><X size={16} /></button>
+            </div>
+            <input type="password" placeholder="멤버 비밀번호" value={weeklyPasswordDraft} onChange={(e) => setWeeklyPasswordDraft(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && onAuthorizeWeeklyEntry()} autoFocus />
+            <div className="project-modal-actions">
+              <button className="mt-btn" type="button" onClick={() => setWeeklyPasswordEntry(null)}>취소</button>
+              <button className="mt-btn primary" type="button" onClick={onAuthorizeWeeklyEntry}>확인</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+
+      {weeklyReportPreview && (
+        <div className="modal-backdrop" role="presentation">
+          <div className="weekly-preview-modal" role="dialog" aria-modal="true" aria-label="리포트 미리보기">
+            <button className="weekly-preview-close" type="button" onClick={() => setWeeklyReportPreview(null)} aria-label="닫기"><X size={16} /></button>
+            <iframe className="weekly-preview-frame" title="주간 업무 리포트" srcDoc={weeklyReportPreview.html} />
+          </div>
+        </div>
+      )}
+
+      {weeklyWritingEntry && (
+        <div className="modal-backdrop" role="presentation">
+          <div className="weekly-entry-modal" role="dialog" aria-modal="true" aria-labelledby="weekly-entry-title">
+            <div className="project-modal-head">
+              <div>
+                <h2 id="weekly-entry-title">주간 보고 작성</h2>
+                <p>{writingEntryName}</p>
+              </div>
+              <button className="icon-btn" type="button" onClick={onCloseWeeklyEntryModal} aria-label="닫기"><X size={16} /></button>
+            </div>
+            {isWeeklyProjectPickerOpen ? (
+              <section className="weekly-project-picker">
+                <div className="weekly-project-picker-body">
+                  <div className="weekly-project-picker-head">
+                    <div>
+                      <h3>이번 주 진행 과제 선택</h3>
+                      <p>금주에 실제로 진행한 정규 과제를 고르면 작성 화면에 배치됩니다.</p>
+                    </div>
+                    <div className="weekly-picker-ring" style={{ '--weekly-picker-progress': `${weeklySelectionPercent}%` }} aria-label={`${weeklySelectionDraft.length}개 선택`}>
+                      <div>
+                        <strong>{weeklySelectionDraft.length}</strong>
+                        <span>/ {regularWeeklyProjects.length}</span>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="weekly-project-choice-list">
+                    {regularWeeklyProjects.map((project, index) => {
+                      const checked = weeklySelectionDraft.includes(project.project_id);
+                      return (
+                        <button className={`weekly-project-choice${checked ? ' selected' : ''}`} type="button" key={`${project.entry_id}-${project.project_id}`} onClick={() => toggleWeeklySelectionDraft(project.project_id)}>
+                          <span className="weekly-choice-index">{String(index + 1).padStart(2, '0')}</span>
+                          <span className="weekly-choice-copy">
+                            <strong>{project.project_name}</strong>
+                            <small>{checked ? '작성 화면에 포함됩니다' : '이번 주 진행했다면 선택하세요'}</small>
+                          </span>
+                          <span className="weekly-choice-check">{checked && <Check size={12} strokeWidth={3} />}</span>
+                        </button>
+                      );
+                    })}
+                    {regularWeeklyProjects.length === 0 && <div className="empty compact">참여 중인 진행 과제가 없습니다</div>}
+                  </div>
+                </div>
+                <div className="weekly-project-picker-actions">
+                  <button className="mt-btn" type="button" onClick={onCloseWeeklyEntryModal}>닫기</button>
+                  <button className="mt-btn primary" type="button" disabled={weeklySelectionDraft.length === 0 && regularWeeklyProjects.length > 0} onClick={applyWeeklyProjectSelection}>선택한 과제 작성하기 ({weeklySelectionDraft.length})</button>
+                </div>
+              </section>
+            ) : (
+            <div className="weekly-entry-layout">
+              <aside className="weekly-project-list" aria-label="작성 과제">
+                <div className="weekly-project-list-head">
+                  <strong>작성 과제</strong>
+                  <button type="button" onClick={() => setIsWeeklyProjectPickerOpen(true)}>선택 수정</button>
+                </div>
+                {writableWeeklyProjects.map((project) => (
+                  <button className={selectedWeeklyEntryId === project.project_id ? 'active' : ''} type="button" key={`${project.entry_id}-${project.project_id}`} onClick={() => onSelectWeeklyProject(project)}>
+                    <span>{project.project_name}</span>
+                    {project.status === 'done' && <b className="entry-state done">작성 완료</b>}
+                    {project.project_name === OTHER_WORK_PROJECT_NAME && <b className="entry-state other">기타 업무</b>}
+                  </button>
+                ))}
+                {otherWeeklyProject?.is_excluded && (
+                  <button className="weekly-other-add" type="button" onClick={addOtherWeeklyProject}><Plus size={14} /><span>기타 (교육, 출장 등) 업무 추가</span></button>
+                )}
+                {writableWeeklyProjects.length === 0 && <div className="empty compact">선택된 과제가 없습니다</div>}
+              </aside>
+              <section className="weekly-entry-panel">
+                {selectedWeeklyProject ? (
+                  <>
+                    <div className="weekly-entry-panel-head">
+                      <div>
+                        <h3>{selectedWeeklyProject.project_name}</h3>
+                        <p>과제별로 이번 주 내용을 작성합니다.</p>
+                      </div>
+                      <button className={`weekly-exclude-btn${selectedWeeklyProject.status === 'excluded' ? ' active' : ''}`} type="button" onClick={() => onUpdateWeeklyEntryStatus(selectedWeeklyProject.project_id, selectedWeeklyProject.status !== 'excluded')}>
+                        {selectedWeeklyProject.status === 'excluded' ? '업무 추가' : '이번 주 제외'}
+                      </button>
+                    </div>
+                    <div className="weekly-entry-list-fields">
+                      <section className="weekly-list-block">
+                        <div className="weekly-list-title">
+                          <span>Progress Log</span>
+                          <button type="button" disabled={selectedWeeklyProject.status === 'excluded'} onClick={addProgressItem}><Plus size={14} />추가</button>
+                        </div>
+                        <div className="weekly-list-items">
+                          {weeklyEntryDraft.progress_log.map((item, index) => (
+                            <div className="weekly-list-row progress" key={"progress-" + index}>
+                              <input disabled={selectedWeeklyProject.status === 'excluded'} value={item.log} onChange={(e) => updateProgressItem(index, 'log', e.target.value)} placeholder="진행 내용을 입력하세요" />
+                              <select disabled={selectedWeeklyProject.status === 'excluded'} value={item.status} onChange={(e) => updateProgressItem(index, 'status', e.target.value)} aria-label="진행 상태">
+                                <option value="done">Done</option>
+                                <option value="in_progress">In Progress</option>
+                              </select>
+                              <input className="weekly-due-input" type="date" disabled={selectedWeeklyProject.status === 'excluded'} value={item.date} onChange={(e) => updateProgressItem(index, 'date', e.target.value)} aria-label="Progress Log 날짜" />
+                              <div className="weekly-item-actions">
+                                <button className={(item.detail || item.images?.length) ? 'has-content' : ''} type="button" disabled={selectedWeeklyProject.status === 'excluded'} onClick={() => openDetailEditor('progress_log', index)} title="상세 글과 이미지를 작성합니다"><FileText size={14} />상세</button>
+                                <button className={item.confluence_url ? 'has-content' : ''} type="button" disabled={selectedWeeklyProject.status === 'excluded'} onClick={() => openConfluenceEditor('progress_log', index)} title="Confluence 링크를 연결합니다"><Link2 size={14} />Confluence</button>
+                              </div>
+                              <button className="weekly-row-remove" type="button" disabled={selectedWeeklyProject.status === 'excluded'} onClick={() => removeProgressItem(index)} aria-label="Progress Log 삭제"><Trash2 size={15} /></button>
+                            </div>
+                          ))}
+                        </div>
+                      </section>
+
+                      <section className="weekly-list-block">
+                        <div className="weekly-list-title">
+                          <span>Risk & Issue</span>
+                          <button type="button" disabled={selectedWeeklyProject.status === 'excluded'} onClick={addRiskItem}><Plus size={14} />추가</button>
+                        </div>
+                        <div className="weekly-list-items">
+                          {weeklyEntryDraft.risk_issue.map((item, index) => (
+                            <div className="weekly-list-row risk" key={"risk-" + index}>
+                              <input disabled={selectedWeeklyProject.status === 'excluded'} value={item.issue} onChange={(e) => updateRiskItem(index, 'issue', e.target.value)} placeholder="리스크와 이슈를 입력하세요" />
+                              <select disabled={selectedWeeklyProject.status === 'excluded'} value={item.importance} onChange={(e) => updateRiskItem(index, 'importance', e.target.value)} aria-label="중요도">
+                                <option value="상">상</option>
+                                <option value="중">중</option>
+                                <option value="하">하</option>
+                              </select>
+                              <div className="weekly-item-actions">
+                                <button className={(item.detail || item.images?.length) ? 'has-content' : ''} type="button" disabled={selectedWeeklyProject.status === 'excluded'} onClick={() => openDetailEditor('risk_issue', index)} title="상세 글과 이미지를 작성합니다"><FileText size={14} />상세</button>
+                                <button className={item.confluence_url ? 'has-content' : ''} type="button" disabled={selectedWeeklyProject.status === 'excluded'} onClick={() => openConfluenceEditor('risk_issue', index)} title="Confluence 링크를 연결합니다"><Link2 size={14} />Confluence</button>
+                              </div>
+                              <button className="weekly-row-remove" type="button" disabled={selectedWeeklyProject.status === 'excluded'} onClick={() => removeRiskItem(index)} aria-label="Risk & Issue 삭제"><Trash2 size={15} /></button>
+                            </div>
+                          ))}
+                        </div>
+                      </section>
+
+                      <section className="weekly-list-block">
+                        <div className="weekly-list-title">
+                          <span>Next Plan</span>
+                          <button type="button" disabled={selectedWeeklyProject.status === 'excluded'} onClick={addPlanItem}><Plus size={14} />추가</button>
+                        </div>
+                        <div className="weekly-list-items">
+                          {weeklyEntryDraft.next_plan.map((item, index) => (
+                            <div className="weekly-list-row plan" key={"plan-" + index}>
+                              <input disabled={selectedWeeklyProject.status === 'excluded'} value={item.plan} onChange={(e) => updatePlanItem(index, 'plan', e.target.value)} placeholder="다음 계획을 입력하세요" />
+                              <input className="weekly-due-input" type="date" disabled={selectedWeeklyProject.status === 'excluded'} value={item.due} onChange={(e) => updatePlanItem(index, 'due', e.target.value)} aria-label="Due" />
+                              <button className="weekly-row-remove" type="button" disabled={selectedWeeklyProject.status === 'excluded'} onClick={() => removePlanItem(index)} aria-label="Next Plan 삭제"><Trash2 size={15} /></button>
+                            </div>
+                          ))}
+                        </div>
+                      </section>
+                    </div>
+                    <div className="project-modal-actions">
+                      <button className="mt-btn" type="button" onClick={onCloseWeeklyEntryModal}>닫기</button>
+                      <button className="mt-btn primary" type="button" disabled={selectedWeeklyProject.status === 'excluded'} onClick={() => onSaveWeeklyEntry(selectedWeeklyProject.project_id)}>저장</button>
+                    </div>
+                  </>
+                ) : (
+                  <div className="empty">선택 가능한 과제가 없습니다</div>
+                )}
+              </section>
+            </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {detailEditor && (
+        <div className="modal-backdrop weekly-submodal-backdrop" role="presentation">
+          <div className="weekly-detail-modal" role="dialog" aria-modal="true" aria-labelledby="weekly-detail-title">
+            <div className="project-modal-head">
+              <div>
+                <h2 id="weekly-detail-title">{detailEditor.kind === 'progress_log' ? 'Progress Log 상세 작성' : 'Risk & Issue 상세 작성'}</h2>
+                <p>긴 설명과 현장 사진을 자유롭게 남겨 주세요.</p>
+              </div>
+              <button className="icon-btn" type="button" onClick={() => setDetailEditor(null)} aria-label="닫기"><X size={16} /></button>
+            </div>
+            <label className="weekly-detail-textarea">
+              <span>상세 내용</span>
+              <textarea value={detailEditor.detail} onChange={(event) => setDetailEditor((prev) => ({ ...prev, detail: event.target.value }))} placeholder="진행 과정, 결과, 의사결정, 대응 내용 등을 자유롭게 작성하세요." />
+            </label>
+            <div className="weekly-image-area">
+              <div className="weekly-image-head">
+                <div><strong>사진 첨부</strong><span>PNG, JPG, WEBP, GIF · 장당 5MB · 최대 8장</span></div>
+                <label className="weekly-image-add"><ImagePlus size={15} />사진 선택<input type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple onChange={addDetailImages} /></label>
+              </div>
+              {detailEditor.images.length > 0 ? (
+                <div className="weekly-image-grid">
+                  {detailEditor.images.map((image, index) => (
+                    <figure key={"detail-image-" + index}><img src={reportImageSrc(image)} alt={"첨부 이미지 " + (index + 1)} /><button type="button" onClick={() => setDetailEditor((prev) => ({ ...prev, images: prev.images.filter((_, imageIndex) => imageIndex !== index) }))} aria-label="이미지 삭제"><X size={13} /></button></figure>
+                  ))}
+                </div>
+              ) : <div className="weekly-image-empty">첨부된 사진이 없습니다.</div>}
+            </div>
+            <div className="project-modal-actions">
+              <button className="mt-btn" type="button" onClick={() => setDetailEditor(null)}>취소</button>
+              <button className="mt-btn primary" type="button" onClick={saveDetailEditor}>상세 저장</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {confluenceEditor && (
+        <div className="modal-backdrop weekly-submodal-backdrop" role="presentation">
+          <div className="weekly-link-modal" role="dialog" aria-modal="true" aria-labelledby="weekly-link-title">
+            <div className="project-modal-head">
+              <div><h2 id="weekly-link-title">Confluence 링크 연결</h2><p>업무 상세 페이지 URL을 입력하세요.</p></div>
+              <button className="icon-btn" type="button" onClick={() => setConfluenceEditor(null)} aria-label="닫기"><X size={16} /></button>
+            </div>
+            <label className="weekly-link-field"><span>Confluence URL</span><div><Link2 size={16} /><input autoFocus type="url" value={confluenceEditor.url} onChange={(event) => setConfluenceEditor((prev) => ({ ...prev, url: event.target.value }))} onKeyDown={(event) => { if (event.key === 'Enter') saveConfluenceEditor(); }} placeholder="https://your-domain.atlassian.net/wiki/..." /></div></label>
+            <div className="project-modal-actions">
+              {confluenceEditor.url && <button className="mt-btn danger-link" type="button" onClick={() => setConfluenceEditor((prev) => ({ ...prev, url: '' }))}>링크 제거</button>}
+              <button className="mt-btn" type="button" onClick={() => setConfluenceEditor(null)}>취소</button>
+              <button className="mt-btn primary" type="button" onClick={saveConfluenceEditor}>연결</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+
+function WeeklyReportLoungePage({ currentTeam }) {
+  const [completedReports, setCompletedReports] = useState([]);
+  const [selectedReport, setSelectedReport] = useState(null);
+  const [selectedMemberId, setSelectedMemberId] = useState('');
+  const [reportHtml, setReportHtml] = useState('');
+  const [loadingReports, setLoadingReports] = useState(false);
+  const [loungeError, setLoungeError] = useState('');
+
+  const completedMembers = (selectedReport?.members || []).filter((member) => member.status === 'done');
+
+  useEffect(() => {
+    if (!currentTeam?.team_id) {
+      setCompletedReports([]);
+      setSelectedReport(null);
+      setSelectedMemberId('');
+      setReportHtml('');
+      return;
+    }
+    setLoadingReports(true);
+    request(`/api/teams/${currentTeam.team_id}/reports/completed`)
+      .then((reports) => {
+        setCompletedReports(reports || []);
+        setSelectedReport(null);
+        setSelectedMemberId('');
+        setReportHtml('');
+        setLoungeError('');
+      })
+      .catch((err) => setLoungeError(err.message))
+      .finally(() => setLoadingReports(false));
+  }, [currentTeam?.team_id]);
+
+  async function openCompletedReport(report) {
+    const doneMembers = (report.members || []).filter((member) => member.status === 'done');
+    setSelectedReport(report);
+    setReportHtml('');
+    setLoungeError('');
+    if (doneMembers.length === 0) {
+      setSelectedMemberId('');
+      return;
+    }
+    await openCompletedMemberReport(report, doneMembers[0]);
+  }
+
+  async function openCompletedMemberReport(report, member) {
+    if (!report?.report_id || !member?.user_id) return;
+    try {
+      setSelectedMemberId(member.user_id);
+      const result = await request(`/api/reports/${report.report_id}/users/${member.user_id}/html-report`);
+      setReportHtml(result.html || '');
+      setLoungeError('');
+    } catch (err) {
+      setReportHtml('');
+      setLoungeError(err.message);
+    }
+  }
+
+  return (
+    <>
+      <div className="page-head">
+        <div>
+          <h1>주간 보고 라운지</h1>
+        </div>
+      </div>
+      <section className="weekly-lounge-layout">
+        <div className="weekly-lounge-list">
+          <div className="weekly-lounge-head">
+            <h2>주간보고 목록</h2>
+            <span>{completedReports.length}</span>
+          </div>
+          {loadingReports && <div className="empty compact">불러오는 중입니다</div>}
+          {!loadingReports && completedReports.length === 0 && <div className="empty compact">열람 가능한 주간보고가 없습니다</div>}
+          {!loadingReports && completedReports.map((report) => {
+            const doneCount = (report.members || []).filter((member) => member.status === 'done').length;
+            const absentCount = (report.members || []).filter((member) => member.status === 'absent').length;
+            return (
+              <button className={`weekly-lounge-card${selectedReport?.report_id === report.report_id ? ' active' : ''}`} type="button" key={report.report_id} onClick={() => openCompletedReport(report)}>
+                <span className="weekly-lounge-card-title">
+                  <strong>{report.start_date} ~ {report.end_date}</strong>
+                  <b className={`weekly-lounge-status ${report.status === 'done' ? 'done' : 'progress'}`}>{report.status === 'done' ? '완료' : '작성중'}</b>
+                </span>
+                <span>작성 완료 {doneCount}명 · 부재 {absentCount}명</span>
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="weekly-lounge-viewer">
+          {selectedReport ? (
+            <>
+              <div className="weekly-lounge-tabs">
+                {completedMembers.map((member) => (
+                  <button className={selectedMemberId === member.user_id ? 'active' : ''} type="button" key={member.user_id} onClick={() => openCompletedMemberReport(selectedReport, member)}>
+                    {member.name} {member.role}
+                  </button>
+                ))}
+                {completedMembers.length === 0 && <span>수집 완료된 멤버가 없습니다</span>}
+              </div>
+              {loungeError && <div className="error compact">{loungeError}</div>}
+              {reportHtml ? <iframe className="weekly-lounge-frame" title="주간 업무 리포트" srcDoc={reportHtml} /> : !loungeError && <div className="empty">리포트를 선택하세요</div>}
+            </>
+          ) : (
+            <div className="empty weekly-lounge-empty">주간보고 카드를 선택하세요</div>
+          )}
+        </div>
+      </section>
+    </>
+  );
+}
+
+function ProjectMemberPanel({ project, teamProject }) {
+  const assignedMembers = teamProject?.members || [];
+  const leaders = assignedMembers.filter((member) => member.role === 'L');
+  const participants = assignedMembers.filter((member) => member.role !== 'L');
+
+  function renderPerson(member, variant = '') {
+    const label = `${member.name} ${member.member_role || ''}`.trim();
+    return (
+      <span className={`project-member-chip${variant ? ` ${variant}` : ''}`} key={member.user_id}>
+        <span className="avatar-mini">{member.name.slice(0, 1)}</span>
+        <span>{label}</span>
+      </span>
+    );
+  }
+
+  return (
+    <section className="project-member-panel" aria-label="과제 멤버 구성">
+      <div className="project-member-panel-head">
+        <div>
+          <span>Project Members</span>
+          <strong>{project?.title || '선택된 과제'}</strong>
+          <em>{assignedMembers.length}명 참여</em>
+        </div>
+      </div>
+      <div className="project-member-groups">
+        <div className="project-member-group leader">
+          <span className="group-label">리더</span>
+          <div className="project-member-chips">
+            {leaders.length ? leaders.map((member) => renderPerson(member, 'leader')) : <span className="project-member-empty">없음</span>}
+          </div>
+        </div>
+        <div className="project-member-group">
+          <span className="group-label">멤버</span>
+          <div className="project-member-chips">
+            {participants.length ? participants.map((member) => renderPerson(member)) : <span className="project-member-empty">없음</span>}
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function LoginPage({ loginDraft, setLoginDraft, onLogin, teams, teamDraft, setTeamDraft, onCreateTeam, error }) {
+  return (
+    <main className="login-shell">
+      <section className="login-panel">
+        <div className="login-brand">
+          <div className="wia-mark">WIA</div>
+          <div>
+            <b>WiaReport</b>
+            <p>프로젝트 마일스톤과 팀 계정을 한 곳에서 관리합니다.</p>
+          </div>
+        </div>
+        <div className="login-card">
+          <div className="login-card-head">
+            <span>TEAM ACCESS</span>
+            <h1>로그인</h1>
+            <p>부여받은 팀 ID와 비밀번호로 접속하세요.</p>
+          </div>
+          {error && <div className="login-error">{error}</div>}
+          <label className="login-field">
+            <span>ID</span>
+            <input value={loginDraft.login_id} onChange={(e) => setLoginDraft({ ...loginDraft, login_id: e.target.value })} onKeyDown={(e) => e.key === 'Enter' && onLogin()} autoFocus />
+          </label>
+          <label className="login-field">
+            <span>비밀번호</span>
+            <input type="password" value={loginDraft.password} onChange={(e) => setLoginDraft({ ...loginDraft, password: e.target.value })} onKeyDown={(e) => e.key === 'Enter' && onLogin()} />
+          </label>
+          <button className="primary-btn login-submit" type="button" onClick={onLogin}><KeyRound size={15} />로그인</button>
+
+          {teams.length === 0 && (
+            <div className="first-team-box">
+              <div>
+                <b>첫 팀 계정 생성</b>
+                <p>등록된 팀 계정이 없습니다. 초기 접속용 팀 계정을 먼저 부여하세요.</p>
+              </div>
+              <input placeholder="소속" value={teamDraft.department} onChange={(e) => setTeamDraft({ ...teamDraft, department: e.target.value })} />
+              <input placeholder="ID" value={teamDraft.login_id} onChange={(e) => setTeamDraft({ ...teamDraft, login_id: e.target.value })} onKeyDown={(e) => e.key === 'Enter' && onCreateTeam()} />
+              <button className="line-btn" type="button" onClick={onCreateTeam}>계정 부여</button>
+            </div>
+          )}
+        </div>
+      </section>
+    </main>
+  );
+}
+
+
+function TeamManagementPage({ activeTeamTab, setActiveTeamTab, showTabs = true, currentTeam, members, teamProjects, teamProjectDraft, setTeamProjectDraft, isProjectModalOpen, setIsProjectModalOpen, editingTeamProjectId, setEditingTeamProjectId, projectAssignmentDrafts, setProjectAssignmentDrafts, memberDraft, setMemberDraft, memberPasswordDrafts, setMemberPasswordDrafts, onCreateMember, onCreateTeamProject, onEditTeamProject, onSaveProjectMembers, onUpdateTeamProjectStatus, onDeleteTeamProject, onDeleteMember, onUpdateMemberRole, onSetMemberPassword, onResetMemberPassword, onReorderMembers, draggingMemberId, setDraggingMemberId }) {
+  const pageTitle = activeTeamTab === 'members' ? '멤버 관리' : '과제 관리';
+  const pageDescription = activeTeamTab === 'members'
+    ? currentTeam.department + ' 팀의 멤버와 비밀번호를 관리합니다'
+    : currentTeam.department + ' 팀의 과제 기준 정보와 참여자를 관리합니다';
+
+  return (
+    <>
+      <div className="page-head">
+        <div>
+          <h1>{pageTitle}</h1>
+          <p>{pageDescription}</p>
+        </div>
+      </div>
+
+      {showTabs && <div className="subtab-row">
+        <button className={`subtab${activeTeamTab === 'members' ? ' active' : ''}`} type="button" onClick={() => setActiveTeamTab('members')}><Users size={15} />멤버 관리</button>
+        <button className={`subtab${activeTeamTab === 'tasks' ? ' active' : ''}`} type="button" onClick={() => setActiveTeamTab('tasks')}><ClipboardList size={15} />과제 관리</button>
+      </div>}
+
+      {activeTeamTab === 'members' ? (
+        <section className="account-card">
+          <div className="member-guide">
+            <strong>초기 비밀번호: {INITIAL_PASSWORD}</strong>
+            <span>초기 비밀번호 상태의 멤버는 개인 비밀번호 설정이 필요합니다.</span>
+          </div>
+          <div className="member-form">
+            <input placeholder="이름" value={memberDraft.name} onChange={(e) => setMemberDraft({ ...memberDraft, name: e.target.value })} onKeyDown={(e) => e.key === 'Enter' && onCreateMember()} />
+            <select value={memberDraft.role} onChange={(e) => setMemberDraft({ ...memberDraft, role: e.target.value })}>
+              <option value="L">리더</option>
+              <option value="CM">책임매니저</option>
+              <option value="M">매니저</option>
+            </select>
+            <button className="mt-btn primary" type="button" onClick={onCreateMember}><Plus size={15} />멤버 추가</button>
+          </div>
+          <div className="member-table">
+            <div className="member-table-head"><span>이름</span><span>직급</span><span>User ID</span><span>비밀번호 상태/관리</span><span></span></div>
+            {members.map((member) => (
+              <div
+                className={`member-row${draggingMemberId === member.user_id ? ' dragging' : ''}`}
+                key={member.user_id}
+                draggable
+                onDragStart={(event) => {
+                  setDraggingMemberId(member.user_id);
+                  event.dataTransfer.effectAllowed = 'move';
+                  event.dataTransfer.setData('text/plain', member.user_id);
+                }}
+                onDragOver={(event) => {
+                  event.preventDefault();
+                  event.dataTransfer.dropEffect = 'move';
+                }}
+                onDrop={(event) => {
+                  event.preventDefault();
+                  const sourceId = event.dataTransfer.getData('text/plain') || draggingMemberId;
+                  if (!sourceId || sourceId === member.user_id) return;
+                  const fromIndex = members.findIndex((item) => item.user_id === sourceId);
+                  const toIndex = members.findIndex((item) => item.user_id === member.user_id);
+                  if (fromIndex < 0 || toIndex < 0) return;
+                  const nextMembers = [...members];
+                  const [movedMember] = nextMembers.splice(fromIndex, 1);
+                  nextMembers.splice(toIndex, 0, movedMember);
+                  onReorderMembers(nextMembers);
+                }}
+                onDragEnd={() => setDraggingMemberId(null)}
+              >
+                <strong className="member-name"><GripVertical className="member-drag-icon" size={15} aria-hidden="true" />{member.name}</strong>
+                <select className="member-role-select" value={member.role} onChange={(event) => onUpdateMemberRole(member.user_id, event.target.value)} onMouseDown={(event) => event.stopPropagation()}>
+                  <option value="L">리더</option>
+                  <option value="CM">책임매니저</option>
+                  <option value="M">매니저</option>
+                </select>
+                <code>{member.user_id}</code>
+                <div className="member-password-box">
+                  {member.must_change_password ? (
+                    <div className="member-password-inline">
+                      <span className="password-state initial">비밀번호 설정 필요</span>
+                      <input type="password" placeholder="새 비밀번호" value={memberPasswordDrafts[member.user_id] || ''} onChange={(e) => setMemberPasswordDrafts((prev) => ({ ...prev, [member.user_id]: e.target.value }))} onKeyDown={(e) => e.key === 'Enter' && onSetMemberPassword(member.user_id)} />
+                      <button className="mt-btn sm" type="button" onClick={() => onSetMemberPassword(member.user_id)}>설정</button>
+                    </div>
+                  ) : (
+                    <>
+                      <span className="password-state">비밀번호 설정 완료</span>
+                      <button className="mt-btn sm" type="button" onClick={() => onResetMemberPassword(member.user_id)}>초기화</button>
+                    </>
+                  )}
+                </div>
+                <button className="mt-btn danger sm" type="button" onClick={() => onDeleteMember(member.user_id)}><Trash2 size={13} />제거</button>
+              </div>
+            ))}
+            {members.length === 0 && <div className="empty">등록된 멤버가 없습니다</div>}
+          </div>
+        </section>
+      ) : (
+        <ProjectManagementBoard
+          members={members}
+          teamProjects={teamProjects}
+          teamProjectDraft={teamProjectDraft}
+          setTeamProjectDraft={setTeamProjectDraft}
+          isProjectModalOpen={isProjectModalOpen}
+          setIsProjectModalOpen={setIsProjectModalOpen}
+          editingTeamProjectId={editingTeamProjectId}
+          setEditingTeamProjectId={setEditingTeamProjectId}
+          onCreateTeamProject={onCreateTeamProject}
+          onEditTeamProject={onEditTeamProject}
+          onUpdateTeamProjectStatus={onUpdateTeamProjectStatus}
+          onDeleteTeamProject={onDeleteTeamProject}
+        />
+      )}
+    </>
+  );
+}
+
+
+function ProjectManagementBoard({ members, teamProjects, teamProjectDraft, setTeamProjectDraft, isProjectModalOpen, setIsProjectModalOpen, editingTeamProjectId, setEditingTeamProjectId, onCreateTeamProject, onEditTeamProject, onUpdateTeamProjectStatus, onDeleteTeamProject }) {
+  const inProgressProjects = teamProjects.filter((project) => project.status !== 'done');
+  const doneProjects = teamProjects.filter((project) => project.status === 'done');
+
+  function updateDraftMember(userId, checked) {
+    setTeamProjectDraft((prev) => {
+      const currentIds = prev.memberIds || [];
+      const nextIds = checked
+        ? Array.from(new Set([...currentIds, userId]))
+        : currentIds.filter((id) => id !== userId);
+      return { ...prev, memberIds: nextIds };
+    });
+  }
+
+  function closeModal() {
+    setIsProjectModalOpen(false);
+    setEditingTeamProjectId(null);
+    setTeamProjectDraft({ project_name: '', leaderId: '', memberIds: [], status: 'in_progress' });
+  }
+
+  return (
+    <>
+      <section className="project-board-toolbar">
+        <div>
+          <h2>과제 관리</h2>
+          <p>진행중인 과제와 완료된 과제를 분리해서 관리합니다.</p>
+        </div>
+        <button className="mt-btn primary" type="button" onClick={() => { setEditingTeamProjectId(null); setTeamProjectDraft({ project_name: '', leaderId: '', memberIds: [], status: 'in_progress' }); setIsProjectModalOpen(true); }}><Plus size={15} />과제 추가</button>
+      </section>
+
+      <div className="project-board-grid">
+        <ProjectColumn
+          title="진행중인 과제"
+          projects={inProgressProjects}
+          emptyText="진행중인 과제가 없습니다"
+          nextActionLabel="과제 완료"
+          nextStatus="done"
+          onMove={onUpdateTeamProjectStatus}
+          onEdit={onEditTeamProject}
+          onDelete={onDeleteTeamProject}
+        />
+        <ProjectColumn
+          title="완료된 과제"
+          projects={doneProjects}
+          emptyText="완료된 과제가 없습니다"
+          nextActionLabel="진행중으로 이동"
+          nextStatus="in_progress"
+          onMove={onUpdateTeamProjectStatus}
+          onEdit={onEditTeamProject}
+          onDelete={onDeleteTeamProject}
+        />
+      </div>
+
+      {isProjectModalOpen && (
+        <div className="modal-backdrop" role="presentation">
+          <div className="project-modal" role="dialog" aria-modal="true" aria-labelledby="project-create-title">
+            <div className="project-modal-head">
+              <div>
+                <h2 id="project-create-title">{editingTeamProjectId ? '과제 수정' : '과제 추가'}</h2>
+                <p>과제 정보와 참여 멤버를 지정합니다.</p>
+              </div>
+              <button className="icon-btn" type="button" onClick={closeModal} aria-label="닫기"><X size={16} /></button>
+            </div>
+            <label className="project-leader-field">
+              <span>과제명</span>
+              <input autoFocus placeholder="과제명을 입력하세요" value={teamProjectDraft.project_name} onChange={(e) => setTeamProjectDraft((prev) => ({ ...prev, project_name: e.target.value }))} onKeyDown={(e) => e.key === 'Enter' && onCreateTeamProject()} />
+            </label>
+            <label className="project-leader-field">
+              <span>과제 리더</span>
+              <select value={teamProjectDraft.leaderId || ''} onChange={(e) => setTeamProjectDraft((prev) => ({ ...prev, leaderId: e.target.value, memberIds: (prev.memberIds || []).filter((userId) => userId !== e.target.value) }))}>
+                <option value="">리더 선택</option>
+                {members.map((member) => <option key={member.user_id} value={member.user_id}>{member.name} ({ROLE_LABELS[member.role] || member.role})</option>)}
+              </select>
+            </label>
+            <div className="project-member-picker">
+              <span>과제 멤버</span>
+              <div className="project-member-options modal-options">
+                <button className={`project-member-none${(teamProjectDraft.memberIds || []).length === 0 ? ' active' : ''}`} type="button" onClick={() => setTeamProjectDraft((prev) => ({ ...prev, memberIds: [] }))}>없음</button>
+                {members.map((member) => {
+                  const disabled = member.user_id === teamProjectDraft.leaderId;
+                  const checked = !disabled && (teamProjectDraft.memberIds || []).includes(member.user_id);
+                  return (
+                    <label className={`project-member-option${disabled ? ' disabled' : ''}`} key={member.user_id}>
+                      <input type="checkbox" checked={checked} disabled={disabled} onChange={(e) => updateDraftMember(member.user_id, e.target.checked)} />
+                      <span>{member.name}</span>
+                    </label>
+                  );
+                })}
+                {members.length === 0 && <div className="empty compact">등록된 멤버가 없습니다</div>}
+              </div>
+            </div>
+            <div className="project-modal-actions">
+              <button className="mt-btn" type="button" onClick={closeModal}>취소</button>
+              <button className="mt-btn primary" type="button" onClick={onCreateTeamProject}><Save size={13} />{editingTeamProjectId ? '저장' : '추가'}</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+function ProjectColumn({ title, projects, emptyText, nextActionLabel, nextStatus, onMove, onEdit, onDelete }) {
+  return (
+    <section className="project-column">
+      <div className="project-column-head">
+        <h3>{title}</h3>
+        <span>{projects.length}</span>
+      </div>
+      <div className="project-card-list">
+        {projects.map((project) => <ProjectCard key={project.project_id} project={project} actionLabel={nextActionLabel} nextStatus={nextStatus} onMove={onMove} onEdit={onEdit} onDelete={onDelete} />)}
+        {projects.length === 0 && <div className="empty compact">{emptyText}</div>}
+      </div>
+    </section>
+  );
+}
+
+function ProjectCard({ project, actionLabel, nextStatus, onMove, onEdit, onDelete }) {
+  const leader = project.members.find((member) => member.role === 'L');
+  const projectMembers = project.members.filter((member) => member.role === 'M');
+  return (
+    <article className="team-project-card">
+      <div className="team-project-card-head">
+        <div>
+          <strong>{project.project_name}</strong>
+        </div>
+        {project.status === 'done' && <span className="project-status done">완료</span>}
+      </div>
+      <div className="project-role-lines">
+        <div><b>리더</b><span>{leader ? leader.name : '미지정'}</span></div>
+        <div><b>멤버</b><span>{projectMembers.length ? projectMembers.map((member) => member.name).join(', ') : '없음'}</span></div>
+      </div>
+      <div className="team-project-card-actions">
+        <button className="project-card-btn" type="button" onClick={() => onEdit(project)}><Pencil size={13} />수정</button>
+        <button className="project-card-btn primary" type="button" onClick={() => onMove(project.project_id, nextStatus)}>{actionLabel}</button>
+        <button className="project-card-btn danger" type="button" onClick={() => onDelete(project.project_id)}><Trash2 size={13} />삭제</button>
+      </div>
+    </article>
+  );
+}
+
+
+function AccountManagementPage({ teams, teamDraft, setTeamDraft, onCreateTeam }) {
+  return (
+    <>
+      <div className="page-head">
+        <div>
+          <h1>계정 관리</h1>
+          <p>팀 계정을 부여하면 초기 비밀번호는 {INITIAL_PASSWORD}로 설정됩니다</p>
+        </div>
+      </div>
+
+      <section className="account-card">
+        <div className="account-form team-form">
+          <input placeholder="소속" value={teamDraft.department} onChange={(e) => setTeamDraft({ ...teamDraft, department: e.target.value })} />
+          <input placeholder="ID" value={teamDraft.login_id} onChange={(e) => setTeamDraft({ ...teamDraft, login_id: e.target.value })} onKeyDown={(e) => e.key === 'Enter' && onCreateTeam()} />
+          <button className="mt-btn primary" type="button" onClick={onCreateTeam}><Plus size={15} />계정 부여</button>
+        </div>
+      </section>
+
+      <section className="account-card">
+        <div className="account-table team-table">
+          <div className="account-table-head">
+            <span>소속</span><span>ID</span><span>Team ID</span><span>상태</span>
+          </div>
+          {teams.map((team) => (
+            <div className="account-row" key={team.team_id}>
+              <strong>{team.department}</strong>
+              <span>{team.login_id}</span>
+              <code>{team.team_id}</code>
+              <span className={`password-state${team.must_change_password ? ' initial' : ''}`}>{team.must_change_password ? '초기 비밀번호' : '변경 완료'}</span>
+            </div>
+          ))}
+          {teams.length === 0 && <div className="empty">등록된 팀 계정이 없습니다</div>}
+        </div>
+      </section>
+    </>
+  );
+}
+
+
+function PasswordChangeModal({ passwordDraft, setPasswordDraft, onChangePassword }) {
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <div className="password-modal" role="dialog" aria-modal="true" aria-labelledby="password-change-title">
+        <div>
+          <h2 id="password-change-title">비밀번호 변경</h2>
+          <p>초기 비밀번호를 사용 중입니다. 계속하려면 새 비밀번호로 변경하세요.</p>
+        </div>
+        <input type="password" placeholder="현재 비밀번호" value={passwordDraft.current_password} onChange={(e) => setPasswordDraft({ ...passwordDraft, current_password: e.target.value })} />
+        <input type="password" placeholder="새 비밀번호" value={passwordDraft.new_password} onChange={(e) => setPasswordDraft({ ...passwordDraft, new_password: e.target.value })} />
+        <input type="password" placeholder="새 비밀번호 확인" value={passwordDraft.confirm_password} onChange={(e) => setPasswordDraft({ ...passwordDraft, confirm_password: e.target.value })} onKeyDown={(e) => e.key === 'Enter' && onChangePassword()} />
+        <button className="mt-btn primary" type="button" onClick={onChangePassword}>변경</button>
+      </div>
+    </div>
+  );
+}
+
+function ProjectProgressHistory({ project }) {
+  const [history, setHistory] = useState([]);
+  const [loadingHistory, setLoadingHistory] = useState(false);
+  const [historyError, setHistoryError] = useState("");
+  const [historyImagePreview, setHistoryImagePreview] = useState(null);
+  const [removingHistoryId, setRemovingHistoryId] = useState("");
+
+  useEffect(() => {
+    let active = true;
+    if (!project?.id) {
+      setHistory([]);
+      return () => { active = false; };
+    }
+    setHistoryImagePreview(null);
+    setLoadingHistory(true);
+    setHistoryError("");
+    request("/api/projects/" + project.id + "/progress-history")
+      .then((items) => { if (active) setHistory(items || []); })
+      .catch((err) => { if (active) { setHistory([]); setHistoryError(err.message || "Progress History를 불러오지 못했습니다"); } })
+      .finally(() => { if (active) setLoadingHistory(false); });
+    return () => { active = false; };
+  }, [project?.id]);
+
+  useEffect(() => {
+    if (!historyImagePreview) return undefined;
+    const closeOnEscape = (event) => { if (event.key === "Escape") setHistoryImagePreview(null); };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [historyImagePreview]);
+
+  async function hideProgressFromHistory(progressId) {
+    setRemovingHistoryId(progressId);
+    setHistoryError("");
+    try {
+      await request("/api/project-progress/" + progressId + "/history-visibility", {
+        method: "PUT",
+        body: JSON.stringify({ is_hidden: true }),
+      });
+      setHistory((prev) => prev.filter((item) => (item.progress_id || item.history_id) !== progressId));
+    } catch (err) {
+      setHistoryError(err.message || "Progress 이력 표시를 제거하지 못했습니다");
+    } finally {
+      setRemovingHistoryId("");
+    }
+  }
+
+  return (
+    <section className="progress-history-card" aria-labelledby="progress-history-title">
+      <div className="progress-history-head">
+        <div>
+          <p className="mt-card-eyebrow"><History size={15} />Progress History</p>
+          <h2 id="progress-history-title">과제 진행 이력</h2>
+          <p>주간보고에서 Done 처리된 Progress Log를 최신 수행일 순으로 확인합니다.</p>
+        </div>
+        <span className="progress-history-count"><b>{history.length}</b> logs</span>
+      </div>
+
+      {loadingHistory && <div className="progress-history-empty">진행 이력을 불러오는 중입니다.</div>}
+      {!loadingHistory && historyError && <div className="error compact">{historyError}</div>}
+      {!loadingHistory && !historyError && history.length === 0 && <div className="progress-history-empty">아직 Done 처리된 Progress Log가 없습니다.</div>}
+      {!loadingHistory && !historyError && history.length > 0 && (
+        <div className="progress-history-list">
+          {history.map((item) => (
+            <article className="progress-history-item" key={item.history_id}>
+              <div className="progress-history-rail" aria-hidden="true"><span className="done"></span></div>
+              <div className="progress-history-content">
+                <div className="progress-history-meta">
+                  <time dateTime={item.occurred_on}>{String(item.occurred_on || "").replaceAll("-", ".")}</time>
+                  <span className="progress-history-status done">Done</span>
+                  <span className="progress-history-author">{item.reported_by} {ROLE_LABELS[item.reported_role] || item.reported_role}</span>
+                </div>
+                <h3>{item.log}</h3>
+                {(item.detail || item.images?.length > 0) && (
+                  <details className="progress-history-details">
+                    <summary><span>상세 내용{item.images?.length ? " · 이미지 " + item.images.length + "장" : ""}</span></summary>
+                    <div className="progress-history-detail-body">
+                      {item.detail && <p className="progress-history-detail">{item.detail}</p>}
+                      {item.images?.length > 0 && (
+                        <div className="progress-history-images">
+                          {item.images.map((image, imageIndex) => (
+                            <button type="button" key={item.history_id + "-image-" + imageIndex} onClick={() => setHistoryImagePreview({ src: reportImageSrc(image), alt: item.log + " 첨부 이미지 " + (imageIndex + 1) })}>
+                              <img src={reportImageSrc(image)} alt={item.log + " 첨부 이미지 " + (imageIndex + 1)} />
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </details>
+                )}
+                <div className="progress-history-footer">
+                  <span>보고 주간 {item.report_start_date} ~ {item.report_end_date}</span>
+                  <div className="progress-history-actions">
+                    {item.confluence_url && <a href={item.confluence_url} target="_blank" rel="noopener noreferrer">Confluence 상세 <ExternalLink size={12} /></a>}
+                    <button className="progress-history-remove" type="button" disabled={removingHistoryId === (item.progress_id || item.history_id)} onClick={() => hideProgressFromHistory(item.progress_id || item.history_id)} aria-label="Progress History에서 제거" title="Progress History에서 제거"><Trash2 size={14} /></button>
+                  </div>
+                </div>
+              </div>
+            </article>
+          ))}
+        </div>
+      )}
+
+      {historyImagePreview && (
+        <div className="modal-backdrop progress-history-image-backdrop" role="presentation" onClick={(event) => { if (event.target === event.currentTarget) setHistoryImagePreview(null); }}>
+          <div className="progress-history-image-modal" role="dialog" aria-modal="true" aria-label="Progress History 첨부 이미지 확대">
+            <button type="button" onClick={() => setHistoryImagePreview(null)} aria-label="확대 이미지 닫기"><X size={18} /></button>
+            <img src={historyImagePreview.src} alt={historyImagePreview.alt} />
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+
+function ProjectNextPlan({ project }) {
+  const [plans, setPlans] = useState([]);
+  const [loadingPlans, setLoadingPlans] = useState(false);
+  const [planError, setPlanError] = useState("");
+
+  useEffect(() => {
+    let active = true;
+    if (!project?.id) {
+      setPlans([]);
+      return () => { active = false; };
+    }
+    setLoadingPlans(true);
+    setPlanError("");
+    request("/api/projects/" + project.id + "/upcoming-next-plans")
+      .then((items) => { if (active) setPlans(items || []); })
+      .catch((err) => { if (active) { setPlans([]); setPlanError(err.message || "Next Plan을 불러오지 못했습니다"); } })
+      .finally(() => { if (active) setLoadingPlans(false); });
+    return () => { active = false; };
+  }, [project?.id]);
+
+  return (
+    <section className="progress-history-card next-plan-card" aria-labelledby="next-plan-title">
+      <div className="progress-history-head next-plan-head">
+        <div>
+          <p className="mt-card-eyebrow"><ClipboardList size={15} />Next Plan</p>
+          <h2 id="next-plan-title">Next Plan</h2>
+          <p>한국 날짜 기준 오늘 이후의 Next Plan을 예정일 순으로 확인합니다.</p>
+        </div>
+        <span className="progress-history-count next-plan-count"><b>{plans.length}</b> plans</span>
+      </div>
+
+      {loadingPlans && <div className="progress-history-empty next-plan-empty">Next Plan을 불러오는 중입니다.</div>}
+      {!loadingPlans && planError && <div className="error compact">{planError}</div>}
+      {!loadingPlans && !planError && plans.length === 0 && <div className="progress-history-empty next-plan-empty">오늘 이후 예정된 Next Plan이 없습니다.</div>}
+      {!loadingPlans && !planError && plans.length > 0 && (
+        <div className="progress-history-list next-plan-list">
+          {plans.map((item) => (
+            <article className="progress-history-item next-plan-item" key={item.plan_id}>
+              <div className="progress-history-rail next-plan-rail" aria-hidden="true"><span className="in-progress"></span></div>
+              <div className="progress-history-content next-plan-content">
+                <div className="progress-history-meta">
+                  <time dateTime={item.due}>{String(item.due || "").replaceAll("-", ".")}</time>
+                  <span className="progress-history-status in-progress">Plan</span>
+                  <span className="progress-history-author">{item.reported_by} {ROLE_LABELS[item.reported_role] || item.reported_role}</span>
+                </div>
+                <h3>{item.plan}</h3>
+                <div className="progress-history-footer">
+                  <span>보고 주간 {item.report_start_date} ~ {item.report_end_date}</span>
+                </div>
+              </div>
+            </article>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+
+function ProjectIssueManagement({ project }) {
+  const [issues, setIssues] = useState([]);
+  const [progressItems, setProgressItems] = useState([]);
+  const [loadingIssues, setLoadingIssues] = useState(false);
+  const [loadingProgress, setLoadingProgress] = useState(false);
+  const [issueError, setIssueError] = useState("");
+  const [importanceFilter, setImportanceFilter] = useState("all");
+  const [issueImagePreview, setIssueImagePreview] = useState(null);
+  const [updatingIssueId, setUpdatingIssueId] = useState("");
+  const [resolutionModal, setResolutionModal] = useState(null);
+
+  useEffect(() => {
+    let active = true;
+    if (!project?.id) {
+      setIssues([]);
+      setProgressItems([]);
+      return () => { active = false; };
+    }
+    setImportanceFilter("all");
+    setIssueImagePreview(null);
+    setResolutionModal(null);
+    setLoadingIssues(true);
+    setLoadingProgress(true);
+    setIssueError("");
+    request("/api/projects/" + project.id + "/issue-management")
+      .then((items) => { if (active) setIssues(items || []); })
+      .catch((err) => { if (active) { setIssues([]); setIssueError(err.message || "Issue & Risk를 불러오지 못했습니다"); } })
+      .finally(() => { if (active) setLoadingIssues(false); });
+    request("/api/projects/" + project.id + "/progress-history?include_hidden=1")
+      .then((items) => { if (active) setProgressItems(items || []); })
+      .catch(() => { if (active) setProgressItems([]); })
+      .finally(() => { if (active) setLoadingProgress(false); });
+    return () => { active = false; };
+  }, [project?.id]);
+
+  useEffect(() => {
+    if (!issueImagePreview && !resolutionModal) return undefined;
+    const closeOnEscape = (event) => {
+      if (event.key !== "Escape") return;
+      if (issueImagePreview) setIssueImagePreview(null);
+      else setResolutionModal(null);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [issueImagePreview, resolutionModal]);
+
+  const progressById = useMemo(() => {
+    const map = new Map();
+    progressItems.forEach((item) => map.set(item.progress_id || item.history_id, item));
+    return map;
+  }, [progressItems]);
+  const openIssues = useMemo(() => issues.filter((item) => item.status !== "resolved"), [issues]);
+  const resolvedIssues = useMemo(() => issues.filter((item) => item.status === "resolved"), [issues]);
+  const issueCounts = useMemo(() => ({
+    all: openIssues.length,
+    resolved: resolvedIssues.length,
+    high: openIssues.filter((item) => item.importance === "상").length,
+    medium: openIssues.filter((item) => item.importance === "중").length,
+    low: openIssues.filter((item) => item.importance === "하").length,
+  }), [openIssues, resolvedIssues]);
+
+  const filteredOpenIssues = useMemo(() => filterIssuesByImportance(openIssues, importanceFilter), [openIssues, importanceFilter]);
+  const filteredResolvedIssues = useMemo(() => filterIssuesByImportance(resolvedIssues, importanceFilter), [resolvedIssues, importanceFilter]);
+
+  function filterIssuesByImportance(items, filter) {
+    const value = { high: "상", medium: "중", low: "하" }[filter];
+    return value ? items.filter((item) => item.importance === value) : items;
+  }
+
+  function importanceClass(value) {
+    if (value === "상") return "high";
+    if (value === "하") return "low";
+    return "medium";
+  }
+
+  function openResolutionModal(issue) {
+    setResolutionModal({
+      issue,
+      selectedIds: Array.isArray(issue.resolution_progress_ids) ? issue.resolution_progress_ids : [],
+      comment: issue.resolution_comment || "",
+    });
+  }
+
+  function toggleResolutionProgress(progressId) {
+    setResolutionModal((prev) => {
+      if (!prev) return prev;
+      const selected = new Set(prev.selectedIds || []);
+      if (selected.has(progressId)) selected.delete(progressId);
+      else selected.add(progressId);
+      return { ...prev, selectedIds: Array.from(selected) };
+    });
+  }
+
+  async function updateIssueStatus(issueId, status, options = {}) {
+    setUpdatingIssueId(issueId);
+    setIssueError("");
+    try {
+      const updated = await request("/api/project-issues/" + issueId + "/status", {
+        method: "PUT",
+        body: JSON.stringify({ status, ...options }),
+      });
+      setIssues((prev) => prev.map((item) => (item.issue_id === issueId ? {
+        ...item,
+        status: updated.status,
+        resolved_at: updated.resolved_at || "",
+        updated_at: updated.updated_at || item.updated_at,
+        resolution_progress_ids: updated.resolution_progress_ids || item.resolution_progress_ids || [],
+        resolution_comment: updated.resolution_comment || "",
+      } : item)));
+      setResolutionModal(null);
+    } catch (err) {
+      setIssueError(err.message || "Issue 상태를 변경하지 못했습니다");
+    } finally {
+      setUpdatingIssueId("");
+    }
+  }
+
+  function submitIssueResolution() {
+    if (!resolutionModal?.issue) return;
+    updateIssueStatus(resolutionModal.issue.issue_id, "resolved", {
+      resolution_progress_ids: resolutionModal.selectedIds || [],
+      resolution_comment: resolutionModal.comment || "",
+    });
+  }
+
+  function renderResolvedMeta(item) {
+    const linkedIds = Array.isArray(item.resolution_progress_ids) ? item.resolution_progress_ids : [];
+    const linkedProgress = linkedIds.map((id) => progressById.get(id)).filter(Boolean);
+    if (!linkedProgress.length && !item.resolution_comment) return null;
+    return (
+      <div className="issue-resolution-summary">
+        {linkedProgress.length > 0 && (
+          <div className="issue-resolution-linked">
+            <span>관련 Process</span>
+            <ul>
+              {linkedProgress.map((progress) => (
+                <li key={progress.progress_id || progress.history_id}>
+                  <time dateTime={progress.occurred_on}>{String(progress.occurred_on || "").replaceAll("-", ".")}</time>
+                  <p>{progress.log}</p>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {item.resolution_comment && (
+          <div className="issue-resolution-comment-block">
+            <span>종합 의견</span>
+            <p>{item.resolution_comment}</p>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  function renderIssueList(items, emptyText, isResolvedSection = false) {
+    if (items.length === 0) return <div className="issue-management-empty section-empty">{emptyText}</div>;
+    return (
+      <div className="issue-management-list">
+        {items.map((item) => {
+          const level = importanceClass(item.importance);
+          const isUpdating = updatingIssueId === item.issue_id;
+          return (
+            <article className={"issue-management-item " + level + (isResolvedSection ? " resolved" : "")} key={item.issue_id}>
+              <div className="issue-management-item-head">
+                <span className={"issue-importance " + level}>중요도 {item.importance}</span>
+                <span className="issue-management-author">{item.reported_by} {ROLE_LABELS[item.reported_role] || item.reported_role}</span>
+              </div>
+              <h3>{item.issue}</h3>
+              {(item.detail || item.images?.length > 0) && (
+                <details className="progress-history-details">
+                  <summary><span>상세 내용{item.images?.length ? " · 이미지 " + item.images.length + "장" : ""}</span></summary>
+                  <div className="progress-history-detail-body">
+                    {item.detail && <p className="progress-history-detail">{item.detail}</p>}
+                    {item.images?.length > 0 && (
+                      <div className="progress-history-images">
+                        {item.images.map((image, imageIndex) => (
+                          <button type="button" key={item.issue_id + "-image-" + imageIndex} onClick={() => setIssueImagePreview({ src: reportImageSrc(image), alt: item.issue + " 첨부 이미지 " + (imageIndex + 1) })}>
+                            <img src={reportImageSrc(image)} alt={item.issue + " 첨부 이미지 " + (imageIndex + 1)} />
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </details>
+              )}
+              {isResolvedSection && renderResolvedMeta(item)}
+              <div className="issue-management-footer">
+                <span>보고 주간 {item.report_start_date} ~ {item.report_end_date}</span>
+                <div className="issue-management-actions">
+                  {item.confluence_url && <a href={item.confluence_url} target="_blank" rel="noopener noreferrer">Confluence 상세 <ExternalLink size={12} /></a>}
+                  {isResolvedSection ? (
+                    <button className="issue-resolve-btn secondary" type="button" disabled={isUpdating} onClick={() => updateIssueStatus(item.issue_id, "open")}>미해결로 되돌리기</button>
+                  ) : (
+                    <button className="issue-resolve-btn" type="button" disabled={isUpdating} onClick={() => openResolutionModal(item)}><Check size={13} />Issue 해결</button>
+                  )}
+                </div>
+              </div>
+            </article>
+          );
+        })}
+      </div>
+    );
+  }
+
+  return (
+    <section className="issue-management-card" aria-labelledby="issue-management-title">
+      <div className="issue-management-head">
+        <div>
+          <p className="mt-card-eyebrow"><AlertTriangle size={15} />Issue Management</p>
+          <h2 id="issue-management-title">Issue &amp; Risk 관리</h2>
+          <p>모든 주간보고에 작성된 Issue &amp; Risk를 미해결 항목과 해결된 항목으로 나누어 관리합니다.</p>
+        </div>
+        <span className="issue-management-count"><b>{issueCounts.all}</b> 미해결 · {issueCounts.resolved} 해결</span>
+      </div>
+
+      <div className="issue-management-toolbar">
+        <div className="issue-management-summary" aria-label="미해결 Issue 중요도 요약">
+          <span className="high"><b>{issueCounts.high}</b> 상</span>
+          <span className="medium"><b>{issueCounts.medium}</b> 중</span>
+          <span className="low"><b>{issueCounts.low}</b> 하</span>
+        </div>
+        <div className="issue-management-filters" aria-label="Issue 중요도 필터">
+          {[["all", "전체"], ["high", "상"], ["medium", "중"], ["low", "하"]].map(([value, label]) => (
+            <button type="button" key={value} className={importanceFilter === value ? "active" : ""} onClick={() => setImportanceFilter(value)}>
+              {label} <b>{issueCounts[value]}</b>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {loadingIssues && <div className="issue-management-empty">Issue &amp; Risk를 불러오는 중입니다.</div>}
+      {!loadingIssues && issueError && <div className="error compact">{issueError}</div>}
+      {!loadingIssues && !issueError && issues.length === 0 && <div className="issue-management-empty">아직 작성된 Issue &amp; Risk가 없습니다.</div>}
+      {!loadingIssues && !issueError && issues.length > 0 && (
+        <div className="issue-management-sections">
+          <section className="issue-management-section ongoing" aria-label="미해결 Issue">
+            <div className="issue-management-section-head">
+              <div><h3>미해결</h3><p>아직 해결되지 않아 계속 추적해야 하는 Issue입니다.</p></div>
+              <span>{filteredOpenIssues.length}건</span>
+            </div>
+            {renderIssueList(filteredOpenIssues, importanceFilter === "all" ? "미해결 Issue가 없습니다." : "선택한 중요도의 미해결 Issue가 없습니다.")}
+          </section>
+          <section className="issue-management-section resolved" aria-label="해결된 Issue">
+            <div className="issue-management-section-head">
+              <div><h3>해결</h3><p>해결 처리되어 기록으로 보관되는 Issue입니다.</p></div>
+              <span>{filteredResolvedIssues.length}건</span>
+            </div>
+            {renderIssueList(filteredResolvedIssues, importanceFilter === "all" ? "해결된 Issue가 없습니다." : "선택한 중요도의 해결 Issue가 없습니다.", true)}
+          </section>
+        </div>
+      )}
+
+      {resolutionModal && (
+        <div className="modal-backdrop issue-resolution-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setResolutionModal(null); }}>
+          <div className="issue-resolution-modal" role="dialog" aria-modal="true" aria-labelledby="issue-resolution-title" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="project-modal-head">
+              <div>
+                <h2 id="issue-resolution-title">Issue 해결</h2>
+                <p>{resolutionModal.issue.issue}</p>
+              </div>
+              <button type="button" className="icon-button" onClick={() => setResolutionModal(null)} aria-label="Issue 해결 팝업 닫기"><X size={18} /></button>
+            </div>
+            <div className="issue-resolution-body">
+              <section className="issue-resolution-panel">
+                <div className="issue-resolution-panel-head">
+                  <h3>관련 Progress 연동</h3>
+                  <span>{resolutionModal.selectedIds.length}개 선택</span>
+                </div>
+                {loadingProgress && <div className="issue-resolution-empty">Progress를 불러오는 중입니다.</div>}
+                {!loadingProgress && progressItems.length === 0 && <div className="issue-resolution-empty">연동할 Done Progress가 없습니다.</div>}
+                {!loadingProgress && progressItems.length > 0 && (
+                  <div className="issue-resolution-progress-list">
+                    {progressItems.map((progress) => {
+                      const progressId = progress.progress_id || progress.history_id;
+                      const checked = resolutionModal.selectedIds.includes(progressId);
+                      return (
+                        <button type="button" key={progressId} className={checked ? "selected" : ""} onClick={() => toggleResolutionProgress(progressId)}>
+                          <span className="issue-resolution-check">{checked && <Check size={12} />}</span>
+                          <span className="issue-resolution-progress-main">
+                            <b>{progress.log}</b>
+                            <small>{progress.occurred_on} · {progress.reported_by} · {progress.report_start_date} ~ {progress.report_end_date}</small>
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </section>
+              <label className="issue-resolution-comment-field">
+                <span>종합 의견</span>
+                <textarea value={resolutionModal.comment} onChange={(event) => setResolutionModal((prev) => prev ? { ...prev, comment: event.target.value } : prev)} placeholder="Issue가 어떻게 해결되었는지, 남은 확인 사항이 있는지 작성하세요." maxLength={4000} />
+              </label>
+            </div>
+            <div className="issue-resolution-actions">
+              <button className="issue-resolution-cancel" type="button" onClick={() => setResolutionModal(null)}>취소</button>
+              <button className="issue-resolution-submit" type="button" disabled={updatingIssueId === resolutionModal.issue.issue_id} onClick={submitIssueResolution}>해결</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {issueImagePreview && (
+        <div className="modal-backdrop progress-history-image-backdrop" role="presentation" onClick={(event) => { if (event.target === event.currentTarget) setIssueImagePreview(null); }}>
+          <div className="progress-history-image-modal" role="dialog" aria-modal="true" aria-label="Issue & Risk 첨부 이미지 확대">
+            <button type="button" onClick={() => setIssueImagePreview(null)} aria-label="확대 이미지 닫기"><X size={18} /></button>
+            <img src={issueImagePreview.src} alt={issueImagePreview.alt} />
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+
+function ProjectTimeline({
+  project,
+  milestones,
+  addingMilestone,
+  setAddingMilestone,
+  milestoneDraft,
+  setMilestoneDraft,
+  onAddMilestone,
+  onUpdateMilestone,
+  onRemoveMilestone,
+  onAddEpic,
+  onUpdateEpic,
+  onRemoveEpic,
+}) {
+  const [workModal, setWorkModal] = useState(null);
+  const [milestoneModal, setMilestoneModal] = useState(null);
+  const [epicDraft, setEpicDraft] = useState({ name: '', owner: '', status: 'planned', start_date: todayIso(), end_date: todayIso() });
+  const [milestoneEditDraft, setMilestoneEditDraft] = useState({ title: '', start_date: todayIso(), end_date: todayIso() });
+  const [editDraft, setEditDraft] = useState({ name: '', owner: '', status: 'planned', start_date: todayIso(), end_date: todayIso() });
+  const [timelineActionId, setTimelineActionId] = useState('');
+  const [hideDoneWorks, setHideDoneWorks] = useState(false);
+  const timelineScrollRef = useRef(null);
+
+  const range = useMemo(() => {
+    const dates = milestones.flatMap((milestone) => [milestone.start_date, milestone.end_date]);
+    if (dates.length === 0) return { start: milestoneDraft.start_date, end: milestoneDraft.end_date };
+    return { start: dates.reduce((a, b) => (a < b ? a : b)), end: dates.reduce((a, b) => (a > b ? a : b)) };
+  }, [milestones, milestoneDraft.start_date, milestoneDraft.end_date]);
+
+  const days = useMemo(() => businessDaysBetween(range.start, range.end), [range.start, range.end]);
+  const colCount = Math.max(1, days.length);
+  const dayIndex = useMemo(() => {
+    const map = new Map();
+    days.forEach((day, i) => map.set(isoOf(day), i));
+    return map;
+  }, [days]);
+  const dateGridTemplate = 'repeat(' + colCount + ', minmax(64px, 1fr))';
+  const today = kstTodayIso();
+  const todayIndex = dayIndex.has(today) ? dayIndex.get(today) : -1;
+  function isDoneWork(epic) {
+    const status = normalizeStatus(epic.status);
+    return status === 'done' || status === 'done_delayed';
+  }
+  const completedMilestoneCount = useMemo(() => milestones.filter((milestone) => {
+    const works = milestone.epics || [];
+    return works.length > 0 && works.every(isDoneWork);
+  }).length, [milestones]);
+  const visibleMilestones = useMemo(() => {
+    if (!hideDoneWorks) return milestones;
+    return milestones.filter((milestone) => {
+      const works = milestone.epics || [];
+      return !(works.length > 0 && works.every(isDoneWork));
+    });
+  }, [milestones, hideDoneWorks]);
+  const timelineAlerts = useMemo(() => {
+    const alerts = [];
+    visibleMilestones.forEach((milestone) => {
+      (milestone.epics || []).forEach((epic) => {
+        const status = normalizeStatus(epic.status);
+        const isDone = isDoneWork(epic);
+        const isActive = status === 'in_progress' || status === 'in_progress_delayed';
+        if (epic.end_date < today && !isDone) {
+          alerts.push({ type: 'ended', milestone, epic });
+          return;
+        }
+        if (epic.start_date <= today && !isActive && !isDone) {
+          alerts.push({ type: 'started', milestone, epic });
+        }
+      });
+    });
+    return alerts.sort((a, b) => {
+      const aDate = a.type === 'ended' ? a.epic.end_date : a.epic.start_date;
+      const bDate = b.type === 'ended' ? b.epic.end_date : b.epic.start_date;
+      return aDate.localeCompare(bDate) || a.epic.title.localeCompare(b.epic.title);
+    });
+  }, [visibleMilestones, today]);
+
+  useEffect(() => {
+    const scroller = timelineScrollRef.current;
+    if (!scroller || todayIndex < 0 || colCount < 1) return;
+    const dayWidth = Math.max(64, scroller.scrollWidth / colCount);
+    const todayLeft = todayIndex * dayWidth;
+    const targetLeft = todayLeft - (scroller.clientWidth - dayWidth) / 2;
+    scroller.scrollLeft = Math.max(0, Math.min(targetLeft, scroller.scrollWidth - scroller.clientWidth));
+  }, [project?.id, todayIndex, colCount, dateGridTemplate]);
+
+  function dayCellClass(day, baseClass, highlightToday = false) {
+    const classes = [baseClass];
+    if (day.getDay() === 1) classes.push('weekend-adjacent');
+    if (highlightToday && isoOf(day) === today) classes.push('today');
+    return classes.join(' ');
+  }
+
+  function spanFor(startDate, endDate) {
+    const itemDays = businessDaysBetween(startDate, endDate);
+    const first = itemDays[0] ? isoOf(itemDays[0]) : startDate;
+    const last = itemDays[itemDays.length - 1] ? isoOf(itemDays[itemDays.length - 1]) : endDate;
+    const startCol = dayIndex.has(first) ? dayIndex.get(first) : 0;
+    const endCol = dayIndex.has(last) ? dayIndex.get(last) : colCount - 1;
+    return { startCol, colSpan: Math.max(1, endCol - startCol + 1) };
+  }
+
+  function startAddEpic(milestone) {
+    setEpicDraft({ name: '', owner: '', status: 'planned', start_date: milestone.start_date, end_date: milestone.start_date });
+    setWorkModal({ mode: 'add', milestone });
+  }
+
+  function commitAddEpic() {
+    if (!workModal?.milestone || !epicDraft.name.trim()) {
+      setWorkModal(null);
+      return;
+    }
+    onAddEpic(workModal.milestone, epicDraft);
+    setEpicDraft({ name: '', owner: '', status: 'planned', start_date: todayIso(), end_date: todayIso() });
+    setWorkModal(null);
+  }
+
+  function startEditEpic(epic, milestone) {
+    setEditDraft({
+      name: epic.title,
+      owner: epic.owner || '',
+      status: normalizeStatus(epic.status),
+      start_date: epic.start_date,
+      end_date: epic.end_date,
+    });
+    setWorkModal({ mode: 'edit', milestone, epic });
+  }
+
+  function commitEditEpic() {
+    if (!workModal?.epic || !editDraft.name.trim()) {
+      setWorkModal(null);
+      return;
+    }
+    onUpdateEpic(workModal.epic, editDraft);
+    setWorkModal(null);
+  }
+
+  async function updateWorkStatusFromAlert(epic, status) {
+    setTimelineActionId(epic.id + ':' + status);
+    try {
+      await onUpdateEpic(epic, {
+        name: epic.title,
+        owner: epic.owner || '',
+        status,
+        start_date: epic.start_date,
+        end_date: epic.end_date,
+      });
+    } finally {
+      setTimelineActionId('');
+    }
+  }
+
+  function openAddMilestoneModal() {
+    setWorkModal(null);
+    setMilestoneDraft((prev) => ({
+      ...prev,
+      title: prev.title || '',
+      start_date: prev.start_date || todayIso(),
+      end_date: prev.end_date || prev.start_date || todayIso(),
+    }));
+    setAddingMilestone(true);
+    setMilestoneModal({ mode: 'add' });
+  }
+
+  function startEditMilestone(milestone) {
+    setWorkModal(null);
+    setAddingMilestone(false);
+    setMilestoneEditDraft({ title: milestone.title, start_date: milestone.start_date, end_date: milestone.end_date });
+    setMilestoneModal({ mode: 'edit', milestone });
+  }
+
+  function closeMilestoneModal() {
+    setMilestoneModal(null);
+    setAddingMilestone(false);
+  }
+
+  function commitAddMilestoneModal() {
+    if (!milestoneDraft.title.trim()) {
+      closeMilestoneModal();
+      return;
+    }
+    onAddMilestone();
+    closeMilestoneModal();
+  }
+
+  function commitEditMilestoneModal() {
+    if (!milestoneModal?.milestone || !milestoneEditDraft.title.trim()) {
+      closeMilestoneModal();
+      return;
+    }
+    onUpdateMilestone(milestoneModal.milestone, milestoneEditDraft);
+    closeMilestoneModal();
+  }
+
+  function renderMilestoneLabel(milestone) {
+    return (
+      <div className="mt-row-label milestone-label" key={`axis-${milestone.id}`}>
+        <div>
+          <div className="name">{milestone.title}</div>
+          <div className="meta">{milestone.start_date} → {milestone.end_date}</div>
+        </div>
+        <div className="row-actions">
+          <button className="mt-add-work-inline" onClick={() => startAddEpic(milestone)}><Plus size={12} />Work</button>
+          <button className="mt-icon-action always" onClick={() => startEditMilestone(milestone)} aria-label="마일스톤 편집"><Pencil size={13} /></button>
+          <button className="mt-delete always" onClick={() => onRemoveMilestone(milestone.id)} aria-label="마일스톤 삭제"><Trash2 size={13} /></button>
+        </div>
+      </div>
+    );
+  }
+
+  function renderEpicLabel(epic, milestone, isLast) {
+    const status = STATUS_STYLE[normalizeStatus(epic.status)] || STATUS_STYLE.planned;
+    return (
+      <div className={`mt-row-label epic${isLast ? ' last' : ''}`} key={`axis-${epic.id}`}>
+        <div><div className="name">{epic.title}</div><div className="meta"><span className="mt-avatar"><User size={9} /></span>{epic.owner || '담당 미지정'} · <span className="mt-badge" style={{ background: status.bg, color: status.text }}>{status.label}</span></div></div>
+        <div className="row-actions">
+          <button className="mt-icon-action" onClick={() => startEditEpic(epic, milestone)} aria-label="Work 편집"><Pencil size={13} /></button>
+          <button className="mt-delete" onClick={() => onRemoveEpic(epic.id)} aria-label="Work 삭제"><Trash2 size={13} /></button>
+        </div>
+      </div>
+    );
+  }
+
+
+  const activeWorkDraft = workModal?.mode === 'edit' ? editDraft : epicDraft;
+  const setActiveWorkDraft = workModal?.mode === 'edit' ? setEditDraft : setEpicDraft;
+
+  return (
+    <>
+    <article className="mt-card project-card">
+      <div className="mt-card-head">
+        <p className="mt-card-eyebrow"><AudioWaveform size={14} color="#4F46E5" />Project Timeline</p>
+        <p className="mt-card-sub mono">{range.start} → {range.end} · Milestone {visibleMilestones.length}/{milestones.length}개</p>
+      </div>
+
+      {timelineAlerts.length > 0 && (
+        <section className="timeline-alert-panel" aria-label="Project Timeline 알림">
+          <div className="timeline-alert-head">
+            <div>
+              <h3>오늘 확인할 Work</h3>
+              <p>한국 날짜 {today.replaceAll('-', '.')} 기준으로 시작 또는 종료된 Work입니다.</p>
+            </div>
+            <span>{timelineAlerts.length}건</span>
+          </div>
+          <div className="timeline-alert-list">
+            {timelineAlerts.map(({ type, milestone, epic }) => {
+              const isEnded = type === 'ended';
+              return (
+                <article className={"timeline-alert-item " + (isEnded ? 'ended' : 'started')} key={epic.id + '-' + type}>
+                  <div className="timeline-alert-copy">
+                    <span>{isEnded ? '수행 기간 종료' : '수행 시작'}</span>
+                    <h4>{epic.title}</h4>
+                    <p>{milestone.title} · {epic.owner || '담당 미지정'} · {epic.start_date} ~ {epic.end_date}</p>
+                  </div>
+                  <div className="timeline-alert-actions">
+                    {isEnded ? (
+                      <>
+                        <button type="button" disabled={!!timelineActionId} onClick={() => updateWorkStatusFromAlert(epic, 'done')}>완료</button>
+                        <button type="button" className="delay" disabled={!!timelineActionId} onClick={() => updateWorkStatusFromAlert(epic, 'done_delayed')}>완료 지연</button>
+                      </>
+                    ) : (
+                      <>
+                        <button type="button" disabled={!!timelineActionId} onClick={() => updateWorkStatusFromAlert(epic, 'in_progress')}>진행중</button>
+                        <button type="button" className="delay" disabled={!!timelineActionId} onClick={() => updateWorkStatusFromAlert(epic, 'in_progress_delayed')}>진행 지연</button>
+                      </>
+                    )}
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        </section>
+      )}
+
+      <div className="mt-split-wrap">
+        <div className="mt-axis-col">
+          <div className="mt-headercell timeline-axis-head">
+            <span>Milestone / Work</span>
+            <label className="timeline-hide-done-toggle">
+              <input type="checkbox" checked={hideDoneWorks} onChange={(e) => setHideDoneWorks(e.target.checked)} />
+              <span>완료 숨기기</span>
+              <b>{completedMilestoneCount}</b>
+            </label>
+          </div>
+          {visibleMilestones.map((milestone) => (
+            <React.Fragment key={`axis-${milestone.id}`}>
+              {renderMilestoneLabel(milestone)}
+              {milestone.epics.map((epic, index) => renderEpicLabel(epic, milestone, index === milestone.epics.length - 1))}
+            </React.Fragment>
+          ))}
+          <div className="timeline-add-milestone axis">
+            <button className="add-milestone-btn" onClick={openAddMilestoneModal}><Plus size={15} />마일스톤 추가</button>
+          </div>
+        </div>
+
+        <div className="mt-calendar-scroll" ref={timelineScrollRef}>
+          <div className="mt-calendar-grid" style={{ gridTemplateColumns: dateGridTemplate }}>
+            <div className="mt-calendar-bg-layer" aria-hidden="true">
+              {days.map((day) => <div key={`bg-${isoOf(day)}`} className={dayCellClass(day, 'mt-calendar-bg-cell')} />)}
+            </div>
+            {days.map((day) => (
+              <div key={isoOf(day)} className={dayCellClass(day, 'mt-daycell', true)}>
+                <div className="num">{String(day.getDate()).padStart(2, '0')}</div>
+                <div className="dow">{DOW[day.getDay()]}</div>
+              </div>
+            ))}
+
+            {visibleMilestones.map((milestone) => {
+              const milestoneSpan = spanFor(milestone.start_date, milestone.end_date);
+              return (
+                <React.Fragment key={`calendar-${milestone.id}`}>
+                  <div className="mt-track milestone-track" style={{ gridColumn: `1 / span ${colCount}`, gridTemplateColumns: dateGridTemplate }}>
+                    <div className="milestone-bar" style={{ gridColumn: `${milestoneSpan.startCol + 1} / span ${milestoneSpan.colSpan}` }}>
+                      <AudioWaveform size={14} className="icon" />
+                      <span className="label">{milestone.title}</span>
+                      <span className="count">{milestone.epics.length} works</span>
+                    </div>
+                  </div>
+
+                  {milestone.epics.map((epic, index) => {
+                    const epicSpan = spanFor(epic.start_date, epic.end_date);
+                    return (
+                      <div className="mt-track" key={`calendar-${epic.id}`} style={{ gridColumn: `1 / span ${colCount}`, gridTemplateColumns: dateGridTemplate }}>
+                        <div className="mt-bar" style={{ gridColumn: `${epicSpan.startCol + 1} / span ${epicSpan.colSpan}`, background: epic.color || accentFor(index).bar }}>
+                          <span className="label">{epic.title}</span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </React.Fragment>
+              );
+            })}
+
+            <div className="timeline-add-milestone calendar" style={{ gridColumn: `1 / span ${colCount}` }}></div>
+          </div>
+        </div>
+      </div>
+    </article>
+
+    {milestoneModal && (
+      <div className="modal-backdrop" role="presentation">
+        <div className="project-modal work-modal milestone-modal" role="dialog" aria-modal="true" aria-labelledby="milestone-modal-title">
+          <div className="project-modal-head">
+            <div>
+              <h2 id="milestone-modal-title">{milestoneModal.mode === 'edit' ? '마일스톤 수정' : '마일스톤 추가'}</h2>
+              <p>{project?.title || 'Project Timeline'}</p>
+            </div>
+            <button className="icon-btn" type="button" onClick={closeMilestoneModal} aria-label="닫기"><X size={16} /></button>
+          </div>
+          <div className="work-modal-form">
+            <label>
+              <span>마일스톤 이름</span>
+              <input value={milestoneModal.mode === 'edit' ? milestoneEditDraft.title : milestoneDraft.title} autoFocus onChange={(e) => milestoneModal.mode === 'edit' ? setMilestoneEditDraft({ ...milestoneEditDraft, title: e.target.value }) : setMilestoneDraft({ ...milestoneDraft, title: e.target.value })} onKeyDown={(e) => e.key === 'Enter' && (milestoneModal.mode === 'edit' ? commitEditMilestoneModal() : commitAddMilestoneModal())} />
+            </label>
+            <label>
+              <span>시작일</span>
+              <input type="date" value={milestoneModal.mode === 'edit' ? milestoneEditDraft.start_date : milestoneDraft.start_date} onChange={(e) => milestoneModal.mode === 'edit' ? setMilestoneEditDraft({ ...milestoneEditDraft, start_date: e.target.value }) : setMilestoneDraft({ ...milestoneDraft, start_date: e.target.value })} />
+            </label>
+            <label>
+              <span>종료일</span>
+              <input type="date" value={milestoneModal.mode === 'edit' ? milestoneEditDraft.end_date : milestoneDraft.end_date} onChange={(e) => milestoneModal.mode === 'edit' ? setMilestoneEditDraft({ ...milestoneEditDraft, end_date: e.target.value }) : setMilestoneDraft({ ...milestoneDraft, end_date: e.target.value })} />
+            </label>
+          </div>
+          <div className="project-modal-actions">
+            <button className="mt-btn" type="button" onClick={closeMilestoneModal}>취소</button>
+            <button className="mt-btn primary" type="button" onClick={milestoneModal.mode === 'edit' ? commitEditMilestoneModal : commitAddMilestoneModal}>{milestoneModal.mode === 'edit' ? '저장' : '추가'}</button>
+          </div>
+        </div>
+      </div>
+    )}
+
+    {workModal && (
+      <div className="modal-backdrop" role="presentation">
+        <div className="project-modal work-modal" role="dialog" aria-modal="true" aria-labelledby="work-modal-title">
+          <div className="project-modal-head">
+            <div>
+              <h2 id="work-modal-title">{workModal.mode === 'edit' ? 'Work 수정' : 'Work 추가'}</h2>
+              <p>{workModal.milestone?.title} · {workModal.milestone?.start_date} ~ {workModal.milestone?.end_date}</p>
+            </div>
+            <button className="icon-btn" type="button" onClick={() => setWorkModal(null)} aria-label="닫기"><X size={16} /></button>
+          </div>
+          <div className="work-modal-form">
+            <label>
+              <span>Work 이름</span>
+              <input value={activeWorkDraft.name} autoFocus onChange={(e) => setActiveWorkDraft({ ...activeWorkDraft, name: e.target.value })} onKeyDown={(e) => e.key === 'Enter' && (workModal.mode === 'edit' ? commitEditEpic() : commitAddEpic())} />
+            </label>
+            <label>
+              <span>담당</span>
+              <input value={activeWorkDraft.owner} placeholder="담당 미지정" onChange={(e) => setActiveWorkDraft({ ...activeWorkDraft, owner: e.target.value })} />
+            </label>
+            <label>
+              <span>상태</span>
+              <select value={activeWorkDraft.status} onChange={(e) => setActiveWorkDraft({ ...activeWorkDraft, status: e.target.value })}>
+                <option value="planned">예정</option>
+                <option value="in_progress">진행중</option>
+                <option value="in_progress_delayed">진행 지연</option>
+                <option value="done">완료</option>
+                <option value="done_delayed">완료 지연</option>
+              </select>
+            </label>
+            <label>
+              <span>시작일</span>
+              <input type="date" min={workModal.milestone?.start_date} max={workModal.milestone?.end_date} value={activeWorkDraft.start_date} onChange={(e) => setActiveWorkDraft({ ...activeWorkDraft, start_date: e.target.value })} />
+            </label>
+            <label>
+              <span>종료일</span>
+              <input type="date" min={workModal.milestone?.start_date} max={workModal.milestone?.end_date} value={activeWorkDraft.end_date} onChange={(e) => setActiveWorkDraft({ ...activeWorkDraft, end_date: e.target.value })} />
+            </label>
+          </div>
+          <div className="project-modal-actions">
+            <button className="mt-btn" type="button" onClick={() => setWorkModal(null)}>취소</button>
+            <button className="mt-btn primary" type="button" onClick={workModal.mode === 'edit' ? commitEditEpic : commitAddEpic}>{workModal.mode === 'edit' ? '저장' : '추가'}</button>
+          </div>
+        </div>
+      </div>
+    )}
+    </>
+  );
+}
+
+createRoot(document.getElementById('root')).render(<App />);

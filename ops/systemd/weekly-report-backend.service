@@ -1,0 +1,15 @@
+[Unit]
+Description=Weekly Report backend
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/wia/projects/weekly_report
+EnvironmentFile=-/home/wia/projects/weekly_report/.env
+ExecStart=/home/wia/projects/weekly_report/.venv/bin/uvicorn backend.main:app --host 0.0.0.0 --port 9601 --reload
+Restart=always
+RestartSec=3
+KillSignal=SIGINT
+
+[Install]
+WantedBy=default.target
