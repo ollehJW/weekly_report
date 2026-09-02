@@ -664,7 +664,16 @@ input:focus, textarea:focus, select:focus { border-color: #4f46e5; box-shadow: 0
 .mt-row-label { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 46px; border-bottom: 1px solid var(--border-soft); padding: 12px 14px; }
 .mt-row-label .name { font-size: 13.5px; font-weight: 650; }
 .mt-row-label .meta { display: flex; align-items: center; gap: 5px; margin-top: 2px; color: var(--ink-faint); font-size: 11.5px; }
-.mt-row-label.epic { position: relative; padding-left: 34px; }
+.mt-row-label.epic { position: relative; overflow: hidden; padding-left: 34px; }
+.mt-row-label.epic.status-row-planned { background: linear-gradient(90deg, rgba(216,209,195,.22), transparent 68%); box-shadow: inset 4px 0 0 #d8d1c3; }
+.mt-row-label.epic.status-row-in_progress { background: linear-gradient(90deg, rgba(79,70,229,.11), transparent 70%); box-shadow: inset 4px 0 0 #4f46e5; }
+.mt-row-label.epic.status-row-in_progress_delayed { background: linear-gradient(90deg, rgba(234,196,111,.18), transparent 70%); box-shadow: inset 4px 0 0 #d99a19; }
+.mt-row-label.epic.status-row-done { background: linear-gradient(90deg, rgba(14,143,82,.12), transparent 70%); box-shadow: inset 4px 0 0 #0e8f52; }
+.mt-row-label.epic.status-row-done_delayed, .mt-row-label.epic.status-row-blocked { background: linear-gradient(90deg, rgba(176,51,28,.11), transparent 70%); box-shadow: inset 4px 0 0 #b0331c; }
+.work-label-copy { min-width: 0; flex: 1; }
+.work-title-line { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.work-title-line .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.work-title-line .mt-badge { flex-shrink: 0; }
 .mt-row-label.epic::before { content: ""; position: absolute; left: 20px; top: 0; width: 1px; height: 100%; background: var(--border-strong); }
 .mt-row-label.epic.last::before { height: 50%; }
 .mt-row-label.epic::after { content: ""; position: absolute; left: 20px; top: 50%; width: 12px; height: 1px; background: var(--border-strong); }
@@ -673,7 +682,9 @@ input:focus, textarea:focus, select:focus { border-color: #4f46e5; box-shadow: 0
 .mt-bar { position: relative; z-index: 1; display: flex; align-items: center; gap: 8px; min-width: 0; height: 24px; margin: 0 4px; border-radius: 7px; padding: 0 10px; color: #fff; box-shadow: 0 1px 2px rgba(23, 24, 28, .16); }
 .mt-bar .label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 750; }
 
-.mt-badge { border-radius: 100px; padding: 1px 7px; font-size: 10.5px; font-weight: 650; }
+.mt-badge { display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-width: 52px; min-height: 22px; border: 1px solid currentColor; border-radius: 100px; padding: 0 8px; font-size: 10.5px; font-weight: 900; line-height: 1; white-space: nowrap; box-shadow: inset 0 0 0 1px rgba(255,255,255,.55), 0 2px 5px rgba(23,24,28,.04); }
+.mt-badge::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; opacity: .8; }
+.mt-badge.status-in_progress, .mt-badge.status-in_progress_delayed, .mt-badge.status-done, .mt-badge.status-done_delayed { box-shadow: inset 0 0 0 1px rgba(255,255,255,.6), 0 4px 10px rgba(23,24,28,.07); }
 .mt-avatar { display: flex; align-items: center; justify-content: center; width: 16px; height: 16px; border: 1.2px dashed var(--ink-faint); border-radius: 50%; flex-shrink: 0; }
 .mt-delete { display: flex; align-items: center; justify-content: center; width: 26px; height: 26px; flex-shrink: 0; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); color: var(--ink-faint); opacity: 0; transition: opacity .12s ease, background .12s ease; }
 .mt-row-label:hover .mt-delete { opacity: 1; }
@@ -1368,6 +1379,8 @@ input:focus, textarea:focus, select:focus { border-color: var(--wia-blue); box-s
 }
 .project-board-toolbar h2 { margin: 0 0 4px; color: #202a3a; font-size: 17px; font-weight: 950; }
 .project-board-toolbar p { margin: 0; color: #66758d; font-size: 13px; }
+.weekly-page-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.weekly-schedule-btn,
 .weekly-open-btn {
   display: inline-flex;
   align-items: center;
@@ -1384,6 +1397,8 @@ input:focus, textarea:focus, select:focus { border-color: var(--wia-blue); box-s
   transition: var(--transition);
 }
 .weekly-open-btn:hover { background: #f7faff; transform: translateY(-1px); }
+.weekly-schedule-btn { border-color: #cbd7ec; background: rgba(255,255,255,.86); color: #334155; box-shadow: 0 10px 22px rgba(7,24,54,.12); }
+.weekly-schedule-btn:hover { border-color: var(--wia-blue); background: #eef4ff; color: var(--wia-blue); transform: translateY(-1px); }
 .weekly-report-section {
   border: 1px solid #dfe6f1;
   background: #fff;
@@ -1555,6 +1570,163 @@ input:focus, textarea:focus, select:focus { border-color: var(--wia-blue); box-s
 }
 .weekly-period-fields label { display: grid; gap: 7px; }
 .weekly-period-fields span { color: #354154; font-size: 12px; font-weight: 850; }
+.weekly-schedule-modal { gap: 16px; width: min(540px, 100%); padding: 20px; }
+
+.weekly-schedule-head { align-items: flex-start; }
+.weekly-schedule-head-copy { display: flex; align-items: flex-start; gap: 12px; }
+.weekly-schedule-head-icon {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 38px;
+  height: 38px;
+  background: #eef4ff;
+  color: var(--wia-blue);
+}
+.weekly-schedule-head-copy p { max-width: 34ch; }
+
+/* 자동 개설 스위치 */
+.weekly-schedule-switch {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border: 1px solid #dfe5ef;
+  padding: 13px 15px;
+  background: #fbfcff;
+  cursor: pointer;
+  transition: var(--transition);
+}
+.weekly-schedule-switch:hover { border-color: #b8c5dc; }
+.weekly-schedule-switch.on { border-color: #b8c5dc; background: #f7faff; }
+.weekly-schedule-switch-icon {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  background: #eef1f6;
+  color: #8d97a8;
+  transition: var(--transition);
+}
+.weekly-schedule-switch.on .weekly-schedule-switch-icon { background: var(--wia-blue); color: #fff; }
+.weekly-schedule-switch-copy { display: grid; gap: 3px; flex: 1; min-width: 0; }
+.weekly-schedule-switch-copy b { color: #202a3a; font-size: 13px; font-weight: 950; }
+.weekly-schedule-switch-copy small { color: #66758d; font-size: 12px; line-height: 1.45; }
+.weekly-schedule-switch input { position: absolute; opacity: 0; pointer-events: none; }
+.weekly-schedule-switch-track {
+  position: relative;
+  flex-shrink: 0;
+  width: 44px;
+  height: 24px;
+  border: 1px solid #cbd3e0;
+  background: #e2e7f0;
+  transition: var(--transition);
+}
+.weekly-schedule-switch-track i {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(7, 24, 54, .3);
+  transition: transform 170ms cubic-bezier(.4, 0, .2, 1);
+}
+.weekly-schedule-switch.on .weekly-schedule-switch-track { border-color: var(--wia-blue); background: var(--wia-blue); }
+.weekly-schedule-switch.on .weekly-schedule-switch-track i { transform: translateX(20px); }
+.weekly-schedule-switch input:focus-visible ~ .weekly-schedule-switch-track { box-shadow: 0 0 0 3px rgba(6, 41, 131, .18); }
+
+/* 요일 / 시간 / 기간 */
+.weekly-schedule-body { display: grid; gap: 15px; min-width: 0; margin: 0; border: 0; padding: 0; transition: var(--transition); }
+.weekly-schedule-body:disabled { opacity: .45; }
+.weekly-schedule-row { display: grid; grid-template-columns: repeat(2, 150px); justify-content: start; gap: 12px; }
+.weekly-schedule-field { display: grid; gap: 8px; min-width: 0; }
+.weekly-schedule-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #354154;
+  font-size: 12px;
+  font-weight: 850;
+}
+.weekly-schedule-label svg { color: #8d97a8; }
+.weekly-schedule-label em { color: #8d97a8; font-size: 11px; font-style: normal; font-weight: 800; }
+
+.weekly-schedule-days { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 5px; }
+.weekly-schedule-day {
+  min-height: 40px;
+  border: 1px solid #b8c5dc;
+  background: #fff;
+  color: var(--wia-blue);
+  font-size: 13px;
+  font-weight: 850;
+  transition: var(--transition);
+}
+.weekly-schedule-day.weekend { color: #8d97a8; }
+.weekly-schedule-day:hover:not(.active) { border-color: var(--wia-blue); background: #f7faff; color: var(--wia-blue); }
+.weekly-schedule-day.active {
+  border-color: var(--wia-blue);
+  background: var(--wia-blue);
+  color: #fff;
+  box-shadow: 0 8px 18px rgba(6, 41, 131, .18);
+}
+
+.weekly-schedule-time {
+  width: 100%;
+  min-height: 40px;
+  padding: 0 11px;
+  font-size: 14px;
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+}
+
+.weekly-schedule-interval-input {
+  display: flex;
+  align-items: center;
+  border: 1px solid #dfe5ef;
+  background: #fbfcff;
+  transition: var(--transition);
+}
+.weekly-schedule-interval-input:focus-within { border-color: var(--wia-blue); box-shadow: 0 0 0 3px rgba(6, 41, 131, .08); }
+.weekly-schedule-interval-input input {
+  width: 100%;
+  min-width: 0;
+  min-height: 40px;
+  border: 0;
+  outline: 0;
+  padding: 0 4px 0 11px;
+  background: transparent;
+  font-size: 14px;
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+}
+.weekly-schedule-interval-input input:focus { box-shadow: none; }
+.weekly-schedule-interval-input span { flex-shrink: 0; padding-right: 11px; color: #66758d; font-size: 12.5px; font-weight: 850; }
+
+/* 미리보기 */
+.weekly-schedule-preview {
+  display: grid;
+  gap: 5px;
+  border: 1px solid #cbd7ec;
+  border-left: 3px solid var(--wia-blue);
+  padding: 13px 15px;
+  background: #f7faff;
+}
+.weekly-schedule-preview-badge {
+  justify-self: start;
+  color: var(--wia-blue);
+  font-size: 11px;
+  font-weight: 950;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+.weekly-schedule-preview strong { color: #171b24; font-size: 16px; font-weight: 950; letter-spacing: -.01em; font-variant-numeric: tabular-nums; }
+.weekly-schedule-preview span { color: #526078; font-size: 12.5px; line-height: 1.55; }
+.weekly-schedule-preview.muted { border-color: var(--line); border-left-color: #b8c5dc; background: #f5f7fb; }
+.weekly-schedule-preview.muted .weekly-schedule-preview-badge { color: #8d97a8; }
+.weekly-schedule-preview.muted strong { color: #66758d; }
+.weekly-schedule-preview.muted span { color: #8d97a8; }
 .compact-modal { width: min(420px, 100%); }
 .weekly-delete-confirm-modal { position: relative; gap: 16px; width: min(460px, 100%); padding: 22px; border-top: 4px solid #b31220; }
 .weekly-delete-confirm-icon { display: grid; place-items: center; width: 48px; height: 48px; border-radius: 999px; background: #fff0f2; color: #b31220; }
@@ -2096,6 +2268,30 @@ input:focus, textarea:focus, select:focus { border-color: var(--wia-blue); box-s
 .project-modal-head h2 { margin: 0; color: #171b24; font-size: 18px; font-weight: 950; }
 .project-modal-head p { margin: 4px 0 0; color: #66758d; font-size: 13px; }
 .project-modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.project-create-modal { width: min(600px, 100%); gap: 0; overflow: hidden; border-color: #d9e2f0; border-radius: 8px; background: #fbfcff; padding: 0; }
+.project-create-modal .project-modal-head { padding: 20px 22px; border-bottom: 1px solid #e5ebf4; background: #f7faff; }
+.project-create-modal .project-modal-head h2 { font-size: 20px; }
+.project-create-summary { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin: 16px 18px 0; }
+.project-create-summary div { display: grid; gap: 5px; border: 1px solid #e3eaf5; border-radius: 8px; background: #fff; padding: 12px 14px; }
+.project-create-summary span { color: #66758d; font-size: 11.5px; font-weight: 850; }
+.project-create-summary strong { color: #202a3a; font-size: 15px; font-weight: 950; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.project-create-modal .project-leader-field,
+.project-create-modal .project-member-picker { margin: 12px 18px 0; border: 1px solid #e3eaf5; border-radius: 8px; background: #fff; padding: 14px; }
+.project-create-modal .project-leader-field input,
+.project-create-modal .project-leader-field select { min-height: 42px; background: #fbfcff; }
+.project-create-modal .project-member-options.modal-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; max-height: 236px; padding: 0 2px 2px; }
+.project-create-modal .project-member-option,
+.project-create-modal .project-member-none { min-height: 48px; border-radius: 8px; background: #fbfcff; padding: 8px 10px; }
+.project-create-modal .project-member-option { align-items: center; }
+.project-create-modal .project-member-option:has(input:checked) { border-color: #9cb7e8; background: #eef4ff; box-shadow: inset 0 0 0 1px rgba(36,88,168,.08); }
+.project-create-modal .project-member-option input { accent-color: var(--wia-blue); }
+.project-member-option-copy { display: grid; gap: 2px; min-width: 0; }
+.project-member-option-copy b { color: #273244; font-size: 12.5px; font-weight: 950; line-height: 1.2; }
+.project-member-option-copy small { color: #66758d; font-size: 10.5px; font-weight: 800; line-height: 1.2; }
+.project-create-modal .project-member-option.disabled { border-style: dashed; background: #f2f5fa; }
+.project-create-modal .project-modal-actions { margin-top: 16px; border-top: 1px solid #e5ebf4; background: #fff; padding: 14px 18px 16px; }
+.project-create-modal .mt-btn.primary:disabled { cursor: not-allowed; border-color: #cfd8e6; background: #e7ecf4; color: #9aa7ba; box-shadow: none; opacity: 1; }
+.project-create-modal .mt-btn.primary:disabled:hover { transform: none; border-color: #cfd8e6; background: #e7ecf4; color: #9aa7ba; }
 .project-member-options.modal-options { max-height: 176px; overflow: auto; padding: 2px; }
 .work-modal { width: min(520px, 100%); }
 .work-modal-form {
@@ -2202,10 +2398,14 @@ input:focus, textarea:focus, select:focus { border-color: var(--wia-blue); box-s
   .weekly-entry-layout,
   .weekly-entry-fields,
   .weekly-period-fields,
+  .weekly-schedule-row,
   .weekly-project-choice-list,
-  .work-modal-form { grid-template-columns: 1fr; }
+  .work-modal-form,
+  .project-create-summary,
+  .project-create-modal .project-member-options.modal-options { grid-template-columns: 1fr; }
   .project-board-toolbar,
   .weekly-open-btn,
+  .weekly-page-actions,
   .weekly-report-head,
   .weekly-report-head-actions,
   .weekly-entry-panel-head,

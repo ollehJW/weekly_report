@@ -28,7 +28,10 @@ WORKSPACE_PATH.mkdir(parents=True, exist_ok=True)
 INITIAL_PASSWORD = "wia1234!"
 OTHER_WORK_PROJECT_NAME = "기타 업무 (교육/출장 등)"
 KST = ZoneInfo("Asia/Seoul")
-WEEKLY_REPORT_SCHEDULE_WEEKDAY = 4
+DEFAULT_REPORT_SCHEDULE_WEEKDAY = 4
+DEFAULT_REPORT_SCHEDULE_TIME = "17:00"
+DEFAULT_REPORT_SCHEDULE_INTERVAL_DAYS = 7
+WEEKLY_REPORT_SCHEDULE_WEEKDAY = DEFAULT_REPORT_SCHEDULE_WEEKDAY
 WEEKLY_REPORT_SCHEDULE_HOUR = 17
 
 
@@ -75,6 +78,10 @@ def public_team(row):
         return None
     data.pop("password_hash", None)
     data["must_change_password"] = bool(data.get("must_change_password"))
+    data["report_schedule_enabled"] = bool(data.get("report_schedule_enabled", 1))
+    data["report_schedule_weekday"] = int(data.get("report_schedule_weekday") or DEFAULT_REPORT_SCHEDULE_WEEKDAY)
+    data["report_schedule_time"] = data.get("report_schedule_time") or DEFAULT_REPORT_SCHEDULE_TIME
+    data["report_schedule_interval_days"] = int(data.get("report_schedule_interval_days") or DEFAULT_REPORT_SCHEDULE_INTERVAL_DAYS)
     return data
 
 
@@ -104,10 +111,30 @@ def init_db():
                 login_id TEXT NOT NULL UNIQUE,
                 password_hash TEXT NOT NULL,
                 must_change_password INTEGER NOT NULL DEFAULT 1,
+                report_schedule_enabled INTEGER NOT NULL DEFAULT 1,
+                report_schedule_weekday INTEGER NOT NULL DEFAULT 4,
+                report_schedule_time TEXT NOT NULL DEFAULT '17:00',
+                report_schedule_interval_days INTEGER NOT NULL DEFAULT 7,
                 created_at TEXT NOT NULL
             )
             """
         )
+        if not has_column(conn, "teams", "report_schedule_enabled"):
+            conn.execute("ALTER TABLE teams ADD COLUMN report_schedule_enabled INTEGER NOT NULL DEFAULT 1")
+        if not has_column(conn, "teams", "report_schedule_weekday"):
+            conn.execute("ALTER TABLE teams ADD COLUMN report_schedule_weekday INTEGER NOT NULL DEFAULT 4")
+        if not has_column(conn, "teams", "report_schedule_time"):
+            conn.execute("ALTER TABLE teams ADD COLUMN report_schedule_time TEXT NOT NULL DEFAULT '17:00'")
+        if not has_column(conn, "teams", "report_schedule_interval_days"):
+            conn.execute("ALTER TABLE teams ADD COLUMN report_schedule_interval_days INTEGER NOT NULL DEFAULT 7")
+        conn.execute("""
+            UPDATE teams
+            SET report_schedule_enabled = 1,
+                report_schedule_weekday = 4,
+                report_schedule_time = '17:00',
+                report_schedule_interval_days = 7
+            WHERE login_id = 'dx_lab' OR department = 'DX추진랩'
+            """)
         conn.execute("DROP TABLE IF EXISTS user_db")
         conn.execute(
             """
@@ -674,40 +701,85 @@ def backfill_project_tracking(conn):
         )
 
 
-def scheduled_weekly_report_period(now_kst=None):
+def parse_schedule_time(value):
+    text = value or DEFAULT_REPORT_SCHEDULE_TIME
+    try:
+        hour_text, minute_text = str(text).split(":", 1)
+        hour = int(hour_text)
+        minute = int(minute_text)
+    except (TypeError, ValueError):
+        hour, minute = 17, 0
+    hour = min(max(hour, 0), 23)
+    minute = min(max(minute, 0), 59)
+    return hour, minute
+
+
+def normalized_report_schedule(row):
+    return {
+        "enabled": bool(row["report_schedule_enabled"] if "report_schedule_enabled" in row.keys() else 1),
+        "weekday": int(row["report_schedule_weekday"] if "report_schedule_weekday" in row.keys() else DEFAULT_REPORT_SCHEDULE_WEEKDAY),
+        "time": row["report_schedule_time"] if "report_schedule_time" in row.keys() else DEFAULT_REPORT_SCHEDULE_TIME,
+        "interval_days": int(row["report_schedule_interval_days"] if "report_schedule_interval_days" in row.keys() else DEFAULT_REPORT_SCHEDULE_INTERVAL_DAYS),
+    }
+
+
+def scheduled_weekly_report_period_for_team(team, now_kst=None):
     now_kst = now_kst or datetime.now(KST)
-    days_since_friday = (now_kst.weekday() - WEEKLY_REPORT_SCHEDULE_WEEKDAY) % 7
-    start = now_kst.date() - timedelta(days=days_since_friday)
-    due_at = datetime(
-        start.year,
-        start.month,
-        start.day,
-        WEEKLY_REPORT_SCHEDULE_HOUR,
-        0,
-        0,
-        tzinfo=KST,
-    )
+    schedule = normalized_report_schedule(team)
+    if not schedule["enabled"]:
+        return None
+    weekday = min(max(schedule["weekday"], 0), 6)
+    interval_days = min(max(schedule["interval_days"], 1), 31)
+    hour, minute = parse_schedule_time(schedule["time"])
+    days_since_schedule_day = (now_kst.weekday() - weekday) % 7
+    start = now_kst.date() - timedelta(days=days_since_schedule_day)
+    due_at = datetime(start.year, start.month, start.day, hour, minute, 0, tzinfo=KST)
     if now_kst < due_at:
         return None
-    return start, start + timedelta(days=6)
+    return start, start + timedelta(days=interval_days - 1)
+
+
+def scheduled_weekly_report_period(now_kst=None):
+    return scheduled_weekly_report_period_for_team({
+        "report_schedule_enabled": 1,
+        "report_schedule_weekday": DEFAULT_REPORT_SCHEDULE_WEEKDAY,
+        "report_schedule_time": DEFAULT_REPORT_SCHEDULE_TIME,
+        "report_schedule_interval_days": DEFAULT_REPORT_SCHEDULE_INTERVAL_DAYS,
+    }, now_kst)
+
+
+def seconds_until_next_report_schedule_for_team(team, now_kst=None):
+    now_kst = now_kst or datetime.now(KST)
+    schedule = normalized_report_schedule(team)
+    if not schedule["enabled"]:
+        return None
+    weekday = min(max(schedule["weekday"], 0), 6)
+    hour, minute = parse_schedule_time(schedule["time"])
+    days_until_schedule_day = (weekday - now_kst.weekday()) % 7
+    target_date = now_kst.date() + timedelta(days=days_until_schedule_day)
+    target_at = datetime(target_date.year, target_date.month, target_date.day, hour, minute, 0, tzinfo=KST)
+    if target_at <= now_kst:
+        target_at += timedelta(days=7)
+    return max(1, int((target_at - now_kst).total_seconds()))
 
 
 def seconds_until_next_weekly_report_schedule(now_kst=None):
     now_kst = now_kst or datetime.now(KST)
-    days_until_friday = (WEEKLY_REPORT_SCHEDULE_WEEKDAY - now_kst.weekday()) % 7
-    target_date = now_kst.date() + timedelta(days=days_until_friday)
-    target_at = datetime(
-        target_date.year,
-        target_date.month,
-        target_date.day,
-        WEEKLY_REPORT_SCHEDULE_HOUR,
-        0,
-        0,
-        tzinfo=KST,
-    )
-    if target_at <= now_kst:
-        target_at += timedelta(days=7)
-    return max(1, int((target_at - now_kst).total_seconds()))
+    try:
+        with get_conn() as conn:
+            teams = conn.execute("SELECT * FROM teams ORDER BY created_at ASC").fetchall()
+            seconds = [seconds_until_next_report_schedule_for_team(team, now_kst) for team in teams]
+            seconds = [value for value in seconds if value is not None]
+            if seconds:
+                return min(seconds)
+    except Exception:
+        pass
+    return seconds_until_next_report_schedule_for_team({
+        "report_schedule_enabled": 1,
+        "report_schedule_weekday": DEFAULT_REPORT_SCHEDULE_WEEKDAY,
+        "report_schedule_time": DEFAULT_REPORT_SCHEDULE_TIME,
+        "report_schedule_interval_days": DEFAULT_REPORT_SCHEDULE_INTERVAL_DAYS,
+    }, now_kst)
 
 
 async def weekly_report_scheduler():
@@ -826,6 +898,13 @@ class ProjectMembersIn(BaseModel):
 class ReportIn(BaseModel):
     start_date: date
     end_date: date
+
+
+class ReportScheduleIn(BaseModel):
+    enabled: bool = True
+    weekday: int = Field(ge=0, le=6)
+    time: str = Field(pattern=r"^([01][0-9]|2[0-3]):[0-5][0-9]$")
+    interval_days: int = Field(ge=1, le=31)
 
 
 class ReportEntryAuthIn(BaseModel):
@@ -1728,22 +1807,24 @@ def create_weekly_report(conn, team_id: str, start_date: date, end_date: date, s
 
 
 def create_due_weekly_reports(now_kst=None):
-    period = scheduled_weekly_report_period(now_kst)
-    if not period:
-        return []
-    start_date, end_date = period
+    now_kst = now_kst or datetime.now(KST)
     created_reports = []
+    created_periods = {}
     with get_conn() as conn:
-        teams = conn.execute("SELECT team_id FROM teams ORDER BY created_at ASC").fetchall()
+        teams = conn.execute("SELECT * FROM teams ORDER BY created_at ASC").fetchall()
         for team in teams:
+            period = scheduled_weekly_report_period_for_team(team, now_kst)
+            if not period:
+                continue
+            start_date, end_date = period
             row, created = create_weekly_report(conn, team["team_id"], start_date, end_date, skip_existing=True)
             if created:
                 created_reports.append(row["report_id"])
+                key = f"{start_date}..{end_date}"
+                created_periods[key] = created_periods.get(key, 0) + 1
     if created_reports:
-        print(
-            f"created weekly reports for {start_date}..{end_date}: {len(created_reports)}",
-            flush=True,
-        )
+        summary = ", ".join(f"{period}: {count}" for period, count in created_periods.items())
+        print(f"created scheduled weekly reports: {summary}", flush=True)
     return created_reports
 
 
@@ -2348,6 +2429,40 @@ def create_report(team_id: str, payload: ReportIn):
     with get_conn() as conn:
         row, _ = create_weekly_report(conn, team_id, payload.start_date, payload.end_date)
         return report_with_entries(conn, row)
+
+
+@app.get("/api/teams/{team_id}/report-schedule")
+def get_report_schedule(team_id: str):
+    with get_conn() as conn:
+        team = ensure_team(conn, team_id)
+        schedule = normalized_report_schedule(team)
+        return {**schedule, "timezone": "Asia/Seoul"}
+
+
+@app.put("/api/teams/{team_id}/report-schedule")
+def update_report_schedule(team_id: str, payload: ReportScheduleIn):
+    with get_conn() as conn:
+        ensure_team(conn, team_id)
+        conn.execute(
+            """
+            UPDATE teams
+            SET report_schedule_enabled = ?,
+                report_schedule_weekday = ?,
+                report_schedule_time = ?,
+                report_schedule_interval_days = ?
+            WHERE team_id = ?
+            """,
+            (
+                1 if payload.enabled else 0,
+                payload.weekday,
+                payload.time,
+                payload.interval_days,
+                team_id,
+            ),
+        )
+        team = ensure_team(conn, team_id)
+        schedule = normalized_report_schedule(team)
+        return {**schedule, "timezone": "Asia/Seoul"}
 
 
 @app.put("/api/reports/{report_id}/complete")

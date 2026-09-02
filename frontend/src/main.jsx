@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { Plus, Trash2, AudioWaveform, User, ChevronRight, Pencil, Save, X, KeyRound, LogOut, Users, ClipboardList, GripVertical, HelpCircle, Check, FileText, Link2, ImagePlus, AlertTriangle, History, ExternalLink } from 'lucide-react';
+import { Plus, Trash2, AudioWaveform, User, ChevronRight, Pencil, Save, X, KeyRound, LogOut, Users, ClipboardList, GripVertical, HelpCircle, Check, FileText, Link2, ImagePlus, AlertTriangle, History, ExternalLink, CalendarClock, Clock, CalendarRange, Zap } from 'lucide-react';
 import './styles.css';
 
 const API_BASE = import.meta.env.VITE_API_BASE || `${window.location.protocol}//${window.location.hostname}:9601`;
@@ -14,6 +14,44 @@ const DAY = 24 * 60 * 60 * 1000;
 const DOW = ['일', '월', '화', '수', '목', '금', '토'];
 const INITIAL_PASSWORD = 'wia1234!';
 const OTHER_WORK_PROJECT_NAME = '기타 업무 (교육/출장 등)';
+const WEEKDAY_OPTIONS = [
+  { value: 0, label: "월요일" },
+  { value: 1, label: "화요일" },
+  { value: 2, label: "수요일" },
+  { value: 3, label: "목요일" },
+  { value: 4, label: "금요일" },
+  { value: 5, label: "토요일" },
+  { value: 6, label: "일요일" },
+];
+const DEFAULT_REPORT_SCHEDULE = { enabled: true, weekday: 4, time: "17:00", interval_days: 7 };
+const MIN_INTERVAL_DAYS = 1;
+const MAX_INTERVAL_DAYS = 31;
+
+function clampIntervalDays(value) {
+  const days = Math.round(Number(value));
+  if (!Number.isFinite(days) || days <= 0) return DEFAULT_REPORT_SCHEDULE.interval_days;
+  return Math.min(Math.max(days, MIN_INTERVAL_DAYS), MAX_INTERVAL_DAYS);
+}
+
+// weekday: 0=월 ~ 6=일, time: "HH:MM" — 한국시간 기준 다음 개설 시점
+function nextScheduleRun(weekday, time) {
+  const [hour, minute] = String(time || DEFAULT_REPORT_SCHEDULE.time).split(":").map(Number);
+  const nowKst = new Date(Date.now() + new Date().getTimezoneOffset() * 60000 + 9 * 3600000);
+  const todayIdx = (nowKst.getDay() + 6) % 7;
+  const run = new Date(nowKst);
+  run.setDate(run.getDate() + ((Number(weekday) - todayIdx + 7) % 7));
+  run.setHours(Number.isFinite(hour) ? hour : 17, Number.isFinite(minute) ? minute : 0, 0, 0);
+  if (run <= nowKst) run.setDate(run.getDate() + 7);
+  return run;
+}
+
+function formatKoreanDate(date) {
+  return date.getFullYear() + "년 " + (date.getMonth() + 1) + "월 " + date.getDate() + "일 (" + DOW[date.getDay()] + ")";
+}
+
+function formatShortDate(date) {
+  return (date.getMonth() + 1) + "월 " + date.getDate() + "일";
+}
 const ACCENTS = [
   { id: 'indigo', bar: '#4F46E5' },
   { id: 'teal', bar: '#0F8B8D' },
@@ -21,12 +59,12 @@ const ACCENTS = [
   { id: 'amber', bar: '#B8790F' },
 ];
 const STATUS_STYLE = {
-  planned: { label: '예정', bg: '#F1F0EC', text: '#6B6A63' },
-  in_progress: { label: '진행중', bg: '#EEEDFE', text: '#4F46E5' },
-  in_progress_delayed: { label: '진행 지연', bg: '#FFF4D6', text: '#9A5B00' },
-  done: { label: '완료', bg: '#E4F5EC', text: '#0E8F52' },
-  done_delayed: { label: '완료 지연', bg: '#FCF1EC', text: '#B0331C' },
-  blocked: { label: '차단', bg: '#FCF1EC', text: '#B0331C' },
+  planned: { label: '예정', bg: '#F7F5EF', text: '#5F5A4F', border: '#D8D1C3' },
+  in_progress: { label: '진행중', bg: '#EEEDFE', text: '#4F46E5', border: '#C7C2FF' },
+  in_progress_delayed: { label: '진행 지연', bg: '#FFF4D6', text: '#9A5B00', border: '#EAC46F' },
+  done: { label: '완료', bg: '#E4F5EC', text: '#0E8F52', border: '#A9D9BD' },
+  done_delayed: { label: '완료 지연', bg: '#FCF1EC', text: '#B0331C', border: '#E7B4A8' },
+  blocked: { label: '차단', bg: '#FCF1EC', text: '#B0331C', border: '#E7B4A8' },
 };
 const ROLE_LABELS = { L: '리더', CM: '책임매니저', M: '매니저' };
 const CALENDAR_EVENT_TYPES = {
@@ -182,6 +220,8 @@ function App() {
   const [weeklyReports, setWeeklyReports] = useState([]);
   const [weeklyReportDraft, setWeeklyReportDraft] = useState({ start_date: todayIso(), end_date: plusDays(todayIso(), 7) });
   const [isWeeklyReportModalOpen, setIsWeeklyReportModalOpen] = useState(false);
+  const [isWeeklyScheduleModalOpen, setIsWeeklyScheduleModalOpen] = useState(false);
+  const [weeklyScheduleDraft, setWeeklyScheduleDraft] = useState(DEFAULT_REPORT_SCHEDULE);
   const [weeklyWarningMessage, setWeeklyWarningMessage] = useState('');
   const [weeklyPasswordEntry, setWeeklyPasswordEntry] = useState(null);
   const [weeklyPasswordDraft, setWeeklyPasswordDraft] = useState('');
@@ -282,6 +322,15 @@ function App() {
     setWeeklyReports(reports || []);
   }
 
+  async function loadWeeklySchedule(teamId = currentTeam?.team_id) {
+    if (!teamId) {
+      setWeeklyScheduleDraft(DEFAULT_REPORT_SCHEDULE);
+      return;
+    }
+    const schedule = await request("/api/teams/" + teamId + "/report-schedule");
+    setWeeklyScheduleDraft({ ...DEFAULT_REPORT_SCHEDULE, ...schedule });
+  }
+
   function updateWeeklyReportState(report) {
     if (!report?.report_id) return;
     setWeeklyReports((prev) => prev.map((item) => (item.report_id === report.report_id ? report : item)));
@@ -296,6 +345,7 @@ function App() {
       currentTeam?.team_id ? loadMembers(currentTeam.team_id) : Promise.resolve(),
       currentTeam?.team_id ? loadTeamProjects(currentTeam.team_id) : Promise.resolve(),
       currentTeam?.team_id ? loadWeeklyReport(currentTeam.team_id) : Promise.resolve(),
+      currentTeam?.team_id ? loadWeeklySchedule(currentTeam.team_id) : Promise.resolve(),
     ]);
   }
 
@@ -321,6 +371,7 @@ function App() {
       loadMembers(currentTeam.team_id),
       loadTeamProjects(currentTeam.team_id),
       loadWeeklyReport(currentTeam.team_id),
+      loadWeeklySchedule(currentTeam.team_id),
       loadProjects(undefined, currentTeam.team_id).then((projectId) => loadMilestones(projectId)),
     ]).catch((err) => setError(err.message));
   }, [currentTeam?.team_id]);
@@ -408,7 +459,7 @@ function App() {
   }
 
   async function createTeamProject() {
-    if (!currentTeam?.team_id || !teamProjectDraft.project_name.trim()) return;
+    if (!currentTeam?.team_id || !teamProjectDraft.project_name.trim() || !teamProjectDraft.leaderId) return;
     const memberIds = (teamProjectDraft.memberIds || []).filter((userId) => userId && userId !== teamProjectDraft.leaderId);
     const payload = {
       project_name: teamProjectDraft.project_name.trim(),
@@ -707,6 +758,35 @@ function App() {
     }
   }
 
+  async function saveWeeklyReportSchedule() {
+    if (!currentTeam?.team_id) return;
+    const payload = {
+      enabled: Boolean(weeklyScheduleDraft.enabled),
+      weekday: Number(weeklyScheduleDraft.weekday),
+      time: weeklyScheduleDraft.time || DEFAULT_REPORT_SCHEDULE.time,
+      interval_days: clampIntervalDays(weeklyScheduleDraft.interval_days),
+    };
+    try {
+      const schedule = await request("/api/teams/" + currentTeam.team_id + "/report-schedule", {
+        method: "PUT",
+        body: JSON.stringify(payload),
+      });
+      const nextSchedule = { ...DEFAULT_REPORT_SCHEDULE, ...schedule };
+      setWeeklyScheduleDraft(nextSchedule);
+      setCurrentTeam((prev) => prev ? {
+        ...prev,
+        report_schedule_enabled: nextSchedule.enabled,
+        report_schedule_weekday: nextSchedule.weekday,
+        report_schedule_time: nextSchedule.time,
+        report_schedule_interval_days: nextSchedule.interval_days,
+      } : prev);
+      setIsWeeklyScheduleModalOpen(false);
+      setError("");
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
   async function deleteWeeklyReport(reportId) {
     if (!reportId) return;
     try {
@@ -952,6 +1032,11 @@ function App() {
             setWeeklyReportDraft={setWeeklyReportDraft}
             isWeeklyReportModalOpen={isWeeklyReportModalOpen}
             setIsWeeklyReportModalOpen={setIsWeeklyReportModalOpen}
+            isWeeklyScheduleModalOpen={isWeeklyScheduleModalOpen}
+            setIsWeeklyScheduleModalOpen={setIsWeeklyScheduleModalOpen}
+            weeklyScheduleDraft={weeklyScheduleDraft}
+            setWeeklyScheduleDraft={setWeeklyScheduleDraft}
+            onSaveWeeklyReportSchedule={saveWeeklyReportSchedule}
             onCreateWeeklyReportPeriod={createWeeklyReportPeriod}
             weeklyWarningMessage={weeklyWarningMessage}
             setWeeklyWarningMessage={setWeeklyWarningMessage}
@@ -1019,6 +1104,13 @@ function App() {
         )}
       </section>
 
+      {currentTeam.must_change_password && (
+        <PasswordChangeModal
+          passwordDraft={passwordDraft}
+          setPasswordDraft={setPasswordDraft}
+          onChangePassword={changePassword}
+        />
+      )}
       {isUsageGuideOpen && <UsageGuideModal onClose={() => setIsUsageGuideOpen(false)} />}
     </main>
   );
@@ -1598,6 +1690,11 @@ function WeeklyReportPage({
   setWeeklyReportDraft,
   isWeeklyReportModalOpen,
   setIsWeeklyReportModalOpen,
+  isWeeklyScheduleModalOpen,
+  setIsWeeklyScheduleModalOpen,
+  weeklyScheduleDraft,
+  setWeeklyScheduleDraft,
+  onSaveWeeklyReportSchedule,
   onCreateWeeklyReportPeriod,
   weeklyWarningMessage,
   setWeeklyWarningMessage,
@@ -1789,7 +1886,10 @@ function WeeklyReportPage({
         <div>
           <h1>주간 보고 작성</h1>
         </div>
-        <button className="weekly-open-btn" type="button" onClick={() => setIsWeeklyReportModalOpen(true)}><Plus size={16} />새 보고 주간 개설</button>
+        <div className="weekly-page-actions">
+          <button className="weekly-schedule-btn" type="button" onClick={() => setIsWeeklyScheduleModalOpen(true)}><CalendarClock size={16} />개설 스케쥴링</button>
+          <button className="weekly-open-btn" type="button" onClick={() => setIsWeeklyReportModalOpen(true)}><Plus size={16} />새 보고 주간 개설</button>
+        </div>
       </div>
 
       {hasWeeklyReports ? (
@@ -1860,6 +1960,108 @@ function WeeklyReportPage({
           </div>
         </div>
       )}
+
+      {isWeeklyScheduleModalOpen && (() => {
+        const scheduleEnabled = !!weeklyScheduleDraft.enabled;
+        const scheduleTime = weeklyScheduleDraft.time || DEFAULT_REPORT_SCHEDULE.time;
+        const scheduleInterval = clampIntervalDays(weeklyScheduleDraft.interval_days);
+        const nextRun = nextScheduleRun(weeklyScheduleDraft.weekday, scheduleTime);
+        const nextEnd = new Date(nextRun);
+        nextEnd.setDate(nextEnd.getDate() + scheduleInterval - 1);
+        return (
+        <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && setIsWeeklyScheduleModalOpen(false)}>
+          <div className="weekly-report-modal weekly-schedule-modal" role="dialog" aria-modal="true" aria-labelledby="weekly-schedule-title" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="project-modal-head weekly-schedule-head">
+              <div className="weekly-schedule-head-copy">
+                <span className="weekly-schedule-head-icon"><CalendarClock size={19} /></span>
+                <div>
+                  <h2 id="weekly-schedule-title">보고 주간 개설 스케쥴링</h2>
+                  <p>설정한 주기에 맞춰 보고 주간이 자동으로 열립니다.</p>
+                </div>
+              </div>
+              <button className="icon-btn" type="button" onClick={() => setIsWeeklyScheduleModalOpen(false)} aria-label="닫기"><X size={16} /></button>
+            </div>
+
+            <label className={`weekly-schedule-switch${scheduleEnabled ? " on" : ""}`}>
+              <span className="weekly-schedule-switch-icon"><Zap size={16} /></span>
+              <span className="weekly-schedule-switch-copy">
+                <b>자동 개설 사용</b>
+                <small>{scheduleEnabled ? "예약된 시각에 보고 주간이 자동 생성됩니다." : "직접 개설할 때만 보고 주간이 만들어집니다."}</small>
+              </span>
+              <input type="checkbox" checked={scheduleEnabled} onChange={(e) => setWeeklyScheduleDraft({ ...weeklyScheduleDraft, enabled: e.target.checked })} />
+              <span className="weekly-schedule-switch-track" aria-hidden="true"><i /></span>
+            </label>
+
+            <fieldset className="weekly-schedule-body" disabled={!scheduleEnabled}>
+              <div className="weekly-schedule-field">
+                <span className="weekly-schedule-label"><CalendarRange size={13} />개설 요일</span>
+                <div className="weekly-schedule-days" role="radiogroup" aria-label="개설 요일">
+                  {WEEKDAY_OPTIONS.map((day) => (
+                    <button
+                      key={day.value}
+                      type="button"
+                      role="radio"
+                      aria-checked={Number(weeklyScheduleDraft.weekday) === day.value}
+                      className={`weekly-schedule-day${Number(weeklyScheduleDraft.weekday) === day.value ? " active" : ""}${day.value >= 5 ? " weekend" : ""}`}
+                      onClick={() => setWeeklyScheduleDraft({ ...weeklyScheduleDraft, weekday: day.value })}
+                    >{day.label.charAt(0)}</button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="weekly-schedule-row">
+                <div className="weekly-schedule-field">
+                  <span className="weekly-schedule-label"><Clock size={13} />개설 시간</span>
+                  <input
+                    className="weekly-schedule-time"
+                    type="time"
+                    value={scheduleTime}
+                    onChange={(e) => setWeeklyScheduleDraft({ ...weeklyScheduleDraft, time: e.target.value })}
+                  />
+                </div>
+                <div className="weekly-schedule-field">
+                  <span className="weekly-schedule-label"><CalendarClock size={13} />보고 기간<em>{MIN_INTERVAL_DAYS}~{MAX_INTERVAL_DAYS}일</em></span>
+                  <div className="weekly-schedule-interval-input">
+                    <input
+                      type="number"
+                      min={MIN_INTERVAL_DAYS}
+                      max={MAX_INTERVAL_DAYS}
+                      step={1}
+                      inputMode="numeric"
+                      aria-label="보고 기간 (일)"
+                      value={weeklyScheduleDraft.interval_days ?? ""}
+                      onChange={(e) => setWeeklyScheduleDraft({ ...weeklyScheduleDraft, interval_days: e.target.value === "" ? "" : Number(e.target.value) })}
+                      onBlur={(e) => setWeeklyScheduleDraft({ ...weeklyScheduleDraft, interval_days: clampIntervalDays(e.target.value) })}
+                    />
+                    <span>일</span>
+                  </div>
+                </div>
+              </div>
+            </fieldset>
+
+            <div className={`weekly-schedule-preview${scheduleEnabled ? "" : " muted"}`}>
+              <span className="weekly-schedule-preview-badge">{scheduleEnabled ? "다음 개설 예정" : "사용 안 함"}</span>
+              {scheduleEnabled ? (
+                <>
+                  <strong>{formatKoreanDate(nextRun)} {scheduleTime}</strong>
+                  <span>{formatShortDate(nextRun)} ~ {formatShortDate(nextEnd)} ({scheduleInterval}일)의 보고 기간이 한국시간 기준으로 생성됩니다.</span>
+                </>
+              ) : (
+                <>
+                  <strong>자동 개설이 꺼져 있습니다</strong>
+                  <span>보고 주간은 &lsquo;새 보고 주간 개설&rsquo; 버튼으로만 만들 수 있습니다.</span>
+                </>
+              )}
+            </div>
+
+            <div className="project-modal-actions">
+              <button className="mt-btn" type="button" onClick={() => setIsWeeklyScheduleModalOpen(false)}>취소</button>
+              <button className="mt-btn primary" type="button" onClick={onSaveWeeklyReportSchedule}><Save size={13} />저장</button>
+            </div>
+          </div>
+        </div>
+        );
+      })()}
 
       {isWeeklyReportModalOpen && (
         <div className="modal-backdrop" role="presentation">
@@ -2463,6 +2665,10 @@ function ProjectManagementBoard({ members, teamProjects, teamProjectDraft, setTe
   const inProgressProjects = teamProjects.filter((project) => project.status !== 'done');
   const doneProjects = teamProjects.filter((project) => project.status === 'done');
 
+  const selectedLeader = members.find((member) => member.user_id === teamProjectDraft.leaderId);
+  const selectedMemberCount = (teamProjectDraft.memberIds || []).length;
+  const canSaveProject = Boolean(teamProjectDraft.project_name.trim() && teamProjectDraft.leaderId);
+
   function updateDraftMember(userId, checked) {
     setTeamProjectDraft((prev) => {
       const currentIds = prev.memberIds || [];
@@ -2514,7 +2720,7 @@ function ProjectManagementBoard({ members, teamProjects, teamProjectDraft, setTe
 
       {isProjectModalOpen && (
         <div className="modal-backdrop" role="presentation">
-          <div className="project-modal" role="dialog" aria-modal="true" aria-labelledby="project-create-title">
+          <div className="project-modal project-create-modal" role="dialog" aria-modal="true" aria-labelledby="project-create-title">
             <div className="project-modal-head">
               <div>
                 <h2 id="project-create-title">{editingTeamProjectId ? '과제 수정' : '과제 추가'}</h2>
@@ -2522,9 +2728,13 @@ function ProjectManagementBoard({ members, teamProjects, teamProjectDraft, setTe
               </div>
               <button className="icon-btn" type="button" onClick={closeModal} aria-label="닫기"><X size={16} /></button>
             </div>
+            <div className="project-create-summary" aria-label="과제 구성 요약">
+              <div><span>리더</span><strong>{selectedLeader ? selectedLeader.name : "미지정"}</strong></div>
+              <div><span>참여 멤버</span><strong>{selectedMemberCount}명</strong></div>
+            </div>
             <label className="project-leader-field">
               <span>과제명</span>
-              <input autoFocus placeholder="과제명을 입력하세요" value={teamProjectDraft.project_name} onChange={(e) => setTeamProjectDraft((prev) => ({ ...prev, project_name: e.target.value }))} onKeyDown={(e) => e.key === 'Enter' && onCreateTeamProject()} />
+              <input autoFocus placeholder="과제명을 입력하세요" value={teamProjectDraft.project_name} onChange={(e) => setTeamProjectDraft((prev) => ({ ...prev, project_name: e.target.value }))} onKeyDown={(e) => e.key === 'Enter' && canSaveProject && onCreateTeamProject()} />
             </label>
             <label className="project-leader-field">
               <span>과제 리더</span>
@@ -2543,7 +2753,7 @@ function ProjectManagementBoard({ members, teamProjects, teamProjectDraft, setTe
                   return (
                     <label className={`project-member-option${disabled ? ' disabled' : ''}`} key={member.user_id}>
                       <input type="checkbox" checked={checked} disabled={disabled} onChange={(e) => updateDraftMember(member.user_id, e.target.checked)} />
-                      <span>{member.name}</span>
+                      <span className="project-member-option-copy"><b>{member.name}</b><small>{disabled ? "리더" : ROLE_LABELS[member.role] || member.role}</small></span>
                     </label>
                   );
                 })}
@@ -2552,7 +2762,7 @@ function ProjectManagementBoard({ members, teamProjects, teamProjectDraft, setTe
             </div>
             <div className="project-modal-actions">
               <button className="mt-btn" type="button" onClick={closeModal}>취소</button>
-              <button className="mt-btn primary" type="button" onClick={onCreateTeamProject}><Save size={13} />{editingTeamProjectId ? '저장' : '추가'}</button>
+              <button className="mt-btn primary" type="button" disabled={!canSaveProject} onClick={onCreateTeamProject}><Save size={13} />{editingTeamProjectId ? '저장' : '추가'}</button>
             </div>
           </div>
         </div>
@@ -3356,10 +3566,14 @@ function ProjectTimeline({
   }
 
   function renderEpicLabel(epic, milestone, isLast) {
-    const status = STATUS_STYLE[normalizeStatus(epic.status)] || STATUS_STYLE.planned;
+    const statusKey = normalizeStatus(epic.status);
+    const status = STATUS_STYLE[statusKey] || STATUS_STYLE.planned;
     return (
-      <div className={`mt-row-label epic${isLast ? ' last' : ''}`} key={`axis-${epic.id}`}>
-        <div><div className="name">{epic.title}</div><div className="meta"><span className="mt-avatar"><User size={9} /></span>{epic.owner || '담당 미지정'} · <span className="mt-badge" style={{ background: status.bg, color: status.text }}>{status.label}</span></div></div>
+      <div className={"mt-row-label epic status-row-" + statusKey + (isLast ? " last" : "")} key={`axis-${epic.id}`}>
+        <div className="work-label-copy">
+          <div className="work-title-line"><div className="name">{epic.title}</div><span className={"mt-badge status-" + statusKey} style={{ background: status.bg, color: status.text, borderColor: status.border }}>{status.label}</span></div>
+          <div className="meta"><span className="mt-avatar"><User size={9} /></span>{epic.owner || "담당 미지정"}</div>
+        </div>
         <div className="row-actions">
           <button className="mt-icon-action" onClick={() => startEditEpic(epic, milestone)} aria-label="Work 편집"><Pencil size={13} /></button>
           <button className="mt-delete" onClick={() => onRemoveEpic(epic.id)} aria-label="Work 삭제"><Trash2 size={13} /></button>
