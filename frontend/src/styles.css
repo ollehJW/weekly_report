@@ -2958,19 +2958,94 @@ input:focus, textarea:focus, select:focus { border-color: var(--wia-blue); box-s
   .issue-management-footer { align-items: flex-start; flex-direction: column; }
 }
 
-.issue-management-sections { display: grid; gap: 18px; padding: 18px 24px 24px; }
-.issue-management-section { display: grid; gap: 12px; min-width: 0; }
-.issue-management-section + .issue-management-section { padding-top: 16px; border-top: 1px solid #edf0f5; }
-.issue-management-section-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 14px; }
+.issue-management-sections { display: grid; gap: 20px; padding: 18px 24px 24px; }
+/* 두 섹션을 각각 독립된 카드로 분리해 한눈에 갈리게 한다 */
+.issue-management-section {
+  display: grid;
+  gap: 0;
+  min-width: 0;
+  border: 1px solid #e2e7ef;
+  background: #fff;
+}
+.issue-management-section.ongoing { border-top: 3px solid #d7334f; }
+.issue-management-section.resolved { border-top: 3px solid #16834f; }
+.issue-management-section-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  border-bottom: 1px solid #e8ecf3;
+}
+.issue-management-section.ongoing .issue-management-section-head { background: #fef6f7; border-bottom-color: #f3dade; }
+.issue-management-section.resolved .issue-management-section-head { background: #f2faf5; border-bottom-color: #d3e9dc; }
+.issue-section-mark {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+}
+.issue-management-section.ongoing .issue-section-mark { background: #fbe0e4; color: #b8253d; }
+.issue-management-section.resolved .issue-section-mark { background: #d7efe1; color: #137547; }
+.issue-management-section-head > div { flex: 1; min-width: 0; }
 .issue-management-section-head h3 { margin: 0; color: #252d3a; font-size: 16px; font-weight: 950; }
-.issue-management-section-head p { margin: 4px 0 0; color: #7b879a; font-size: 12px; }
-.issue-management-section-head > span { display: inline-flex; align-items: center; min-height: 28px; border: 1px solid #dfe4ec; background: #fff; padding: 0 9px; color: #69758a; font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 11px; font-weight: 900; }
+.issue-management-section.ongoing .issue-management-section-head h3 { color: #a01e35; }
 .issue-management-section.resolved .issue-management-section-head h3 { color: #137547; }
-.issue-management-list { max-height: 420px; padding: 0; }
-.issue-management-section.resolved .issue-management-list { max-height: 320px; }
-.issue-management-item.resolved { border-color: #d8eadf; border-left-color: #16834f; background: linear-gradient(180deg, #fbfffd 0%, #fff 100%); opacity: 1; box-shadow: 0 8px 22px rgba(22, 131, 79, .06); }
-.issue-management-item.resolved:hover { border-color: #b7dbc4; box-shadow: 0 11px 28px rgba(22, 131, 79, .1); }
+.issue-management-section-head p { margin: 3px 0 0; color: #7b879a; font-size: 12px; }
+.issue-section-count {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  min-height: 28px;
+  border: 1px solid #dfe4ec;
+  background: #fff;
+  padding: 0 11px;
+  color: #69758a;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 11.5px;
+  font-weight: 900;
+}
+.issue-management-section.ongoing .issue-section-count { border-color: #edc3ca; color: #a01e35; }
+.issue-management-section.resolved .issue-section-count { border-color: #b7dbc4; color: #137547; }
+.issue-management-list { max-height: 420px; padding: 16px; }
+.issue-management-section.resolved .issue-management-list { max-height: 360px; background: #fbfdfc; }
+
+/* 해결된 이슈 카드 */
+.issue-management-item.resolved {
+  border-color: #d8eadf;
+  border-left-color: #16834f;
+  background: #fff;
+  opacity: 1;
+  box-shadow: 0 6px 18px rgba(22, 131, 79, .05);
+}
+.issue-management-item.resolved:hover { border-color: #96cdac; box-shadow: 0 11px 28px rgba(22, 131, 79, .12); }
 .issue-management-item.resolved h3 { color: #1f352b; }
+.issue-resolved-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  min-height: 22px;
+  border: 1px solid #a7d7b8;
+  background: #e7f6ed;
+  padding: 0 8px;
+  color: #137547;
+  font-size: 10.5px;
+  font-weight: 950;
+  letter-spacing: .02em;
+}
+.issue-management-period { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 7px; min-width: 0; }
+.issue-resolved-date {
+  display: inline-flex;
+  align-items: center;
+  border-left: 1px solid #cfe3d8;
+  padding-left: 7px;
+  color: #137547;
+  font-size: 11px;
+  font-weight: 950;
+  white-space: nowrap;
+}
 .issue-management-actions { display: inline-flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
 .issue-resolve-btn { display: inline-flex; align-items: center; gap: 5px; min-height: 28px; border: 1px solid #b8d0ff; background: #eef4ff; color: var(--wia-blue); padding: 0 9px; font-size: 10.5px; font-weight: 950; }
 .issue-resolve-btn:hover:not(:disabled) { background: var(--wia-blue); border-color: var(--wia-blue); color: #fff; }

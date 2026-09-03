@@ -3292,7 +3292,16 @@ function ProjectIssueManagement({ project }) {
     return value ? items.filter((item) => item.importance === value) : items;
   }
 
-  function importanceClass(value) {
+  function formatResolvedDate(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const utc = new Date(/[Zz]|[+-]\d{2}:?\d{2}$/.test(raw) ? raw : raw + "Z");
+  if (Number.isNaN(utc.getTime())) return raw.slice(0, 10).replaceAll("-", ".");
+  const kst = new Date(utc.getTime() + 9 * 3600000);
+  return kst.getUTCFullYear() + "." + String(kst.getUTCMonth() + 1).padStart(2, "0") + "." + String(kst.getUTCDate()).padStart(2, "0");
+}
+
+function importanceClass(value) {
     if (value === "상") return "high";
     if (value === "하") return "low";
     return "medium";
@@ -3387,6 +3396,7 @@ function ProjectIssueManagement({ project }) {
           return (
             <article className={"issue-management-item " + level + (isResolvedSection ? " resolved" : "")} key={item.issue_id}>
               <div className="issue-management-item-head">
+                {isResolvedSection && <span className="issue-resolved-chip"><Check size={11} strokeWidth={3} />해결</span>}
                 <span className={"issue-importance " + level}>중요도 {item.importance}</span>
                 <span className="issue-management-author">{item.reported_by} {ROLE_LABELS[item.reported_role] || item.reported_role}</span>
               </div>
@@ -3410,7 +3420,12 @@ function ProjectIssueManagement({ project }) {
               )}
               {isResolvedSection && renderResolvedMeta(item)}
               <div className="issue-management-footer">
-                <span>보고 주간 {item.report_start_date} ~ {item.report_end_date}</span>
+                <span className="issue-management-period">
+                  보고 주간 {item.report_start_date} ~ {item.report_end_date}
+                  {isResolvedSection && formatResolvedDate(item.resolved_at) && (
+                    <b className="issue-resolved-date">해결 {formatResolvedDate(item.resolved_at)}</b>
+                  )}
+                </span>
                 <div className="issue-management-actions">
                   {item.confluence_url && <a href={item.confluence_url} target="_blank" rel="noopener noreferrer">Confluence 상세 <ExternalLink size={12} /></a>}
                   {isResolvedSection ? (
@@ -3460,15 +3475,17 @@ function ProjectIssueManagement({ project }) {
         <div className="issue-management-sections">
           <section className="issue-management-section ongoing" aria-label="미해결 Issue">
             <div className="issue-management-section-head">
+              <span className="issue-section-mark"><AlertTriangle size={15} /></span>
               <div><h3>미해결</h3><p>아직 해결되지 않아 계속 추적해야 하는 Issue입니다.</p></div>
-              <span>{filteredOpenIssues.length}건</span>
+              <span className="issue-section-count">{filteredOpenIssues.length}건</span>
             </div>
             {renderIssueList(filteredOpenIssues, importanceFilter === "all" ? "미해결 Issue가 없습니다." : "선택한 중요도의 미해결 Issue가 없습니다.")}
           </section>
           <section className="issue-management-section resolved" aria-label="해결된 Issue">
             <div className="issue-management-section-head">
+              <span className="issue-section-mark"><Check size={15} strokeWidth={3} /></span>
               <div><h3>해결</h3><p>해결 처리되어 기록으로 보관되는 Issue입니다.</p></div>
-              <span>{filteredResolvedIssues.length}건</span>
+              <span className="issue-section-count">{filteredResolvedIssues.length}건</span>
             </div>
             {renderIssueList(filteredResolvedIssues, importanceFilter === "all" ? "해결된 Issue가 없습니다." : "선택한 중요도의 해결 Issue가 없습니다.", true)}
           </section>
