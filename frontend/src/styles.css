@@ -3094,3 +3094,30 @@ input:focus, textarea:focus, select:focus { border-color: var(--wia-blue); box-s
   background: #eef4ff;
   color: var(--wia-blue);
 }
+
+/* 주간 보고 저장 전 날짜 누락 경고 */
+.weekly-entry-actions { align-items: center; }
+.weekly-date-warning {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex: 1;
+  margin: 0;
+  min-width: 0;
+  border: 1px solid #f3b6bd;
+  background: #fff5f6;
+  padding: 8px 12px;
+  color: #a30e1b;
+  font-size: 12.5px;
+  font-weight: 850;
+  line-height: 1.4;
+}
+.weekly-date-warning svg { flex-shrink: 0; }
+.weekly-date-warning b { color: #6f0a14; font-size: 12px; font-weight: 950; }
+.weekly-due-input.date-missing {
+  border-color: #d64550;
+  background: #fff5f6;
+  color: #a30e1b;
+  box-shadow: inset 0 0 0 1px #d64550;
+}
+.weekly-due-input.date-missing:focus { border-color: #a30e1b; box-shadow: 0 0 0 3px rgba(179, 18, 32, .14); }

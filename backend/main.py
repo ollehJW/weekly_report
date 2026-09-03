@@ -1502,10 +1502,49 @@ def render_report_project(project):
     """
 
 
+def render_report_assignment_column(kind, label, projects):
+    if projects:
+        items = "\n".join(
+            f'<li><span class="mark"></span>{escape_html(project["project_name"])}</li>'
+            for project in projects
+        )
+    else:
+        items = '<li class="none">해당 과제 없음</li>'
+    return f"""
+        <div class="assign-col {kind}">
+          <div class="assign-col-head"><span class="dot"></span>{escape_html(label)}<b class="mono">{len(projects)}</b></div>
+          <ul>{items}</ul>
+        </div>
+    """
+
+
+def render_report_assignment_summary(included, excluded):
+    total = len(included) + len(excluded)
+    if not total:
+        return ""
+    return f"""
+      <section class="assign">
+        <div class="assign-head">
+          <h2>배정 과제 현황</h2>
+          <span class="mono">배정 {total} · 포함 {len(included)} · 미포함 {len(excluded)}</span>
+        </div>
+        <div class="assign-cols">
+          {render_report_assignment_column("in", "보고서에 포함된 과제", included)}
+          {render_report_assignment_column("out", "포함하지 않은 과제", excluded)}
+        </div>
+      </section>
+    """
+
+
 def render_weekly_report_html(report, user, projects):
     if not WEEKLY_REPORT_TEMPLATE_PATH.exists():
         raise HTTPException(status_code=500, detail="Weekly report template not found")
     visible_projects = [project for project in projects if not bool(project["is_excluded"])]
+    # 기타 업무는 배정된 과제가 아니라 선택 추가 항목이라 미포함 목록에서 제외한다
+    excluded_projects = [
+        project for project in projects
+        if bool(project["is_excluded"]) and project["project_name"] != OTHER_WORK_PROJECT_NAME
+    ]
     if visible_projects:
         project_sections = "\n".join(render_report_project(project) for project in visible_projects)
     else:
@@ -1514,6 +1553,7 @@ def render_weekly_report_html(report, user, projects):
     return template.safe_substitute(
         period=escape_html(f"{report['start_date']} ~ {report['end_date']}"),
         author_role=escape_html(f"{user['name']} {user['role']}"),
+        assignment_summary=render_report_assignment_summary(visible_projects, excluded_projects),
         project_sections=project_sections,
     )
 

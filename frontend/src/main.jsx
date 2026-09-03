@@ -151,6 +151,22 @@ function compactWeeklyDraft(draft) {
   };
 }
 
+// compactWeeklyDraft 가 실제로 저장하는 행(내용이 있는 행)만 날짜 필수로 본다.
+// 빈 행은 저장 시 어차피 버려지므로 경고 대상이 아니다.
+function findMissingWeeklyDates(draft) {
+  const progress = [];
+  (draft.progress_log || []).forEach((item, index) => {
+    const hasContent = String(item.log || "").trim() || String(item.detail || "").trim()
+      || (Array.isArray(item.images) ? item.images.length : 0) || String(item.confluence_url || "").trim();
+    if (hasContent && !String(item.date || "").trim()) progress.push(index);
+  });
+  const plan = [];
+  (draft.next_plan || []).forEach((item, index) => {
+    if (String(item.plan || "").trim() && !String(item.due || "").trim()) plan.push(index);
+  });
+  return { progress, plan };
+}
+
 function businessDaysBetween(startIso, endIso) {
   const start = toDate(startIso);
   const end = toDate(endIso);
@@ -229,6 +245,7 @@ function App() {
   const [weeklyEntryProjects, setWeeklyEntryProjects] = useState([]);
   const [selectedWeeklyEntryId, setSelectedWeeklyEntryId] = useState('');
   const [weeklyEntryDraft, setWeeklyEntryDraft] = useState(emptyWeeklyEntryDraft());
+  const [weeklyDateCheckOn, setWeeklyDateCheckOn] = useState(false);
   const [weeklyReportPreview, setWeeklyReportPreview] = useState(null);
   const [teamDraft, setTeamDraft] = useState({ department: '', login_id: '' });
   const [memberDraft, setMemberDraft] = useState({ name: '', role: 'M' });
@@ -874,11 +891,18 @@ function App() {
   function selectWeeklyProject(project) {
     setSelectedWeeklyEntryId(project.project_id);
     setWeeklyEntryDraft(weeklyDraftFromProject(project));
+    setWeeklyDateCheckOn(false);
   }
 
   async function saveWeeklyEntry(projectId = selectedWeeklyEntryId) {
     const project = weeklyEntryProjects.find((item) => item.project_id === projectId);
     if (!weeklyWritingEntry || !project) return;
+    const missingDates = findMissingWeeklyDates(weeklyEntryDraft);
+    if (missingDates.progress.length || missingDates.plan.length) {
+      setWeeklyDateCheckOn(true);
+      return;
+    }
+    setWeeklyDateCheckOn(false);
     try {
       const payload = compactWeeklyDraft(weeklyEntryDraft);
       const report = await request(`/api/report-entries/${project.entry_id}/projects/${project.project_id}`, {
@@ -918,6 +942,7 @@ function App() {
     setWeeklyEntryProjects([]);
     setSelectedWeeklyEntryId('');
     setWeeklyEntryDraft(emptyWeeklyEntryDraft());
+    setWeeklyDateCheckOn(false);
   }
 
   if (!currentTeam) {
@@ -1055,6 +1080,7 @@ function App() {
             weeklyWritingEntry={weeklyWritingEntry}
             weeklyEntryProjects={weeklyEntryProjects}
             weeklyEntryDraft={weeklyEntryDraft}
+            weeklyDateCheckOn={weeklyDateCheckOn}
             setWeeklyEntryDraft={setWeeklyEntryDraft}
             selectedWeeklyEntryId={selectedWeeklyEntryId}
             onSelectWeeklyProject={selectWeeklyProject}
@@ -1713,6 +1739,7 @@ function WeeklyReportPage({
   weeklyWritingEntry,
   weeklyEntryProjects,
   weeklyEntryDraft,
+  weeklyDateCheckOn,
   setWeeklyEntryDraft,
   selectedWeeklyEntryId,
   onSelectWeeklyProject,
@@ -1728,6 +1755,11 @@ function WeeklyReportPage({
   const [confluenceEditor, setConfluenceEditor] = useState(null);
   const [deleteConfirmReport, setDeleteConfirmReport] = useState(null);
   const [isDeletingReport, setIsDeletingReport] = useState(false);
+  const weeklyMissingDates = useMemo(
+    () => (weeklyDateCheckOn ? findMissingWeeklyDates(weeklyEntryDraft) : { progress: [], plan: [] }),
+    [weeklyDateCheckOn, weeklyEntryDraft],
+  );
+  const weeklyMissingDateCount = weeklyMissingDates.progress.length + weeklyMissingDates.plan.length;
   const regularWeeklyProjects = weeklyEntryProjects.filter((project) => project.project_name !== OTHER_WORK_PROJECT_NAME);
   const otherWeeklyProject = weeklyEntryProjects.find((project) => project.project_name === OTHER_WORK_PROJECT_NAME) || null;
   const writableWeeklyProjects = weeklyEntryProjects.filter((project) => !project.is_excluded);
@@ -2229,7 +2261,7 @@ function WeeklyReportPage({
                                 <option value="done">Done</option>
                                 <option value="in_progress">In Progress</option>
                               </select>
-                              <input className="weekly-due-input" type="date" disabled={selectedWeeklyProject.status === 'excluded'} value={item.date} onChange={(e) => updateProgressItem(index, 'date', e.target.value)} aria-label="Progress Log 날짜" />
+                              <input className={`weekly-due-input${weeklyMissingDates.progress.includes(index) ? ' date-missing' : ''}`} type="date" disabled={selectedWeeklyProject.status === 'excluded'} value={item.date} onChange={(e) => updateProgressItem(index, 'date', e.target.value)} aria-label="Progress Log 날짜" aria-invalid={weeklyMissingDates.progress.includes(index)} />
                               <div className="weekly-item-actions">
                                 <button className={(item.detail || item.images?.length) ? 'has-content' : ''} type="button" disabled={selectedWeeklyProject.status === 'excluded'} onClick={() => openDetailEditor('progress_log', index)} title="상세 글과 이미지를 작성합니다"><FileText size={14} />상세</button>
                                 <button className={item.confluence_url ? 'has-content' : ''} type="button" disabled={selectedWeeklyProject.status === 'excluded'} onClick={() => openConfluenceEditor('progress_log', index)} title="Confluence 링크를 연결합니다"><Link2 size={14} />Confluence</button>
@@ -2273,14 +2305,25 @@ function WeeklyReportPage({
                           {weeklyEntryDraft.next_plan.map((item, index) => (
                             <div className="weekly-list-row plan" key={"plan-" + index}>
                               <input disabled={selectedWeeklyProject.status === 'excluded'} value={item.plan} onChange={(e) => updatePlanItem(index, 'plan', e.target.value)} placeholder="다음 계획을 입력하세요" />
-                              <input className="weekly-due-input" type="date" disabled={selectedWeeklyProject.status === 'excluded'} value={item.due} onChange={(e) => updatePlanItem(index, 'due', e.target.value)} aria-label="Due" />
+                              <input className={`weekly-due-input${weeklyMissingDates.plan.includes(index) ? ' date-missing' : ''}`} type="date" disabled={selectedWeeklyProject.status === 'excluded'} value={item.due} onChange={(e) => updatePlanItem(index, 'due', e.target.value)} aria-label="Due" aria-invalid={weeklyMissingDates.plan.includes(index)} />
                               <button className="weekly-row-remove" type="button" disabled={selectedWeeklyProject.status === 'excluded'} onClick={() => removePlanItem(index)} aria-label="Next Plan 삭제"><Trash2 size={15} /></button>
                             </div>
                           ))}
                         </div>
                       </section>
                     </div>
-                    <div className="project-modal-actions">
+                    <div className="project-modal-actions weekly-entry-actions">
+                      {weeklyMissingDateCount > 0 && (
+                        <p className="weekly-date-warning" role="alert">
+                          <AlertTriangle size={14} />
+                          날짜를 입력해야 저장할 수 있습니다.
+                          <b>
+                            {weeklyMissingDates.progress.length > 0 && `Progress Log ${weeklyMissingDates.progress.length}건`}
+                            {weeklyMissingDates.progress.length > 0 && weeklyMissingDates.plan.length > 0 && ' · '}
+                            {weeklyMissingDates.plan.length > 0 && `Next Plan ${weeklyMissingDates.plan.length}건`}
+                          </b>
+                        </p>
+                      )}
                       <button className="mt-btn" type="button" onClick={onCloseWeeklyEntryModal}>닫기</button>
                       <button className="mt-btn primary" type="button" disabled={selectedWeeklyProject.status === 'excluded'} onClick={() => onSaveWeeklyEntry(selectedWeeklyProject.project_id)}>저장</button>
                     </div>
