@@ -1204,7 +1204,7 @@ function UsageGuideModal({ onClose }) {
               <p>각 멤버 카드에서 비밀번호 확인 후, 먼저 이번 주에 실제로 진행한 정규 과제를 선택합니다. 선택한 과제만 작성 화면 왼쪽 목록에 배치되고, 과제를 하나씩 눌러 주간 내용을 입력합니다.</p>
               <ul>
                 <li>내가 참여 멤버로 지정된 진행 중 과제가 선택 화면에 자동으로 표시됩니다.</li>
-                <li>작성 중에도 <strong>선택 수정</strong>을 눌러 이번 주 작성 대상 과제를 언제든지 다시 고를 수 있습니다.</li>
+                <li>작성 중에도 <strong>과제 다시 선택</strong>을 눌러 이번 주 작성 대상 과제를 언제든지 다시 고를 수 있습니다.</li>
                 <li><strong>기타 업무 (교육/출장 등)</strong>는 정규 과제 선택 화면에는 포함되지 않고, 작성 화면의 <strong>기타 (교육, 출장 등) 업무 추가</strong> 버튼으로 별도 추가합니다.</li>
                 <li>정규 과제 외 교육, 출장, 회의, 지원 업무처럼 별도 과제로 묶기 어려운 내용을 기타 업무에 입력합니다.</li>
               </ul>
@@ -1766,6 +1766,59 @@ function WeeklyReportPage({
   const selectedWeeklyProject = writableWeeklyProjects.find((project) => project.project_id === selectedWeeklyEntryId) || null;
   const weeklySelectionMax = Math.max(regularWeeklyProjects.length, 1);
   const weeklySelectionPercent = Math.round((weeklySelectionDraft.length / weeklySelectionMax) * 100);
+  // 저장본과 현재 draft 를 같은 방식(compact)으로 정규화해 비교한다.
+  // 공백/날짜 포맷 차이로 인한 오탐이 없고, 저장 성공 시 baseline 이 갱신되어 자동으로 해제된다.
+  const weeklyEntryDirty = useMemo(() => {
+    if (!selectedWeeklyProject) return false;
+    return JSON.stringify(compactWeeklyDraft(weeklyEntryDraft))
+      !== JSON.stringify(compactWeeklyDraft(weeklyDraftFromProject(selectedWeeklyProject)));
+  }, [weeklyEntryDraft, selectedWeeklyProject]);
+  const [pendingLeave, setPendingLeave] = useState(null);
+  const [pendingOtherRemove, setPendingOtherRemove] = useState(false);
+  // 기타 업무를 뺀 정규 과제 목록과, 추가되어 있는 기타 업무를 분리해서 렌더한다
+  const writableRegularProjects = writableWeeklyProjects.filter((project) => project.project_name !== OTHER_WORK_PROJECT_NAME);
+  const addedOtherProject = writableWeeklyProjects.find((project) => project.project_name === OTHER_WORK_PROJECT_NAME) || null;
+  // 제외는 서버에서 작성 내용과 첨부 이미지를 되돌릴 수 없게 삭제하므로(main.py 의 exclusion 엔드포인트),
+  // 지울 내용이 있으면 반드시 확인을 받는다. 저장 전 draft 도 함께 본다.
+  const otherProjectHasContent = useMemo(() => {
+    if (!addedOtherProject) return false;
+    const saved = compactWeeklyDraft(weeklyDraftFromProject(addedOtherProject));
+    const live = selectedWeeklyEntryId === addedOtherProject.project_id
+      ? compactWeeklyDraft(weeklyEntryDraft)
+      : { progress_log: [], risk_issue: [], next_plan: [] };
+    return Boolean(saved.progress_log.length || saved.risk_issue.length || saved.next_plan.length
+      || live.progress_log.length || live.risk_issue.length || live.next_plan.length);
+  }, [addedOtherProject, selectedWeeklyEntryId, weeklyEntryDraft]);
+
+  function requestRemoveOtherProject() {
+    if (!addedOtherProject) return;
+    if (otherProjectHasContent) { setPendingOtherRemove(true); return; }
+    onUpdateWeeklyEntryStatus(addedOtherProject.project_id, true);
+  }
+
+  function confirmRemoveOtherProject() {
+    setPendingOtherRemove(false);
+    if (addedOtherProject) onUpdateWeeklyEntryStatus(addedOtherProject.project_id, true);
+  }
+
+  function requestCloseWeeklyEntry() {
+    if (weeklyEntryDirty) { setPendingLeave({ type: 'close' }); return; }
+    onCloseWeeklyEntryModal();
+  }
+
+  function requestSelectWeeklyProject(project) {
+    if (project.project_id === selectedWeeklyEntryId) return;
+    if (weeklyEntryDirty) { setPendingLeave({ type: 'switch', project }); return; }
+    onSelectWeeklyProject(project);
+  }
+
+  function confirmPendingLeave() {
+    const leave = pendingLeave;
+    setPendingLeave(null);
+    if (!leave) return;
+    if (leave.type === 'close') onCloseWeeklyEntryModal();
+    else onSelectWeeklyProject(leave.project);
+  }
   const hasWeeklyReports = weeklyReports.length > 0;
 
   useEffect(() => {
@@ -2172,12 +2225,18 @@ function WeeklyReportPage({
       {weeklyWritingEntry && (
         <div className="modal-backdrop" role="presentation">
           <div className="weekly-entry-modal" role="dialog" aria-modal="true" aria-labelledby="weekly-entry-title">
-            <div className="project-modal-head">
-              <div>
-                <h2 id="weekly-entry-title">주간 보고 작성</h2>
-                <p>{writingEntryName}</p>
+            <div className="project-modal-head weekly-entry-head">
+              <div className="weekly-entry-head-copy">
+                <span className="weekly-entry-head-icon"><ClipboardList size={19} /></span>
+                <div>
+                  <h2 id="weekly-entry-title">주간 보고 작성</h2>
+                  <p>
+                    <b>{writingEntryName}</b>
+                    {weeklyWritingEntry.report_period && <><span className="weekly-entry-head-sep">·</span>{weeklyWritingEntry.report_period}</>}
+                  </p>
+                </div>
               </div>
-              <button className="icon-btn" type="button" onClick={onCloseWeeklyEntryModal} aria-label="닫기"><X size={16} /></button>
+              <button className="icon-btn" type="button" onClick={requestCloseWeeklyEntry} aria-label="닫기"><X size={16} /></button>
             </div>
             {isWeeklyProjectPickerOpen ? (
               <section className="weekly-project-picker">
@@ -2221,99 +2280,135 @@ function WeeklyReportPage({
               <aside className="weekly-project-list" aria-label="작성 과제">
                 <div className="weekly-project-list-head">
                   <strong>작성 과제</strong>
-                  <button type="button" onClick={() => setIsWeeklyProjectPickerOpen(true)}>선택 수정</button>
+                  <em className="weekly-project-count">{writableRegularProjects.length}</em>
+                  <button type="button" onClick={() => setIsWeeklyProjectPickerOpen(true)}>과제 다시 선택</button>
                 </div>
-                {writableWeeklyProjects.map((project) => (
-                  <button className={selectedWeeklyEntryId === project.project_id ? 'active' : ''} type="button" key={`${project.entry_id}-${project.project_id}`} onClick={() => onSelectWeeklyProject(project)}>
-                    <span>{project.project_name}</span>
-                    {project.status === 'done' && <b className="entry-state done">작성 완료</b>}
-                    {project.project_name === OTHER_WORK_PROJECT_NAME && <b className="entry-state other">기타 업무</b>}
-                  </button>
-                ))}
-                {otherWeeklyProject?.is_excluded && (
-                  <button className="weekly-other-add" type="button" onClick={addOtherWeeklyProject}><Plus size={14} /><span>기타 (교육, 출장 등) 업무 추가</span></button>
+                <div className="weekly-project-items">
+                  {writableRegularProjects.map((project) => (
+                    <button className={`weekly-project-item${selectedWeeklyEntryId === project.project_id ? ' active' : ''}`} type="button" key={`${project.entry_id}-${project.project_id}`} onClick={() => requestSelectWeeklyProject(project)}>
+                      <span>{project.project_name}</span>
+                      {project.status === 'done' && <b className="entry-state done">작성 완료</b>}
+                    </button>
+                  ))}
+                  {writableRegularProjects.length === 0 && <div className="empty compact">선택된 과제가 없습니다</div>}
+                </div>
+
+                {otherWeeklyProject && (
+                <div className="weekly-other-section">
+                  <div className="weekly-other-divider"><span>기타 업무</span></div>
+                  {addedOtherProject ? (
+                    <div className={`weekly-other-row${selectedWeeklyEntryId === addedOtherProject.project_id ? ' active' : ''}`}>
+                      <button className="weekly-other-open" type="button" onClick={() => requestSelectWeeklyProject(addedOtherProject)}>
+                        <span>{addedOtherProject.project_name}</span>
+                        {addedOtherProject.status === 'done' && <b className="entry-state done">작성 완료</b>}
+                      </button>
+                      <button className="weekly-other-remove" type="button" onClick={requestRemoveOtherProject} title="기타 업무를 이번 주 보고에서 뺍니다" aria-label="기타 업무 제거"><X size={15} strokeWidth={2.6} /></button>
+                    </div>
+                  ) : (
+                    <button className="weekly-other-add" type="button" onClick={addOtherWeeklyProject}><Plus size={14} /><span>기타 (교육, 출장 등) 업무 추가</span></button>
+                  )}
+                </div>
                 )}
-                {writableWeeklyProjects.length === 0 && <div className="empty compact">선택된 과제가 없습니다</div>}
               </aside>
               <section className="weekly-entry-panel">
                 {selectedWeeklyProject ? (
                   <>
+                    {(() => {
+                      const locked = selectedWeeklyProject.status === 'excluded';
+                      return (
+                    <>
                     <div className="weekly-entry-panel-head">
                       <div>
                         <h3>{selectedWeeklyProject.project_name}</h3>
                         <p>과제별로 이번 주 내용을 작성합니다.</p>
                       </div>
-                      <button className={`weekly-exclude-btn${selectedWeeklyProject.status === 'excluded' ? ' active' : ''}`} type="button" onClick={() => onUpdateWeeklyEntryStatus(selectedWeeklyProject.project_id, selectedWeeklyProject.status !== 'excluded')}>
-                        {selectedWeeklyProject.status === 'excluded' ? '업무 추가' : '이번 주 제외'}
-                      </button>
                     </div>
                     <div className="weekly-entry-list-fields">
-                      <section className="weekly-list-block">
+                      <section className="weekly-list-block progress">
                         <div className="weekly-list-title">
-                          <span>Progress Log</span>
-                          <button type="button" disabled={selectedWeeklyProject.status === 'excluded'} onClick={addProgressItem}><Plus size={14} />추가</button>
+                          <span className="weekly-list-name">Progress Log</span>
+                          <em className="weekly-list-count">{weeklyEntryDraft.progress_log.length}</em>
+                          <button type="button" disabled={locked} onClick={addProgressItem}><Plus size={14} />추가</button>
                         </div>
                         <div className="weekly-list-items">
                           {weeklyEntryDraft.progress_log.map((item, index) => (
-                            <div className="weekly-list-row progress" key={"progress-" + index}>
-                              <input disabled={selectedWeeklyProject.status === 'excluded'} value={item.log} onChange={(e) => updateProgressItem(index, 'log', e.target.value)} placeholder="진행 내용을 입력하세요" />
-                              <select disabled={selectedWeeklyProject.status === 'excluded'} value={item.status} onChange={(e) => updateProgressItem(index, 'status', e.target.value)} aria-label="진행 상태">
-                                <option value="done">Done</option>
-                                <option value="in_progress">In Progress</option>
-                              </select>
-                              <input className={`weekly-due-input${weeklyMissingDates.progress.includes(index) ? ' date-missing' : ''}`} type="date" disabled={selectedWeeklyProject.status === 'excluded'} value={item.date} onChange={(e) => updateProgressItem(index, 'date', e.target.value)} aria-label="Progress Log 날짜" aria-invalid={weeklyMissingDates.progress.includes(index)} />
-                              <div className="weekly-item-actions">
-                                <button className={(item.detail || item.images?.length) ? 'has-content' : ''} type="button" disabled={selectedWeeklyProject.status === 'excluded'} onClick={() => openDetailEditor('progress_log', index)} title="상세 글과 이미지를 작성합니다"><FileText size={14} />상세</button>
-                                <button className={item.confluence_url ? 'has-content' : ''} type="button" disabled={selectedWeeklyProject.status === 'excluded'} onClick={() => openConfluenceEditor('progress_log', index)} title="Confluence 링크를 연결합니다"><Link2 size={14} />Confluence</button>
+                            <div className={`weekly-item-card progress${weeklyMissingDates.progress.includes(index) ? ' invalid' : ''}`} key={"progress-" + index}>
+                              <div className="weekly-item-main">
+                                <span className="weekly-item-index">{String(index + 1).padStart(2, '0')}</span>
+                                <input disabled={locked} value={item.log} onChange={(e) => updateProgressItem(index, 'log', e.target.value)} placeholder="진행 내용을 입력하세요" />
                               </div>
-                              <button className="weekly-row-remove" type="button" disabled={selectedWeeklyProject.status === 'excluded'} onClick={() => removeProgressItem(index)} aria-label="Progress Log 삭제"><Trash2 size={15} /></button>
+                              <div className="weekly-item-meta">
+                                <select className="weekly-item-status" disabled={locked} value={item.status} onChange={(e) => updateProgressItem(index, 'status', e.target.value)} aria-label="진행 상태">
+                                  <option value="done">Done</option>
+                                  <option value="in_progress">In Progress</option>
+                                </select>
+                                <input className={`weekly-due-input${weeklyMissingDates.progress.includes(index) ? ' date-missing' : ''}`} type="date" disabled={locked} value={item.date} onChange={(e) => updateProgressItem(index, 'date', e.target.value)} aria-label="Progress Log 날짜" aria-invalid={weeklyMissingDates.progress.includes(index)} />
+                                <div className="weekly-item-actions">
+                                  <button className={(item.detail || item.images?.length) ? 'has-content' : ''} type="button" disabled={locked} onClick={() => openDetailEditor('progress_log', index)} title="상세 글과 이미지를 작성합니다"><FileText size={14} />상세</button>
+                                  <button className={item.confluence_url ? 'has-content' : ''} type="button" disabled={locked} onClick={() => openConfluenceEditor('progress_log', index)} title="Confluence 링크를 연결합니다"><Link2 size={14} />Confluence</button>
+                                </div>
+                                <button className="weekly-row-remove" type="button" disabled={locked} onClick={() => removeProgressItem(index)} aria-label="Progress Log 삭제"><Trash2 size={15} /></button>
+                              </div>
                             </div>
                           ))}
                         </div>
                       </section>
 
-                      <section className="weekly-list-block">
+                      <section className="weekly-list-block risk">
                         <div className="weekly-list-title">
-                          <span>Risk & Issue</span>
-                          <button type="button" disabled={selectedWeeklyProject.status === 'excluded'} onClick={addRiskItem}><Plus size={14} />추가</button>
+                          <span className="weekly-list-name">Risk &amp; Issue</span>
+                          <em className="weekly-list-count">{weeklyEntryDraft.risk_issue.length}</em>
+                          <button type="button" disabled={locked} onClick={addRiskItem}><Plus size={14} />추가</button>
                         </div>
                         <div className="weekly-list-items">
                           {weeklyEntryDraft.risk_issue.map((item, index) => (
-                            <div className="weekly-list-row risk" key={"risk-" + index}>
-                              <input disabled={selectedWeeklyProject.status === 'excluded'} value={item.issue} onChange={(e) => updateRiskItem(index, 'issue', e.target.value)} placeholder="리스크와 이슈를 입력하세요" />
-                              <select disabled={selectedWeeklyProject.status === 'excluded'} value={item.importance} onChange={(e) => updateRiskItem(index, 'importance', e.target.value)} aria-label="중요도">
-                                <option value="상">상</option>
-                                <option value="중">중</option>
-                                <option value="하">하</option>
-                              </select>
-                              <div className="weekly-item-actions">
-                                <button className={(item.detail || item.images?.length) ? 'has-content' : ''} type="button" disabled={selectedWeeklyProject.status === 'excluded'} onClick={() => openDetailEditor('risk_issue', index)} title="상세 글과 이미지를 작성합니다"><FileText size={14} />상세</button>
-                                <button className={item.confluence_url ? 'has-content' : ''} type="button" disabled={selectedWeeklyProject.status === 'excluded'} onClick={() => openConfluenceEditor('risk_issue', index)} title="Confluence 링크를 연결합니다"><Link2 size={14} />Confluence</button>
+                            <div className="weekly-item-card risk" key={"risk-" + index}>
+                              <div className="weekly-item-main">
+                                <span className="weekly-item-index">{String(index + 1).padStart(2, '0')}</span>
+                                <input disabled={locked} value={item.issue} onChange={(e) => updateRiskItem(index, 'issue', e.target.value)} placeholder="리스크와 이슈를 입력하세요" />
                               </div>
-                              <button className="weekly-row-remove" type="button" disabled={selectedWeeklyProject.status === 'excluded'} onClick={() => removeRiskItem(index)} aria-label="Risk & Issue 삭제"><Trash2 size={15} /></button>
+                              <div className="weekly-item-meta">
+                                <select className="weekly-item-importance" disabled={locked} value={item.importance} onChange={(e) => updateRiskItem(index, 'importance', e.target.value)} aria-label="중요도">
+                                  <option value="상">중요도 상</option>
+                                  <option value="중">중요도 중</option>
+                                  <option value="하">중요도 하</option>
+                                </select>
+                                <div className="weekly-item-actions">
+                                  <button className={(item.detail || item.images?.length) ? 'has-content' : ''} type="button" disabled={locked} onClick={() => openDetailEditor('risk_issue', index)} title="상세 글과 이미지를 작성합니다"><FileText size={14} />상세</button>
+                                  <button className={item.confluence_url ? 'has-content' : ''} type="button" disabled={locked} onClick={() => openConfluenceEditor('risk_issue', index)} title="Confluence 링크를 연결합니다"><Link2 size={14} />Confluence</button>
+                                </div>
+                                <button className="weekly-row-remove" type="button" disabled={locked} onClick={() => removeRiskItem(index)} aria-label="Risk & Issue 삭제"><Trash2 size={15} /></button>
+                              </div>
                             </div>
                           ))}
                         </div>
                       </section>
 
-                      <section className="weekly-list-block">
+                      <section className="weekly-list-block plan">
                         <div className="weekly-list-title">
-                          <span>Next Plan</span>
-                          <button type="button" disabled={selectedWeeklyProject.status === 'excluded'} onClick={addPlanItem}><Plus size={14} />추가</button>
+                          <span className="weekly-list-name">Next Plan</span>
+                          <em className="weekly-list-count">{weeklyEntryDraft.next_plan.length}</em>
+                          <button type="button" disabled={locked} onClick={addPlanItem}><Plus size={14} />추가</button>
                         </div>
                         <div className="weekly-list-items">
                           {weeklyEntryDraft.next_plan.map((item, index) => (
-                            <div className="weekly-list-row plan" key={"plan-" + index}>
-                              <input disabled={selectedWeeklyProject.status === 'excluded'} value={item.plan} onChange={(e) => updatePlanItem(index, 'plan', e.target.value)} placeholder="다음 계획을 입력하세요" />
-                              <input className={`weekly-due-input${weeklyMissingDates.plan.includes(index) ? ' date-missing' : ''}`} type="date" disabled={selectedWeeklyProject.status === 'excluded'} value={item.due} onChange={(e) => updatePlanItem(index, 'due', e.target.value)} aria-label="Due" aria-invalid={weeklyMissingDates.plan.includes(index)} />
-                              <button className="weekly-row-remove" type="button" disabled={selectedWeeklyProject.status === 'excluded'} onClick={() => removePlanItem(index)} aria-label="Next Plan 삭제"><Trash2 size={15} /></button>
+                            <div className={`weekly-item-card plan${weeklyMissingDates.plan.includes(index) ? ' invalid' : ''}`} key={"plan-" + index}>
+                              <div className="weekly-item-main">
+                                <span className="weekly-item-index">{String(index + 1).padStart(2, '0')}</span>
+                                <input disabled={locked} value={item.plan} onChange={(e) => updatePlanItem(index, 'plan', e.target.value)} placeholder="다음 계획을 입력하세요" />
+                              </div>
+                              <div className="weekly-item-meta">
+                                <span className="weekly-item-duelabel">Due</span>
+                                <input className={`weekly-due-input${weeklyMissingDates.plan.includes(index) ? ' date-missing' : ''}`} type="date" disabled={locked} value={item.due} onChange={(e) => updatePlanItem(index, 'due', e.target.value)} aria-label="Due" aria-invalid={weeklyMissingDates.plan.includes(index)} />
+                                <button className="weekly-row-remove" type="button" disabled={locked} onClick={() => removePlanItem(index)} aria-label="Next Plan 삭제"><Trash2 size={15} /></button>
+                              </div>
                             </div>
                           ))}
                         </div>
                       </section>
                     </div>
                     <div className="project-modal-actions weekly-entry-actions">
-                      {weeklyMissingDateCount > 0 && (
+                      {weeklyMissingDateCount > 0 ? (
                         <p className="weekly-date-warning" role="alert">
                           <AlertTriangle size={14} />
                           날짜를 입력해야 저장할 수 있습니다.
@@ -2323,10 +2418,15 @@ function WeeklyReportPage({
                             {weeklyMissingDates.plan.length > 0 && `Next Plan ${weeklyMissingDates.plan.length}건`}
                           </b>
                         </p>
-                      )}
-                      <button className="mt-btn" type="button" onClick={onCloseWeeklyEntryModal}>닫기</button>
-                      <button className="mt-btn primary" type="button" disabled={selectedWeeklyProject.status === 'excluded'} onClick={() => onSaveWeeklyEntry(selectedWeeklyProject.project_id)}>저장</button>
+                      ) : weeklyEntryDirty ? (
+                        <p className="weekly-dirty-chip"><span className="weekly-dirty-dot" />저장되지 않은 변경사항이 있습니다</p>
+                      ) : null}
+                      <button className="mt-btn" type="button" onClick={requestCloseWeeklyEntry}>닫기</button>
+                      <button className="mt-btn primary" type="button" disabled={locked} onClick={() => onSaveWeeklyEntry(selectedWeeklyProject.project_id)}>저장</button>
                     </div>
+                    </>
+                      );
+                    })()}
                   </>
                 ) : (
                   <div className="empty">선택 가능한 과제가 없습니다</div>
@@ -2334,6 +2434,45 @@ function WeeklyReportPage({
               </section>
             </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {pendingLeave && (
+        <div className="modal-backdrop weekly-submodal-backdrop" role="presentation">
+          <div className="weekly-report-modal compact-modal weekly-leave-modal" role="alertdialog" aria-modal="true" aria-labelledby="weekly-leave-title" aria-describedby="weekly-leave-desc">
+            <div className="weekly-leave-icon"><AlertTriangle size={22} /></div>
+            <div className="weekly-leave-copy">
+              <h2 id="weekly-leave-title">저장하지 않고 나갈까요?</h2>
+              <p id="weekly-leave-desc">
+                {pendingLeave.type === 'switch'
+                  ? '작성 중인 내용이 저장되지 않았습니다. 다른 과제로 이동하면 변경사항이 사라집니다.'
+                  : '작성 중인 내용이 저장되지 않았습니다. 지금 닫으면 변경사항이 사라집니다.'}
+              </p>
+            </div>
+            <div className="project-modal-actions">
+              <button className="mt-btn" type="button" onClick={() => setPendingLeave(null)}>계속 작성</button>
+              <button className="mt-btn weekly-leave-discard" type="button" onClick={confirmPendingLeave}>저장 안 하고 나가기</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {pendingOtherRemove && (
+        <div className="modal-backdrop weekly-submodal-backdrop" role="presentation">
+          <div className="weekly-report-modal compact-modal weekly-otherdel-modal" role="alertdialog" aria-modal="true" aria-labelledby="weekly-otherdel-title" aria-describedby="weekly-otherdel-desc">
+            <div className="weekly-otherdel-icon"><AlertTriangle size={22} /></div>
+            <div className="weekly-otherdel-copy">
+              <h2 id="weekly-otherdel-title">기타 업무를 뺄까요?</h2>
+              <p id="weekly-otherdel-desc">
+                <strong>{OTHER_WORK_PROJECT_NAME}</strong>에 작성한 내용이 있습니다.
+                이번 주 보고에서 빼면 작성한 Progress Log · Risk &amp; Issue · Next Plan과 첨부한 이미지가 <b>모두 삭제되며 되돌릴 수 없습니다.</b>
+              </p>
+            </div>
+            <div className="project-modal-actions">
+              <button className="mt-btn" type="button" onClick={() => setPendingOtherRemove(false)}>취소</button>
+              <button className="mt-btn weekly-otherdel-confirm" type="button" onClick={confirmRemoveOtherProject}>내용 삭제하고 빼기</button>
+            </div>
           </div>
         </div>
       )}
