@@ -26,6 +26,9 @@ PROJECT_REPORT_TEMPLATE_PATH = Path(__file__).resolve().parent / "templates" / "
 WORKSPACE_PATH = Path(__file__).resolve().parent / "workspace"
 WORKSPACE_PATH.mkdir(parents=True, exist_ok=True)
 INITIAL_PASSWORD = "wia1234!"
+ADMIN_LOGIN_ID = "admin"
+ONLINE_WINDOW_MINUTES = 5
+ACCOUNT_ROLES = ("admin", "user")
 OTHER_WORK_PROJECT_NAME = "기타 업무 (교육/출장 등)"
 KST = ZoneInfo("Asia/Seoul")
 DEFAULT_REPORT_SCHEDULE_WEEKDAY = 4
@@ -78,6 +81,7 @@ def public_team(row):
         return None
     data.pop("password_hash", None)
     data["must_change_password"] = bool(data.get("must_change_password"))
+    data["account_role"] = data.get("account_role") or "user"
     data["report_schedule_enabled"] = bool(data.get("report_schedule_enabled", 1))
     data["report_schedule_weekday"] = int(data.get("report_schedule_weekday") or DEFAULT_REPORT_SCHEDULE_WEEKDAY)
     data["report_schedule_time"] = data.get("report_schedule_time") or DEFAULT_REPORT_SCHEDULE_TIME
@@ -110,6 +114,7 @@ def init_db():
                 department TEXT NOT NULL,
                 login_id TEXT NOT NULL UNIQUE,
                 password_hash TEXT NOT NULL,
+                account_role TEXT NOT NULL DEFAULT 'user',
                 must_change_password INTEGER NOT NULL DEFAULT 1,
                 report_schedule_enabled INTEGER NOT NULL DEFAULT 1,
                 report_schedule_weekday INTEGER NOT NULL DEFAULT 4,
@@ -118,6 +123,12 @@ def init_db():
                 created_at TEXT NOT NULL
             )
             """
+        )
+        if not has_column(conn, "teams", "account_role"):
+            conn.execute("ALTER TABLE teams ADD COLUMN account_role TEXT NOT NULL DEFAULT 'user'")
+            conn.execute("UPDATE teams SET account_role = 'admin' WHERE login_id = ?", (ADMIN_LOGIN_ID,))
+        conn.execute(
+            "UPDATE teams SET account_role = 'admin' WHERE login_id = ?", (ADMIN_LOGIN_ID,)
         )
         if not has_column(conn, "teams", "report_schedule_enabled"):
             conn.execute("ALTER TABLE teams ADD COLUMN report_schedule_enabled INTEGER NOT NULL DEFAULT 1")
@@ -135,6 +146,24 @@ def init_db():
                 report_schedule_interval_days = 7
             WHERE login_id = 'dx_lab' OR department = 'DX추진랩'
             """)
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS login_sessions (
+                session_id TEXT PRIMARY KEY,
+                team_id TEXT NOT NULL,
+                login_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                ended_at TEXT NOT NULL DEFAULT '',
+                FOREIGN KEY (team_id) REFERENCES teams(team_id) ON DELETE CASCADE
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_login_sessions_team ON login_sessions (team_id, login_at)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_login_sessions_active ON login_sessions (ended_at, last_seen_at)"
+        )
         conn.execute("DROP TABLE IF EXISTS user_db")
         conn.execute(
             """
@@ -846,11 +875,16 @@ class EpicIn(BaseModel):
 class TeamIn(BaseModel):
     department: str = Field(min_length=1, max_length=80)
     login_id: str = Field(min_length=1, max_length=80)
+    account_role: str = Field(default="user", pattern="^(admin|user)$")
 
 
 class LoginIn(BaseModel):
     login_id: str = Field(min_length=1, max_length=80)
     password: str = Field(min_length=1, max_length=200)
+
+
+class SessionIn(BaseModel):
+    session_id: str = Field(min_length=1, max_length=80)
 
 
 class PasswordChangeIn(BaseModel):
@@ -2035,25 +2069,316 @@ def create_team(payload: TeamIn):
     now = datetime.utcnow().isoformat()
     team_id = str(uuid.uuid4())
     login_id = payload.login_id.strip()
+    account_role = "admin" if login_id == ADMIN_LOGIN_ID else payload.account_role
     with get_conn() as conn:
         existing = conn.execute("SELECT team_id FROM teams WHERE login_id = ?", (login_id,)).fetchone()
         if existing:
             raise HTTPException(status_code=409, detail="이미 사용 중인 ID입니다")
         cursor = conn.execute(
             """
-            INSERT INTO teams (team_id, department, login_id, password_hash, must_change_password, created_at)
-            VALUES (?, ?, ?, ?, 1, ?)
+            INSERT INTO teams (team_id, department, login_id, password_hash, account_role, must_change_password, created_at)
+            VALUES (?, ?, ?, ?, ?, 1, ?)
             """,
             (
                 team_id,
                 payload.department.strip(),
                 login_id,
                 hash_password(INITIAL_PASSWORD),
+                account_role,
                 now,
             ),
         )
         row = conn.execute("SELECT * FROM teams WHERE rowid = ?", (cursor.lastrowid,)).fetchone()
         return public_team(row)
+
+
+@app.put("/api/teams/{team_id}/password/reset")
+def reset_team_password(team_id: str):
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM teams WHERE team_id = ?", (team_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Team not found")
+        conn.execute(
+            "UPDATE teams SET password_hash = ?, must_change_password = 1 WHERE team_id = ?",
+            (hash_password(INITIAL_PASSWORD), team_id),
+        )
+        updated = conn.execute("SELECT * FROM teams WHERE team_id = ?", (team_id,)).fetchone()
+        return public_team(updated)
+
+
+def _period_cutoff(period: str) -> str | None:
+    """Return an ISO cutoff for a period key, or None for 'all'."""
+    if period == "all":
+        return None
+    try:
+        days = int(period)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="period must be 7, 30 or all")
+    if days < 1 or days > 3650:
+        raise HTTPException(status_code=422, detail="period must be 7, 30 or all")
+    return (datetime.utcnow() - timedelta(days=days)).isoformat()
+
+
+@app.get("/api/admin/overview")
+def admin_overview(period: str = "7"):
+    cutoff = _period_cutoff(period)
+    online_cutoff = (datetime.utcnow() - timedelta(minutes=ONLINE_WINDOW_MINUTES)).isoformat()
+    # `since` is compared against ISO timestamps; '' sorts below every real value,
+    # so the 'all' case degrades to "no lower bound" without branching each query.
+    since = cutoff or ""
+
+    with get_conn() as conn:
+        online_team_ids = {
+            row["team_id"]
+            for row in conn.execute(
+                "SELECT DISTINCT team_id FROM login_sessions WHERE ended_at = '' AND last_seen_at >= ?",
+                (online_cutoff,),
+            ).fetchall()
+        }
+
+        summary = {
+            "online_accounts": len(online_team_ids),
+            "total_accounts": conn.execute("SELECT COUNT(*) AS n FROM teams").fetchone()["n"],
+            # Only reports that actually have someone to write them. The scheduler
+            # opens a report per team on schedule, so teams with no members would
+            # otherwise inflate this with empty shells.
+            "in_progress_reports": conn.execute(
+                """
+                SELECT COUNT(*) AS n FROM reports r
+                WHERE r.status = 'in_progress'
+                  AND EXISTS (SELECT 1 FROM report_entries e WHERE e.report_id = r.report_id)
+                """
+            ).fetchone()["n"],
+            "done_reports": conn.execute(
+                """
+                SELECT COUNT(*) AS n FROM reports r
+                WHERE r.status = 'done'
+                  AND EXISTS (SELECT 1 FROM report_entries e WHERE e.report_id = r.report_id)
+                """
+            ).fetchone()["n"],
+            "in_progress_projects": conn.execute(
+                "SELECT COUNT(*) AS n FROM project WHERE status = 'in_progress'"
+            ).fetchone()["n"],
+            "done_projects": conn.execute(
+                "SELECT COUNT(*) AS n FROM project WHERE status = 'done'"
+            ).fetchone()["n"],
+        }
+
+        recent_writers = [
+            {
+                "updated_at": row["updated_at"],
+                "department": row["department"],
+                "login_id": row["login_id"],
+                "member_name": row["name"],
+                "entry_status": row["status"],
+                "project_count": row["project_count"],
+                "report_range": f"{row['start_date']} ~ {row['end_date']}",
+            }
+            for row in conn.execute(
+                """
+                SELECT re.updated_at, re.status, t.department, t.login_id, u.name,
+                       r.start_date, r.end_date,
+                       (
+                           SELECT COUNT(*) FROM project_entry pe
+                           WHERE pe.entry_id = re.entry_id AND pe.is_excluded = 0
+                       ) AS project_count
+                FROM report_entries re
+                JOIN users u ON u.user_id = re.user_id
+                JOIN reports r ON r.report_id = re.report_id
+                JOIN teams t ON t.team_id = r.team_id
+                WHERE re.updated_at != '' AND re.status != 'absent' AND re.updated_at >= ?
+                  AND EXISTS (
+                      SELECT 1 FROM project_entry pe
+                      WHERE pe.entry_id = re.entry_id AND pe.is_excluded = 0
+                  )
+                ORDER BY re.updated_at DESC
+                LIMIT 100
+                """,
+                (since,),
+            ).fetchall()
+        ]
+
+        team_members = [
+            {
+                "team_id": row["team_id"],
+                "department": row["department"],
+                "login_id": row["login_id"],
+                "total": row["total"],
+                "recent": row["recent"],
+            }
+            for row in conn.execute(
+                """
+                SELECT t.team_id, t.department, t.login_id,
+                       COUNT(u.user_id) AS total,
+                       COALESCE(SUM(CASE WHEN u.created_at >= ? THEN 1 ELSE 0 END), 0) AS recent
+                FROM teams t
+                LEFT JOIN users u ON u.team_id = t.team_id
+                GROUP BY t.team_id, t.department, t.login_id
+                ORDER BY total DESC, t.department
+                """,
+                (since,),
+            ).fetchall()
+        ]
+
+        team_projects = [
+            {
+                "team_id": row["team_id"],
+                "department": row["department"],
+                "login_id": row["login_id"],
+                "in_progress": row["in_progress"],
+                "done": row["done"],
+                "total": row["total"],
+                "recent": row["recent"],
+            }
+            for row in conn.execute(
+                """
+                SELECT t.team_id, t.department, t.login_id,
+                       COUNT(p.project_id) AS total,
+                       COALESCE(SUM(CASE WHEN p.status = 'in_progress' THEN 1 ELSE 0 END), 0) AS in_progress,
+                       COALESCE(SUM(CASE WHEN p.status = 'done' THEN 1 ELSE 0 END), 0) AS done,
+                       COALESCE(SUM(CASE WHEN p.created_at >= ? THEN 1 ELSE 0 END), 0) AS recent
+                FROM teams t
+                LEFT JOIN project p ON p.team_id = t.team_id
+                GROUP BY t.team_id, t.department, t.login_id
+                ORDER BY total DESC, t.department
+                """,
+                (since,),
+            ).fetchall()
+        ]
+
+        account_logins = [
+            {
+                "team_id": row["team_id"],
+                "department": row["department"],
+                "login_id": row["login_id"],
+                "account_role": row["account_role"] or "user",
+                "login_count": row["login_count"],
+                "last_login_at": row["last_login_at"] or "",
+                "is_online": row["team_id"] in online_team_ids,
+            }
+            for row in conn.execute(
+                """
+                SELECT t.team_id, t.department, t.login_id, t.account_role,
+                       COUNT(s.session_id) AS login_count,
+                       MAX(s.login_at) AS last_login_at
+                FROM teams t
+                LEFT JOIN login_sessions s
+                       ON s.team_id = t.team_id AND s.login_at >= ?
+                GROUP BY t.team_id, t.department, t.login_id, t.account_role
+                ORDER BY login_count DESC, t.department
+                """,
+                (since,),
+            ).fetchall()
+        ]
+
+        account_completed_reports = [
+            {
+                "team_id": row["team_id"],
+                "department": row["department"],
+                "login_id": row["login_id"],
+                "count": row["done_report_count"],
+                "last_completed_at": row["last_completed_at"] or "",
+                "last_report_range": row["last_report_range"] or "",
+            }
+            for row in conn.execute(
+                """
+                SELECT t.team_id, t.department, t.login_id,
+                       COUNT(r.report_id) AS done_report_count,
+                       MAX(r.created_at) AS last_completed_at,
+                       (
+                           SELECT rr.start_date || " ~ " || rr.end_date
+                           FROM reports rr
+                           WHERE rr.team_id = t.team_id
+                             AND rr.status = "done"
+                             AND EXISTS (SELECT 1 FROM report_entries e WHERE e.report_id = rr.report_id)
+                           ORDER BY rr.created_at DESC, rr.start_date DESC
+                           LIMIT 1
+                       ) AS last_report_range
+                FROM teams t
+                LEFT JOIN reports r
+                       ON r.team_id = t.team_id
+                      AND r.status = "done"
+                      AND EXISTS (SELECT 1 FROM report_entries e WHERE e.report_id = r.report_id)
+                GROUP BY t.team_id, t.department, t.login_id
+                ORDER BY done_report_count DESC, t.department
+                """
+            ).fetchall()
+        ]
+
+
+        account_milestones = [
+            {
+                "team_id": row["team_id"],
+                "department": row["department"],
+                "login_id": row["login_id"],
+                "count": row["milestone_count"],
+            }
+            for row in conn.execute(
+                """
+                SELECT t.team_id, t.department, t.login_id,
+                       COUNT(m.milestone_id) AS milestone_count
+                FROM teams t
+                LEFT JOIN project p ON p.team_id = t.team_id
+                LEFT JOIN milestones m
+                       ON m.project_id = p.project_id AND m.created_at >= ?
+                GROUP BY t.team_id, t.department, t.login_id
+                ORDER BY milestone_count DESC, t.department
+                """,
+                (since,),
+            ).fetchall()
+        ]
+
+        account_events = [
+            {
+                "team_id": row["team_id"],
+                "department": row["department"],
+                "login_id": row["login_id"],
+                "count": row["event_count"],
+            }
+            for row in conn.execute(
+                """
+                SELECT t.team_id, t.department, t.login_id,
+                       COUNT(e.event_id) AS event_count
+                FROM teams t
+                LEFT JOIN team_events e ON e.team_id = t.team_id AND e.created_at >= ?
+                GROUP BY t.team_id, t.department, t.login_id
+                ORDER BY event_count DESC, t.department
+                """,
+                (since,),
+            ).fetchall()
+        ]
+
+    return {
+        "period": period,
+        "generated_at": datetime.utcnow().isoformat(),
+        "online_window_minutes": ONLINE_WINDOW_MINUTES,
+        "summary": summary,
+        "recent_writers": recent_writers,
+        "team_members": team_members,
+        "team_projects": team_projects,
+        "account_logins": account_logins,
+        "account_completed_reports": account_completed_reports,
+        "account_milestones": account_milestones,
+        "account_events": account_events,
+    }
+
+
+@app.delete("/api/teams/{team_id}", status_code=204)
+def delete_team(team_id: str):
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM teams WHERE team_id = ?", (team_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Team not found")
+        if row["login_id"] == ADMIN_LOGIN_ID:
+            raise HTTPException(status_code=422, detail="관리자 계정은 삭제할 수 없습니다")
+        report_ids = [
+            item["report_id"]
+            for item in conn.execute("SELECT report_id FROM reports WHERE team_id = ?", (team_id,)).fetchall()
+        ]
+        conn.execute("DELETE FROM teams WHERE team_id = ?", (team_id,))
+    for report_id in report_ids:
+        shutil.rmtree(WORKSPACE_PATH / report_id, ignore_errors=True)
+    return None
 
 
 @app.post("/api/auth/login")
@@ -2062,7 +2387,40 @@ def login(payload: LoginIn):
         row = conn.execute("SELECT * FROM teams WHERE login_id = ?", (payload.login_id.strip(),)).fetchone()
         if not row or not verify_password(payload.password, row["password_hash"]):
             raise HTTPException(status_code=401, detail="ID 또는 비밀번호가 올바르지 않습니다")
-        return public_team(row)
+        now = datetime.utcnow().isoformat()
+        session_id = str(uuid.uuid4())
+        conn.execute(
+            """
+            INSERT INTO login_sessions (session_id, team_id, login_at, last_seen_at, ended_at)
+            VALUES (?, ?, ?, ?, '')
+            """,
+            (session_id, row["team_id"], now, now),
+        )
+        team = public_team(row)
+        team["session_id"] = session_id
+        return team
+
+
+@app.post("/api/auth/heartbeat")
+def session_heartbeat(payload: SessionIn):
+    now = datetime.utcnow().isoformat()
+    with get_conn() as conn:
+        cursor = conn.execute(
+            "UPDATE login_sessions SET last_seen_at = ? WHERE session_id = ? AND ended_at = ''",
+            (now, payload.session_id),
+        )
+        return {"ok": cursor.rowcount > 0}
+
+
+@app.post("/api/auth/logout")
+def logout(payload: SessionIn):
+    now = datetime.utcnow().isoformat()
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE login_sessions SET ended_at = ?, last_seen_at = ? WHERE session_id = ? AND ended_at = ''",
+            (now, now, payload.session_id),
+        )
+    return {"ok": True}
 
 
 @app.post("/api/auth/change-password")

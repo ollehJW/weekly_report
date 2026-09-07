@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { Plus, Trash2, AudioWaveform, User, ChevronRight, Pencil, Save, X, KeyRound, LogOut, Users, ClipboardList, GripVertical, HelpCircle, Check, FileText, Link2, ImagePlus, AlertTriangle, History, ExternalLink, CalendarClock, Clock, CalendarRange, Zap } from 'lucide-react';
+import { Plus, Trash2, AudioWaveform, User, ChevronRight, Pencil, Save, X, KeyRound, LogOut, Users, ClipboardList, GripVertical, HelpCircle, Check, FileText, Link2, ImagePlus, AlertTriangle, History, ExternalLink, CalendarClock, Clock, CalendarRange, Zap, Wifi } from 'lucide-react';
 import './styles.css';
 
 const API_BASE = import.meta.env.VITE_API_BASE || `${window.location.protocol}//${window.location.hostname}:9601`;
@@ -23,6 +23,38 @@ const WEEKDAY_OPTIONS = [
   { value: 5, label: "토요일" },
   { value: 6, label: "일요일" },
 ];
+const OVERVIEW_PERIODS = [
+  { value: '7', label: '7일' },
+  { value: '30', label: '30일' },
+  { value: 'all', label: '전체' },
+];
+
+// Backend timestamps are naive UTC ISO strings; mark them as UTC before formatting to KST.
+function formatUtcStamp(value, withTime = true) {
+  const raw = String(value || '');
+  if (!raw) return '-';
+  const parsed = new Date(/[Z+]|[+-]\d\d:\d\d$/.test(raw) ? raw : `${raw}Z`);
+  if (Number.isNaN(parsed.getTime())) return '-';
+  return parsed.toLocaleString('ko-KR', {
+    timeZone: 'Asia/Seoul',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    ...(withTime ? { hour: '2-digit', minute: '2-digit', hour12: false } : {}),
+  });
+}
+
+// Year-less "09.07 14:23" for the narrow side-panel columns.
+function formatUtcStampShort(value) {
+  const raw = String(value || '');
+  if (!raw) return '-';
+  const parsed = new Date(/[Z+]|[+-]\d\d:\d\d$/.test(raw) ? raw : `${raw}Z`);
+  if (Number.isNaN(parsed.getTime())) return '-';
+  const parts = new Intl.DateTimeFormat('ko-KR', {
+    timeZone: 'Asia/Seoul',
+    month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false,
+  }).formatToParts(parsed).reduce((acc, part) => ({ ...acc, [part.type]: part.value }), {});
+  return `${parts.month}.${parts.day} ${parts.hour}:${parts.minute}`;
+}
+
 const DEFAULT_REPORT_SCHEDULE = { enabled: true, weekday: 4, time: "17:00", interval_days: 7 };
 const MIN_INTERVAL_DAYS = 1;
 const MAX_INTERVAL_DAYS = 31;
@@ -247,7 +279,10 @@ function App() {
   const [weeklyEntryDraft, setWeeklyEntryDraft] = useState(emptyWeeklyEntryDraft());
   const [weeklyDateCheckOn, setWeeklyDateCheckOn] = useState(false);
   const [weeklyReportPreview, setWeeklyReportPreview] = useState(null);
-  const [teamDraft, setTeamDraft] = useState({ department: '', login_id: '' });
+  const [teamDraft, setTeamDraft] = useState({ department: '', login_id: '', account_role: 'user' });
+  const [overview, setOverview] = useState(null);
+  const [overviewPeriod, setOverviewPeriod] = useState('7');
+  const [overviewLoading, setOverviewLoading] = useState(false);
   const [memberDraft, setMemberDraft] = useState({ name: '', role: 'M' });
   const [teamProjectDraft, setTeamProjectDraft] = useState({ project_name: '', leaderId: '', memberIds: [] });
   const [isProjectModalOpen, setIsProjectModalOpen] = useState(false);
@@ -262,10 +297,36 @@ function App() {
   const selectedProject = projects.find((project) => project.id === selectedProjectId) || null;
   const weeklyReport = weeklyReports[0] || null;
   const selectedTeamProject = teamProjects.find((project) => project.project_id === selectedProjectId) || null;
-  const isAdminAccount = currentTeam?.login_id === 'admin';
+  const isAdminAccount = currentTeam?.account_role === 'admin' || currentTeam?.login_id === 'admin';
+
+  // Keep the server-side session warm so 접속 중 reflects real presence.
+  useEffect(() => {
+    const sessionId = currentTeam?.session_id;
+    if (!sessionId) return undefined;
+    const ping = () => {
+      request('/api/auth/heartbeat', {
+        method: 'POST',
+        body: JSON.stringify({ session_id: sessionId }),
+      }).catch(() => {});
+    };
+    ping();
+    const timer = setInterval(ping, 60_000);
+    return () => clearInterval(timer);
+  }, [currentTeam?.session_id]);
 
   useEffect(() => {
-    if (!isAdminAccount && activePage === 'accounts') {
+    if (!isAdminAccount || activePage !== 'admin-overview') return undefined;
+    loadOverview(overviewPeriod);
+    const timer = setInterval(() => loadOverview(overviewPeriod), 60_000);
+    return () => clearInterval(timer);
+  }, [isAdminAccount, activePage, overviewPeriod]);
+
+  useEffect(() => {
+    if (isAdminAccount && activePage !== 'accounts' && activePage !== 'admin-overview') {
+      setActivePage('accounts');
+      return;
+    }
+    if (!isAdminAccount && (activePage === 'accounts' || activePage === 'admin-overview')) {
       setActivePage('tasks');
     }
   }, [isAdminAccount, activePage]);
@@ -409,6 +470,13 @@ function App() {
   }
 
   function logout() {
+    const sessionId = currentTeam?.session_id;
+    if (sessionId) {
+      request('/api/auth/logout', {
+        method: 'POST',
+        body: JSON.stringify({ session_id: sessionId }),
+      }).catch(() => {});
+    }
     setCurrentTeam(null);
     setPasswordDraft({ current_password: INITIAL_PASSWORD, new_password: '', confirm_password: '' });
   }
@@ -436,7 +504,7 @@ function App() {
           new_password: passwordDraft.new_password,
         }),
       });
-      setCurrentTeam(team);
+      setCurrentTeam((prev) => ({ ...team, session_id: prev?.session_id }));
       setPasswordDraft({ current_password: '', new_password: '', confirm_password: '' });
       setError('');
     } catch (err) {
@@ -452,10 +520,55 @@ function App() {
         body: JSON.stringify({
           department: teamDraft.department.trim(),
           login_id: teamDraft.login_id.trim(),
+          account_role: teamDraft.account_role || 'user',
         }),
       });
-      setTeamDraft({ department: '', login_id: '' });
+      setTeamDraft({ department: '', login_id: '', account_role: 'user' });
       await loadTeams();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function loadOverview(period = overviewPeriod) {
+    setOverviewLoading(true);
+    try {
+      const data = await request(`/api/admin/overview?period=${encodeURIComponent(period)}`);
+      setOverview(data);
+      setError('');
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setOverviewLoading(false);
+    }
+  }
+
+  async function resetTeamPassword(teamId) {
+    const team = teams.find((item) => item.team_id === teamId);
+    if (!window.confirm(`${team ? team.login_id : '해당'} 계정의 비밀번호를 초기 비밀번호(${INITIAL_PASSWORD})로 초기화할까요?`)) return;
+    try {
+      await request(`/api/teams/${teamId}/password/reset`, { method: 'PUT' });
+      await loadTeams();
+      if (currentTeam?.team_id === teamId) {
+        setCurrentTeam((prev) => (prev ? { ...prev, must_change_password: true } : prev));
+      }
+      setError('');
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function deleteTeam(teamId) {
+    const team = teams.find((item) => item.team_id === teamId);
+    if (currentTeam?.team_id === teamId) {
+      setError('현재 로그인한 계정은 제거할 수 없습니다');
+      return;
+    }
+    if (!window.confirm(`${team ? team.department + ' (' + team.login_id + ')' : '해당'} 계정을 제거할까요? 소속 멤버와 보고 데이터가 함께 삭제됩니다.`)) return;
+    try {
+      await request(`/api/teams/${teamId}`, { method: 'DELETE' });
+      await loadTeams();
+      setError('');
     } catch (err) {
       setError(err.message);
     }
@@ -971,13 +1084,16 @@ function App() {
         </div>
 
         <nav className="side-nav" aria-label="주요 메뉴">
+          {!isAdminAccount && <>
           <button className={`side-tab${activePage === 'team-status' ? ' active' : ''}`} type="button" onClick={() => setActivePage('team-status')}>팀 현황</button>
           <button className={`side-tab${activePage === 'tasks' ? ' active' : ''}`} type="button" onClick={() => setActivePage('tasks')}>과제 현황</button>
           <button className={`side-tab${activePage === 'weekly-report' ? ' active' : ''}`} type="button" onClick={() => setActivePage('weekly-report')}>주간 보고 작성</button>
           <button className={`side-tab${activePage === 'weekly-lounge' ? ' active' : ''}`} type="button" onClick={() => setActivePage('weekly-lounge')}>주간 보고 라운지</button>
           <button className={'side-tab' + (activePage === 'member-management' ? ' active' : '')} type="button" onClick={() => setActivePage('member-management')}>멤버 관리</button>
           <button className={'side-tab' + (activePage === 'project-management' ? ' active' : '')} type="button" onClick={() => setActivePage('project-management')}>과제 관리</button>
+          </>}
           {isAdminAccount && <button className={`side-tab${activePage === 'accounts' ? ' active' : ''}`} type="button" onClick={() => setActivePage('accounts')}>계정 관리</button>}
+          {isAdminAccount && <button className={`side-tab${activePage === 'admin-overview' ? ' active' : ''}`} type="button" onClick={() => setActivePage('admin-overview')}>운영 현황</button>}
         </nav>
 
         <button className="side-help" type="button" onClick={() => setIsUsageGuideOpen(true)}>
@@ -997,7 +1113,7 @@ function App() {
 
       <section className="workspace">
         {error && <div className="error">{error}</div>}
-        {activePage === 'team-status' && (
+        {!isAdminAccount && activePage === 'team-status' && (
           <TeamStatusPage
             currentTeam={currentTeam}
             members={members}
@@ -1006,7 +1122,7 @@ function App() {
             weeklyReports={weeklyReports}
           />
         )}
-        {activePage === 'tasks' && (
+        {!isAdminAccount && activePage === 'tasks' && (
           <>
             <div className="page-head">
               <div>
@@ -1049,7 +1165,7 @@ function App() {
             )}
           </>
         )}
-        {activePage === 'weekly-report' && (
+        {!isAdminAccount && activePage === 'weekly-report' && (
           <WeeklyReportPage
             members={members}
             weeklyReports={weeklyReports}
@@ -1089,8 +1205,8 @@ function App() {
             onCloseWeeklyEntryModal={closeWeeklyEntryModal}
           />
         )}
-        {activePage === 'weekly-lounge' && <WeeklyReportLoungePage currentTeam={currentTeam} />}
-        {(activePage === 'member-management' || activePage === 'project-management') && (
+        {!isAdminAccount && activePage === 'weekly-lounge' && <WeeklyReportLoungePage currentTeam={currentTeam} />}
+        {!isAdminAccount && (activePage === 'member-management' || activePage === 'project-management') && (
           <TeamManagementPage
             activeTeamTab={activePage === 'member-management' ? 'members' : 'tasks'}
             showTabs={false}
@@ -1125,8 +1241,17 @@ function App() {
             setDraggingMemberId={setDraggingMemberId}
           />
         )}
+        {isAdminAccount && activePage === 'admin-overview' && (
+          <AdminOverviewPage
+            overview={overview}
+            loading={overviewLoading}
+            period={overviewPeriod}
+            setPeriod={setOverviewPeriod}
+            onRefresh={() => loadOverview(overviewPeriod)}
+          />
+        )}
         {isAdminAccount && activePage === 'accounts' && (
-          <AccountManagementPage teams={teams} teamDraft={teamDraft} setTeamDraft={setTeamDraft} onCreateTeam={createTeam} />
+          <AccountManagementPage teams={teams} currentTeamId={currentTeam?.team_id} teamDraft={teamDraft} setTeamDraft={setTeamDraft} onCreateTeam={createTeam} onResetTeamPassword={resetTeamPassword} onDeleteTeam={deleteTeam} />
         )}
       </section>
 
@@ -2993,7 +3118,273 @@ function ProjectCard({ project, actionLabel, nextStatus, onMove, onEdit, onDelet
 }
 
 
-function AccountManagementPage({ teams, teamDraft, setTeamDraft, onCreateTeam }) {
+function OverviewStat({ icon, label, value, hint, tone }) {
+  return (
+    <div className={`ov-stat${tone ? ` ${tone}` : ''}`}>
+      <div className="ov-stat-icon">{icon}</div>
+      <div className="ov-stat-body">
+        <span className="ov-stat-label">{label}</span>
+        <b className="ov-stat-value">{value}</b>
+        {hint && <span className="ov-stat-hint">{hint}</span>}
+      </div>
+    </div>
+  );
+}
+
+function OverviewRankTable({ title, subtitle, columns, rows, renderRow }) {
+  const pageSize = 10;
+  const [page, setPage] = useState(0);
+  const totalPages = Math.max(1, Math.ceil(rows.length / pageSize));
+  const currentPage = Math.min(page, totalPages - 1);
+  const start = currentPage * pageSize;
+  const visible = rows.slice(start, start + pageSize);
+
+  useEffect(() => {
+    setPage(0);
+  }, [rows]);
+
+  return (
+    <section className="ov-panel">
+      <div className="ov-panel-head">
+        <div>
+          <h2>{title}</h2>
+          {subtitle && <p>{subtitle}</p>}
+        </div>
+      </div>
+      <div className="ov-table" style={{ '--ov-cols': columns.map((c) => c.width).join(' ') }}>
+        <div className="ov-table-head">
+          {columns.map((col) => <span key={col.key} className={col.align === 'right' ? 'right' : undefined}>{col.label}</span>)}
+        </div>
+        <div className="ov-table-body">
+          {visible.map(renderRow)}
+          {visible.length === 0 && <div className="empty">기간 내 데이터가 없습니다</div>}
+        </div>
+      </div>
+      {rows.length > pageSize && (
+        <div className="ov-pagination">
+          <span>{start + 1}-{Math.min(start + pageSize, rows.length)} / {rows.length}</span>
+          <div>
+            <button type="button" disabled={currentPage === 0} onClick={() => setPage((prev) => Math.max(0, prev - 1))}>이전</button>
+            <button type="button" disabled={currentPage >= totalPages - 1} onClick={() => setPage((prev) => Math.min(totalPages - 1, prev + 1))}>다음</button>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function AdminOverviewPage({ overview, loading, period, setPeriod, onRefresh }) {
+  const summary = overview?.summary;
+  const periodLabel = OVERVIEW_PERIODS.find((item) => item.value === period)?.label || '';
+  const scopeHint = period === 'all' ? '전체 기간' : `최근 ${periodLabel}`;
+  const recentWritersWithProjects = (overview?.recent_writers || []).filter((row) => Number(row.project_count) > 0);
+
+  return (
+    <>
+      <div className="page-head">
+        <div>
+          <h1>운영 현황</h1>
+          <p>
+            전체 계정의 사용 현황을 집계합니다
+            {overview && ` · ${formatUtcStamp(overview.generated_at)} 기준`}
+          </p>
+        </div>
+        <div className="ov-toolbar">
+          <div className="ov-period" role="group" aria-label="집계 기간">
+            {OVERVIEW_PERIODS.map((item) => (
+              <button
+                key={item.value}
+                type="button"
+                className={`ov-period-btn${period === item.value ? ' active' : ''}`}
+                onClick={() => setPeriod(item.value)}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+          <button className="mt-btn sm" type="button" onClick={onRefresh} disabled={loading}>
+            {loading ? '불러오는 중…' : '새로고침'}
+          </button>
+        </div>
+      </div>
+
+      {!overview && loading && <div className="empty">운영 현황을 불러오는 중입니다…</div>}
+      {!overview && !loading && <div className="empty">운영 현황을 불러오지 못했습니다</div>}
+
+      {overview && (
+        <>
+          <section className="ov-stat-grid">
+            <OverviewStat
+              tone="live"
+              icon={<Wifi size={18} />}
+              label="접속 중인 계정"
+              value={summary.online_accounts}
+              hint={`전체 ${summary.total_accounts}개 계정 · 최근 ${overview.online_window_minutes}분 활동 기준`}
+            />
+            <OverviewStat
+              icon={<FileText size={18} />}
+              label="진행중인 보고"
+              value={summary.in_progress_reports}
+              hint="멤버가 배정된 작성 마감 전 주간 보고"
+            />
+            <OverviewStat
+              icon={<Check size={18} />}
+              label="완료된 보고"
+              value={summary.done_reports}
+              hint="마감 처리된 주간 보고"
+            />
+            <OverviewStat
+              icon={<ClipboardList size={18} />}
+              label="등록된 진행 과제"
+              value={summary.in_progress_projects}
+              hint="상태가 진행중인 과제"
+            />
+            <OverviewStat
+              icon={<Check size={18} />}
+              label="완료된 진행 과제"
+              value={summary.done_projects}
+              hint="상태가 완료인 과제"
+            />
+          </section>
+
+          <OverviewRankTable
+            title="최근 보고 작성 멤버"
+            subtitle={scopeHint + " 내 작성 기록 " + recentWritersWithProjects.length + "건 (최대 100건)"}
+            columns={[
+              { key: "time", label: "작성 시간", width: "minmax(150px, 1.1fr)" },
+              { key: "team", label: "팀", width: "minmax(120px, 1fr)" },
+              { key: "member", label: "멤버", width: "minmax(90px, .7fr)" },
+              { key: "week", label: "보고 주차", width: "minmax(160px, 1.1fr)" },
+              { key: "count", label: "작성 과제 수", width: "96px", align: "right" },
+            ]}
+            rows={recentWritersWithProjects}
+            renderRow={(row, index) => (
+              <div className="ov-row" key={`${row.updated_at}-${row.login_id}-${row.member_name}-${index}`}>
+                <span className="ov-mono">{formatUtcStamp(row.updated_at)}</span>
+                <span>{row.department}</span>
+                <strong>{row.member_name}</strong>
+                <span className="ov-mono">{row.report_range}</span>
+                <span className="right"><b>{row.project_count}</b></span>
+              </div>
+            )}
+          />
+
+          <div className="ov-panel-grid">
+            <OverviewRankTable
+              title="팀별 멤버 수"
+              subtitle={`괄호 안은 ${scopeHint} 내 신규 등록`}
+              columns={[
+                { key: 'team', label: '팀', width: 'minmax(0, 1fr)' },
+                { key: 'count', label: '멤버 수', width: '96px', align: 'right' },
+              ]}
+              rows={overview.team_members}
+              renderRow={(row) => (
+                <div className="ov-row" key={row.team_id}>
+                  <span>{row.department}</span>
+                  <span className="right"><b>{row.total}</b>{row.recent > 0 && <em className="ov-delta"> (+{row.recent})</em>}</span>
+                </div>
+              )}
+            />
+
+            <OverviewRankTable
+              title="팀별 과제 수"
+              subtitle={`괄호 안은 ${scopeHint} 내 신규 등록`}
+              columns={[
+                { key: 'team', label: '팀', width: 'minmax(0, 1fr)' },
+                { key: 'ip', label: '진행중', width: '54px', align: 'right' },
+                { key: 'done', label: '완료', width: '44px', align: 'right' },
+                { key: 'total', label: '합계', width: '78px', align: 'right' },
+              ]}
+              rows={overview.team_projects}
+              renderRow={(row) => (
+                <div className="ov-row" key={row.team_id}>
+                  <span>{row.department}</span>
+                  <span className="right">{row.in_progress}</span>
+                  <span className="right">{row.done}</span>
+                  <span className="right"><b>{row.total}</b>{row.recent > 0 && <em className="ov-delta"> (+{row.recent})</em>}</span>
+                </div>
+              )}
+            />
+
+            <OverviewRankTable
+              title="계정별 접속 사용"
+              subtitle={`${scopeHint} 내 로그인 횟수`}
+              columns={[
+                { key: 'team', label: '계정', width: 'minmax(0, 1fr)' },
+                { key: 'last', label: '최근 접속', width: '92px' },
+                { key: 'count', label: '접속 수', width: '68px', align: 'right' },
+              ]}
+              rows={overview.account_logins}
+              renderRow={(row) => (
+                <div className="ov-row" key={row.team_id}>
+                  <span className="ov-account">
+                    {row.is_online && <i className="ov-dot" title="접속 중" />}
+                    {row.department}
+                  </span>
+                  <span className="ov-mono">{formatUtcStampShort(row.last_login_at)}</span>
+                  <span className="right"><b>{row.login_count}</b></span>
+                </div>
+              )}
+            />
+
+            <OverviewRankTable
+              title="계정별 완료된 보고"
+              subtitle="전체 완료 처리된 주간보고"
+              columns={[
+                { key: "team", label: "계정", width: "minmax(0, 1fr)" },
+                { key: "last", label: "최근 완료 보고", width: "minmax(130px, 1.1fr)" },
+                { key: "count", label: "완료", width: "68px", align: "right" },
+              ]}
+              rows={overview.account_completed_reports || []}
+              renderRow={(row) => (
+                <div className="ov-row" key={row.team_id}>
+                  <span>{row.department}</span>
+                  <span className="ov-mono">{row.last_report_range || "-"}</span>
+                  <span className="right"><b>{row.count}</b></span>
+                </div>
+              )}
+            />
+
+            <OverviewRankTable
+              title="계정별 마일스톤 수"
+              subtitle={`${scopeHint} 내 생성된 마일스톤`}
+              columns={[
+                { key: 'team', label: '계정', width: 'minmax(0, 1fr)' },
+                { key: 'count', label: '마일스톤', width: '88px', align: 'right' },
+              ]}
+              rows={overview.account_milestones}
+              renderRow={(row) => (
+                <div className="ov-row" key={row.team_id}>
+                  <span>{row.department}</span>
+                  <span className="right"><b>{row.count}</b></span>
+                </div>
+              )}
+            />
+
+            <OverviewRankTable
+              title="계정별 팀일정 작성 수"
+              subtitle={`${scopeHint} 내 등록된 팀 일정`}
+              columns={[
+                { key: 'team', label: '계정', width: 'minmax(0, 1fr)' },
+                { key: 'count', label: '일정', width: '88px', align: 'right' },
+              ]}
+              rows={overview.account_events}
+              renderRow={(row) => (
+                <div className="ov-row" key={row.team_id}>
+                  <span>{row.department}</span>
+                  <span className="right"><b>{row.count}</b></span>
+                </div>
+              )}
+            />
+          </div>
+        </>
+      )}
+    </>
+  );
+}
+
+
+function AccountManagementPage({ teams, currentTeamId, teamDraft, setTeamDraft, onCreateTeam, onResetTeamPassword, onDeleteTeam }) {
   return (
     <>
       <div className="page-head">
@@ -3007,6 +3398,10 @@ function AccountManagementPage({ teams, teamDraft, setTeamDraft, onCreateTeam })
         <div className="account-form team-form">
           <input placeholder="소속" value={teamDraft.department} onChange={(e) => setTeamDraft({ ...teamDraft, department: e.target.value })} />
           <input placeholder="ID" value={teamDraft.login_id} onChange={(e) => setTeamDraft({ ...teamDraft, login_id: e.target.value })} onKeyDown={(e) => e.key === 'Enter' && onCreateTeam()} />
+          <select value={teamDraft.account_role} onChange={(e) => setTeamDraft({ ...teamDraft, account_role: e.target.value })}>
+            <option value="user">일반 사용자</option>
+            <option value="admin">관리자</option>
+          </select>
           <button className="mt-btn primary" type="button" onClick={onCreateTeam}><Plus size={15} />계정 부여</button>
         </div>
       </section>
@@ -3014,16 +3409,27 @@ function AccountManagementPage({ teams, teamDraft, setTeamDraft, onCreateTeam })
       <section className="account-card">
         <div className="account-table team-table">
           <div className="account-table-head">
-            <span>소속</span><span>ID</span><span>Team ID</span><span>상태</span>
+            <span>소속</span><span>ID</span><span>권한</span><span>Team ID</span><span>상태</span><span>관리</span>
           </div>
-          {teams.map((team) => (
-            <div className="account-row" key={team.team_id}>
-              <strong>{team.department}</strong>
-              <span>{team.login_id}</span>
-              <code>{team.team_id}</code>
-              <span className={`password-state${team.must_change_password ? ' initial' : ''}`}>{team.must_change_password ? '초기 비밀번호' : '변경 완료'}</span>
-            </div>
-          ))}
+          {teams.map((team) => {
+            const isAdminTeam = team.account_role === 'admin';
+            const isSelf = team.team_id === currentTeamId;
+            const isProtected = team.login_id === 'admin' || isSelf;
+            const protectedReason = isSelf ? '현재 로그인한 계정은 제거할 수 없습니다' : '관리자 계정은 제거할 수 없습니다';
+            return (
+              <div className="account-row" key={team.team_id}>
+                <strong>{team.department}</strong>
+                <span>{team.login_id}</span>
+                <span className={`account-role-tag${isAdminTeam ? ' admin' : ''}`}>{isAdminTeam ? '관리자' : '일반 사용자'}</span>
+                <code>{team.team_id}</code>
+                <span className={`password-state${team.must_change_password ? ' initial' : ''}`}>{team.must_change_password ? '초기 비밀번호' : '변경 완료'}</span>
+                <div className="account-row-actions">
+                  <button className="mt-btn sm" type="button" onClick={() => onResetTeamPassword(team.team_id)}>초기화</button>
+                  <button className="mt-btn danger sm" type="button" disabled={isProtected} title={isProtected ? protectedReason : undefined} onClick={() => onDeleteTeam(team.team_id)}><Trash2 size={13} />제거</button>
+                </div>
+              </div>
+            );
+          })}
           {teams.length === 0 && <div className="empty">등록된 팀 계정이 없습니다</div>}
         </div>
       </section>

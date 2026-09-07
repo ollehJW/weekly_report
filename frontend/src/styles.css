@@ -1056,12 +1056,46 @@ input:focus, textarea:focus, select:focus { border-color: #4f46e5; box-shadow: 0
 }
 
 .account-form.team-form {
-  grid-template-columns: minmax(160px, 1fr) minmax(160px, 1fr) auto;
+  grid-template-columns: minmax(160px, 1fr) minmax(160px, 1fr) 150px auto;
 }
 
 .team-table .account-table-head,
 .team-table .account-row {
-  grid-template-columns: minmax(140px, 1fr) minmax(140px, 1fr) minmax(260px, 1.6fr) 120px;
+  grid-template-columns: minmax(120px, 1fr) minmax(110px, .9fr) 96px minmax(220px, 1.4fr) 110px 168px;
+}
+
+.account-role-tag {
+  width: fit-content;
+  border-radius: 100px;
+  padding: 2px 8px;
+  background: #eef1f6;
+  color: #55627a;
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.account-role-tag.admin {
+  background: #e7edfb;
+  color: var(--wia-blue, #062983);
+}
+
+.account-row-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.account-row-actions .mt-btn[disabled] {
+  opacity: .45;
+  cursor: not-allowed;
+}
+
+@media (max-width: 900px) {
+  .account-form.team-form,
+  .team-table .account-table-head,
+  .team-table .account-row {
+    grid-template-columns: 1fr;
+  }
 }
 
 /* WIA portal redesign */
@@ -3415,3 +3449,247 @@ input:focus, textarea:focus, select:focus { border-color: var(--wia-blue); box-s
 .weekly-otherdel-copy b { color: #b31220; font-weight: 950; }
 .weekly-otherdel-confirm { border-color: #b31220; background: #b31220; color: #fff; }
 .weekly-otherdel-confirm:hover { border-color: #8f0d18; background: #8f0d18; color: #fff; }
+
+/* ── 운영 현황 (admin overview) ───────────────────────────── */
+.ov-toolbar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.ov-period {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.ov-period-btn {
+  border: 0;
+  border-right: 1px solid var(--border);
+  padding: 7px 14px;
+  background: var(--surface);
+  color: var(--ink-soft);
+  font-size: 12.5px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.ov-period-btn:last-child { border-right: 0; }
+.ov-period-btn:hover { background: #f2f5fa; }
+
+.ov-period-btn.active {
+  background: var(--wia-blue, #062983);
+  color: #fff;
+}
+
+.ov-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.ov-stat {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px;
+  background: var(--surface);
+}
+
+.ov-stat-icon {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  flex: 0 0 40px;
+  border-radius: 10px;
+  background: #eef2fa;
+  color: var(--wia-blue, #062983);
+}
+
+.ov-stat.live .ov-stat-icon {
+  background: #e4f5ec;
+  color: #0e8f52;
+}
+
+.ov-stat-body {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 1px;
+}
+
+.ov-stat-label {
+  color: var(--ink-faint);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.ov-stat-value {
+  font-size: 26px;
+  font-weight: 800;
+  line-height: 1.15;
+}
+
+.ov-stat-hint {
+  color: var(--ink-faint);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.ov-panel {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  overflow: hidden;
+  margin-bottom: 16px;
+}
+
+.ov-panel-head {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.ov-panel-head h2 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.ov-panel-head p {
+  margin: 3px 0 0;
+  color: var(--ink-faint);
+  font-size: 12px;
+}
+
+.ov-table { display: grid; }
+
+.ov-table-head,
+.ov-row {
+  display: grid;
+  grid-template-columns: var(--ov-cols, 1fr);
+  gap: 8px;
+  align-items: center;
+  padding: 9px 14px;
+  font-size: 13px;
+}
+
+.ov-table-head > *,
+.ov-row > * {
+  min-width: 0;
+}
+
+.ov-table-head {
+  background: #fbfaf7;
+  color: var(--ink-faint);
+  font-size: 11.5px;
+  font-weight: 750;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.ov-table-body {
+  overflow: visible;
+}
+
+.ov-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--border-soft);
+  background: #fbfcff;
+}
+
+.ov-pagination span {
+  color: var(--ink-faint);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.ov-pagination div { display: flex; align-items: center; gap: 6px; }
+
+.ov-pagination button {
+  min-height: 30px;
+  min-width: 54px;
+  border: 1px solid #cbd7ec;
+  border-radius: 7px;
+  background: #fff;
+  color: var(--wia-blue);
+  padding: 0 10px;
+  font-size: 12px;
+  font-weight: 900;
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.ov-pagination button:hover:not(:disabled) { border-color: var(--wia-blue); background: #eef4ff; }
+.ov-pagination button:disabled { cursor: not-allowed; border-color: #e0e6ef; background: #f3f6fb; color: #a4afbf; }
+
+.ov-row { border-bottom: 1px solid var(--border-soft); }
+.ov-row:last-child { border-bottom: 0; }
+.ov-row:hover { background: #fafbfe; }
+
+.ov-table-head .right,
+.ov-row .right {
+  text-align: right;
+  white-space: nowrap;
+}
+
+.ov-row span,
+.ov-row strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ov-mono {
+  color: var(--ink-soft);
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 11.5px;
+}
+
+.ov-delta {
+  color: #0e8f52;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 750;
+}
+
+.ov-account {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  min-width: 0;
+}
+
+.ov-dot {
+  flex: 0 0 7px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #16a34a;
+  box-shadow: 0 0 0 3px rgba(22, 163, 74, .16);
+}
+
+.ov-panel-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+  gap: 16px;
+  align-items: start;
+}
+
+.ov-panel-grid > * { min-width: 0; }
+.ov-panel-grid .ov-panel { margin-bottom: 0; }
+
+@media (max-width: 900px) {
+  .ov-panel-grid { grid-template-columns: 1fr; }
+  .ov-toolbar { flex-wrap: wrap; }
+}
