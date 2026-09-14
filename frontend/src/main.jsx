@@ -1,9 +1,11 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { Plus, Trash2, AudioWaveform, User, ChevronRight, Pencil, Save, X, KeyRound, LogOut, Users, ClipboardList, GripVertical, HelpCircle, Check, FileText, Link2, ImagePlus, AlertTriangle, History, ExternalLink } from 'lucide-react';
+import { Plus, Trash2, AudioWaveform, User, ChevronRight, Pencil, Save, X, KeyRound, LogOut, Users, ClipboardList, GripVertical, HelpCircle, Check, FileText, Link2, ImagePlus, AlertTriangle, History, ExternalLink, CalendarClock, Clock, CalendarRange, Zap, Wifi } from 'lucide-react';
 import './styles.css';
 
-const API_BASE = import.meta.env.VITE_API_BASE || `${window.location.protocol}//${window.location.hostname}:9601`;
+// 기본값은 같은 출처(''). vite 가 /api 를 백엔드로 프록시한다(vite.config.js).
+// 백엔드를 다른 주소로 직접 호출해야 하면 VITE_API_BASE 로 절대주소를 넣는다.
+const API_BASE = import.meta.env.VITE_API_BASE ?? '';
 
 function reportImageSrc(value) {
   const image = String(value || "");
@@ -14,6 +16,76 @@ const DAY = 24 * 60 * 60 * 1000;
 const DOW = ['일', '월', '화', '수', '목', '금', '토'];
 const INITIAL_PASSWORD = 'wia1234!';
 const OTHER_WORK_PROJECT_NAME = '기타 업무 (교육/출장 등)';
+const WEEKDAY_OPTIONS = [
+  { value: 0, label: "월요일" },
+  { value: 1, label: "화요일" },
+  { value: 2, label: "수요일" },
+  { value: 3, label: "목요일" },
+  { value: 4, label: "금요일" },
+  { value: 5, label: "토요일" },
+  { value: 6, label: "일요일" },
+];
+const OVERVIEW_PERIODS = [
+  { value: '7', label: '7일' },
+  { value: '30', label: '30일' },
+  { value: 'all', label: '전체' },
+];
+
+// Backend timestamps are naive UTC ISO strings; mark them as UTC before formatting to KST.
+function formatUtcStamp(value, withTime = true) {
+  const raw = String(value || '');
+  if (!raw) return '-';
+  const parsed = new Date(/[Z+]|[+-]\d\d:\d\d$/.test(raw) ? raw : `${raw}Z`);
+  if (Number.isNaN(parsed.getTime())) return '-';
+  return parsed.toLocaleString('ko-KR', {
+    timeZone: 'Asia/Seoul',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    ...(withTime ? { hour: '2-digit', minute: '2-digit', hour12: false } : {}),
+  });
+}
+
+// Year-less "09.07 14:23" for the narrow side-panel columns.
+function formatUtcStampShort(value) {
+  const raw = String(value || '');
+  if (!raw) return '-';
+  const parsed = new Date(/[Z+]|[+-]\d\d:\d\d$/.test(raw) ? raw : `${raw}Z`);
+  if (Number.isNaN(parsed.getTime())) return '-';
+  const parts = new Intl.DateTimeFormat('ko-KR', {
+    timeZone: 'Asia/Seoul',
+    month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false,
+  }).formatToParts(parsed).reduce((acc, part) => ({ ...acc, [part.type]: part.value }), {});
+  return `${parts.month}.${parts.day} ${parts.hour}:${parts.minute}`;
+}
+
+const DEFAULT_REPORT_SCHEDULE = { enabled: true, weekday: 4, time: "17:00", interval_days: 7 };
+const MIN_INTERVAL_DAYS = 1;
+const MAX_INTERVAL_DAYS = 31;
+
+function clampIntervalDays(value) {
+  const days = Math.round(Number(value));
+  if (!Number.isFinite(days) || days <= 0) return DEFAULT_REPORT_SCHEDULE.interval_days;
+  return Math.min(Math.max(days, MIN_INTERVAL_DAYS), MAX_INTERVAL_DAYS);
+}
+
+// weekday: 0=월 ~ 6=일, time: "HH:MM" — 한국시간 기준 다음 개설 시점
+function nextScheduleRun(weekday, time) {
+  const [hour, minute] = String(time || DEFAULT_REPORT_SCHEDULE.time).split(":").map(Number);
+  const nowKst = new Date(Date.now() + new Date().getTimezoneOffset() * 60000 + 9 * 3600000);
+  const todayIdx = (nowKst.getDay() + 6) % 7;
+  const run = new Date(nowKst);
+  run.setDate(run.getDate() + ((Number(weekday) - todayIdx + 7) % 7));
+  run.setHours(Number.isFinite(hour) ? hour : 17, Number.isFinite(minute) ? minute : 0, 0, 0);
+  if (run <= nowKst) run.setDate(run.getDate() + 7);
+  return run;
+}
+
+function formatKoreanDate(date) {
+  return date.getFullYear() + "년 " + (date.getMonth() + 1) + "월 " + date.getDate() + "일 (" + DOW[date.getDay()] + ")";
+}
+
+function formatShortDate(date) {
+  return (date.getMonth() + 1) + "월 " + date.getDate() + "일";
+}
 const ACCENTS = [
   { id: 'indigo', bar: '#4F46E5' },
   { id: 'teal', bar: '#0F8B8D' },
@@ -21,12 +93,12 @@ const ACCENTS = [
   { id: 'amber', bar: '#B8790F' },
 ];
 const STATUS_STYLE = {
-  planned: { label: '예정', bg: '#F1F0EC', text: '#6B6A63' },
-  in_progress: { label: '진행중', bg: '#EEEDFE', text: '#4F46E5' },
-  in_progress_delayed: { label: '진행 지연', bg: '#FFF4D6', text: '#9A5B00' },
-  done: { label: '완료', bg: '#E4F5EC', text: '#0E8F52' },
-  done_delayed: { label: '완료 지연', bg: '#FCF1EC', text: '#B0331C' },
-  blocked: { label: '차단', bg: '#FCF1EC', text: '#B0331C' },
+  planned: { label: '예정', bg: '#F7F5EF', text: '#5F5A4F', border: '#D8D1C3' },
+  in_progress: { label: '진행중', bg: '#EEEDFE', text: '#4F46E5', border: '#C7C2FF' },
+  in_progress_delayed: { label: '진행 지연', bg: '#FFF4D6', text: '#9A5B00', border: '#EAC46F' },
+  done: { label: '완료', bg: '#E4F5EC', text: '#0E8F52', border: '#A9D9BD' },
+  done_delayed: { label: '완료 지연', bg: '#FCF1EC', text: '#B0331C', border: '#E7B4A8' },
+  blocked: { label: '차단', bg: '#FCF1EC', text: '#B0331C', border: '#E7B4A8' },
 };
 const ROLE_LABELS = { L: '리더', CM: '책임매니저', M: '매니저' };
 const CALENDAR_EVENT_TYPES = {
@@ -113,6 +185,22 @@ function compactWeeklyDraft(draft) {
   };
 }
 
+// compactWeeklyDraft 가 실제로 저장하는 행(내용이 있는 행)만 날짜 필수로 본다.
+// 빈 행은 저장 시 어차피 버려지므로 경고 대상이 아니다.
+function findMissingWeeklyDates(draft) {
+  const progress = [];
+  (draft.progress_log || []).forEach((item, index) => {
+    const hasContent = String(item.log || "").trim() || String(item.detail || "").trim()
+      || (Array.isArray(item.images) ? item.images.length : 0) || String(item.confluence_url || "").trim();
+    if (hasContent && !String(item.date || "").trim()) progress.push(index);
+  });
+  const plan = [];
+  (draft.next_plan || []).forEach((item, index) => {
+    if (String(item.plan || "").trim() && !String(item.due || "").trim()) plan.push(index);
+  });
+  return { progress, plan };
+}
+
 function businessDaysBetween(startIso, endIso) {
   const start = toDate(startIso);
   const end = toDate(endIso);
@@ -182,6 +270,8 @@ function App() {
   const [weeklyReports, setWeeklyReports] = useState([]);
   const [weeklyReportDraft, setWeeklyReportDraft] = useState({ start_date: todayIso(), end_date: plusDays(todayIso(), 7) });
   const [isWeeklyReportModalOpen, setIsWeeklyReportModalOpen] = useState(false);
+  const [isWeeklyScheduleModalOpen, setIsWeeklyScheduleModalOpen] = useState(false);
+  const [weeklyScheduleDraft, setWeeklyScheduleDraft] = useState(DEFAULT_REPORT_SCHEDULE);
   const [weeklyWarningMessage, setWeeklyWarningMessage] = useState('');
   const [weeklyPasswordEntry, setWeeklyPasswordEntry] = useState(null);
   const [weeklyPasswordDraft, setWeeklyPasswordDraft] = useState('');
@@ -189,8 +279,12 @@ function App() {
   const [weeklyEntryProjects, setWeeklyEntryProjects] = useState([]);
   const [selectedWeeklyEntryId, setSelectedWeeklyEntryId] = useState('');
   const [weeklyEntryDraft, setWeeklyEntryDraft] = useState(emptyWeeklyEntryDraft());
+  const [weeklyDateCheckOn, setWeeklyDateCheckOn] = useState(false);
   const [weeklyReportPreview, setWeeklyReportPreview] = useState(null);
-  const [teamDraft, setTeamDraft] = useState({ department: '', login_id: '' });
+  const [teamDraft, setTeamDraft] = useState({ department: '', login_id: '', account_role: 'user' });
+  const [overview, setOverview] = useState(null);
+  const [overviewPeriod, setOverviewPeriod] = useState('7');
+  const [overviewLoading, setOverviewLoading] = useState(false);
   const [memberDraft, setMemberDraft] = useState({ name: '', role: 'M' });
   const [teamProjectDraft, setTeamProjectDraft] = useState({ project_name: '', leaderId: '', memberIds: [] });
   const [isProjectModalOpen, setIsProjectModalOpen] = useState(false);
@@ -205,10 +299,36 @@ function App() {
   const selectedProject = projects.find((project) => project.id === selectedProjectId) || null;
   const weeklyReport = weeklyReports[0] || null;
   const selectedTeamProject = teamProjects.find((project) => project.project_id === selectedProjectId) || null;
-  const isAdminAccount = currentTeam?.login_id === 'admin';
+  const isAdminAccount = currentTeam?.account_role === 'admin' || currentTeam?.login_id === 'admin';
+
+  // Keep the server-side session warm so 접속 중 reflects real presence.
+  useEffect(() => {
+    const sessionId = currentTeam?.session_id;
+    if (!sessionId) return undefined;
+    const ping = () => {
+      request('/api/auth/heartbeat', {
+        method: 'POST',
+        body: JSON.stringify({ session_id: sessionId }),
+      }).catch(() => {});
+    };
+    ping();
+    const timer = setInterval(ping, 60_000);
+    return () => clearInterval(timer);
+  }, [currentTeam?.session_id]);
 
   useEffect(() => {
-    if (!isAdminAccount && activePage === 'accounts') {
+    if (!isAdminAccount || activePage !== 'admin-overview') return undefined;
+    loadOverview(overviewPeriod);
+    const timer = setInterval(() => loadOverview(overviewPeriod), 60_000);
+    return () => clearInterval(timer);
+  }, [isAdminAccount, activePage, overviewPeriod]);
+
+  useEffect(() => {
+    if (isAdminAccount && activePage !== 'accounts' && activePage !== 'admin-overview') {
+      setActivePage('accounts');
+      return;
+    }
+    if (!isAdminAccount && (activePage === 'accounts' || activePage === 'admin-overview')) {
       setActivePage('tasks');
     }
   }, [isAdminAccount, activePage]);
@@ -282,6 +402,15 @@ function App() {
     setWeeklyReports(reports || []);
   }
 
+  async function loadWeeklySchedule(teamId = currentTeam?.team_id) {
+    if (!teamId) {
+      setWeeklyScheduleDraft(DEFAULT_REPORT_SCHEDULE);
+      return;
+    }
+    const schedule = await request("/api/teams/" + teamId + "/report-schedule");
+    setWeeklyScheduleDraft({ ...DEFAULT_REPORT_SCHEDULE, ...schedule });
+  }
+
   function updateWeeklyReportState(report) {
     if (!report?.report_id) return;
     setWeeklyReports((prev) => prev.map((item) => (item.report_id === report.report_id ? report : item)));
@@ -296,6 +425,7 @@ function App() {
       currentTeam?.team_id ? loadMembers(currentTeam.team_id) : Promise.resolve(),
       currentTeam?.team_id ? loadTeamProjects(currentTeam.team_id) : Promise.resolve(),
       currentTeam?.team_id ? loadWeeklyReport(currentTeam.team_id) : Promise.resolve(),
+      currentTeam?.team_id ? loadWeeklySchedule(currentTeam.team_id) : Promise.resolve(),
     ]);
   }
 
@@ -321,6 +451,7 @@ function App() {
       loadMembers(currentTeam.team_id),
       loadTeamProjects(currentTeam.team_id),
       loadWeeklyReport(currentTeam.team_id),
+      loadWeeklySchedule(currentTeam.team_id),
       loadProjects(undefined, currentTeam.team_id).then((projectId) => loadMilestones(projectId)),
     ]).catch((err) => setError(err.message));
   }, [currentTeam?.team_id]);
@@ -341,6 +472,13 @@ function App() {
   }
 
   function logout() {
+    const sessionId = currentTeam?.session_id;
+    if (sessionId) {
+      request('/api/auth/logout', {
+        method: 'POST',
+        body: JSON.stringify({ session_id: sessionId }),
+      }).catch(() => {});
+    }
     setCurrentTeam(null);
     setPasswordDraft({ current_password: INITIAL_PASSWORD, new_password: '', confirm_password: '' });
   }
@@ -368,7 +506,7 @@ function App() {
           new_password: passwordDraft.new_password,
         }),
       });
-      setCurrentTeam(team);
+      setCurrentTeam((prev) => ({ ...team, session_id: prev?.session_id }));
       setPasswordDraft({ current_password: '', new_password: '', confirm_password: '' });
       setError('');
     } catch (err) {
@@ -384,10 +522,55 @@ function App() {
         body: JSON.stringify({
           department: teamDraft.department.trim(),
           login_id: teamDraft.login_id.trim(),
+          account_role: teamDraft.account_role || 'user',
         }),
       });
-      setTeamDraft({ department: '', login_id: '' });
+      setTeamDraft({ department: '', login_id: '', account_role: 'user' });
       await loadTeams();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function loadOverview(period = overviewPeriod) {
+    setOverviewLoading(true);
+    try {
+      const data = await request(`/api/admin/overview?period=${encodeURIComponent(period)}`);
+      setOverview(data);
+      setError('');
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setOverviewLoading(false);
+    }
+  }
+
+  async function resetTeamPassword(teamId) {
+    const team = teams.find((item) => item.team_id === teamId);
+    if (!window.confirm(`${team ? team.login_id : '해당'} 계정의 비밀번호를 초기 비밀번호(${INITIAL_PASSWORD})로 초기화할까요?`)) return;
+    try {
+      await request(`/api/teams/${teamId}/password/reset`, { method: 'PUT' });
+      await loadTeams();
+      if (currentTeam?.team_id === teamId) {
+        setCurrentTeam((prev) => (prev ? { ...prev, must_change_password: true } : prev));
+      }
+      setError('');
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function deleteTeam(teamId) {
+    const team = teams.find((item) => item.team_id === teamId);
+    if (currentTeam?.team_id === teamId) {
+      setError('현재 로그인한 계정은 제거할 수 없습니다');
+      return;
+    }
+    if (!window.confirm(`${team ? team.department + ' (' + team.login_id + ')' : '해당'} 계정을 제거할까요? 소속 멤버와 보고 데이터가 함께 삭제됩니다.`)) return;
+    try {
+      await request(`/api/teams/${teamId}`, { method: 'DELETE' });
+      await loadTeams();
+      setError('');
     } catch (err) {
       setError(err.message);
     }
@@ -408,7 +591,7 @@ function App() {
   }
 
   async function createTeamProject() {
-    if (!currentTeam?.team_id || !teamProjectDraft.project_name.trim()) return;
+    if (!currentTeam?.team_id || !teamProjectDraft.project_name.trim() || !teamProjectDraft.leaderId) return;
     const memberIds = (teamProjectDraft.memberIds || []).filter((userId) => userId && userId !== teamProjectDraft.leaderId);
     const payload = {
       project_name: teamProjectDraft.project_name.trim(),
@@ -707,6 +890,35 @@ function App() {
     }
   }
 
+  async function saveWeeklyReportSchedule() {
+    if (!currentTeam?.team_id) return;
+    const payload = {
+      enabled: Boolean(weeklyScheduleDraft.enabled),
+      weekday: Number(weeklyScheduleDraft.weekday),
+      time: weeklyScheduleDraft.time || DEFAULT_REPORT_SCHEDULE.time,
+      interval_days: clampIntervalDays(weeklyScheduleDraft.interval_days),
+    };
+    try {
+      const schedule = await request("/api/teams/" + currentTeam.team_id + "/report-schedule", {
+        method: "PUT",
+        body: JSON.stringify(payload),
+      });
+      const nextSchedule = { ...DEFAULT_REPORT_SCHEDULE, ...schedule };
+      setWeeklyScheduleDraft(nextSchedule);
+      setCurrentTeam((prev) => prev ? {
+        ...prev,
+        report_schedule_enabled: nextSchedule.enabled,
+        report_schedule_weekday: nextSchedule.weekday,
+        report_schedule_time: nextSchedule.time,
+        report_schedule_interval_days: nextSchedule.interval_days,
+      } : prev);
+      setIsWeeklyScheduleModalOpen(false);
+      setError("");
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
   async function deleteWeeklyReport(reportId) {
     if (!reportId) return;
     try {
@@ -794,11 +1006,18 @@ function App() {
   function selectWeeklyProject(project) {
     setSelectedWeeklyEntryId(project.project_id);
     setWeeklyEntryDraft(weeklyDraftFromProject(project));
+    setWeeklyDateCheckOn(false);
   }
 
   async function saveWeeklyEntry(projectId = selectedWeeklyEntryId) {
     const project = weeklyEntryProjects.find((item) => item.project_id === projectId);
     if (!weeklyWritingEntry || !project) return;
+    const missingDates = findMissingWeeklyDates(weeklyEntryDraft);
+    if (missingDates.progress.length || missingDates.plan.length) {
+      setWeeklyDateCheckOn(true);
+      return;
+    }
+    setWeeklyDateCheckOn(false);
     try {
       const payload = compactWeeklyDraft(weeklyEntryDraft);
       const report = await request(`/api/report-entries/${project.entry_id}/projects/${project.project_id}`, {
@@ -838,6 +1057,7 @@ function App() {
     setWeeklyEntryProjects([]);
     setSelectedWeeklyEntryId('');
     setWeeklyEntryDraft(emptyWeeklyEntryDraft());
+    setWeeklyDateCheckOn(false);
   }
 
   if (!currentTeam) {
@@ -866,13 +1086,16 @@ function App() {
         </div>
 
         <nav className="side-nav" aria-label="주요 메뉴">
+          {!isAdminAccount && <>
           <button className={`side-tab${activePage === 'team-status' ? ' active' : ''}`} type="button" onClick={() => setActivePage('team-status')}>팀 현황</button>
           <button className={`side-tab${activePage === 'tasks' ? ' active' : ''}`} type="button" onClick={() => setActivePage('tasks')}>과제 현황</button>
           <button className={`side-tab${activePage === 'weekly-report' ? ' active' : ''}`} type="button" onClick={() => setActivePage('weekly-report')}>주간 보고 작성</button>
           <button className={`side-tab${activePage === 'weekly-lounge' ? ' active' : ''}`} type="button" onClick={() => setActivePage('weekly-lounge')}>주간 보고 라운지</button>
           <button className={'side-tab' + (activePage === 'member-management' ? ' active' : '')} type="button" onClick={() => setActivePage('member-management')}>멤버 관리</button>
           <button className={'side-tab' + (activePage === 'project-management' ? ' active' : '')} type="button" onClick={() => setActivePage('project-management')}>과제 관리</button>
+          </>}
           {isAdminAccount && <button className={`side-tab${activePage === 'accounts' ? ' active' : ''}`} type="button" onClick={() => setActivePage('accounts')}>계정 관리</button>}
+          {isAdminAccount && <button className={`side-tab${activePage === 'admin-overview' ? ' active' : ''}`} type="button" onClick={() => setActivePage('admin-overview')}>운영 현황</button>}
         </nav>
 
         <button className="side-help" type="button" onClick={() => setIsUsageGuideOpen(true)}>
@@ -892,7 +1115,7 @@ function App() {
 
       <section className="workspace">
         {error && <div className="error">{error}</div>}
-        {activePage === 'team-status' && (
+        {!isAdminAccount && activePage === 'team-status' && (
           <TeamStatusPage
             currentTeam={currentTeam}
             members={members}
@@ -901,7 +1124,7 @@ function App() {
             weeklyReports={weeklyReports}
           />
         )}
-        {activePage === 'tasks' && (
+        {!isAdminAccount && activePage === 'tasks' && (
           <>
             <div className="page-head">
               <div>
@@ -944,7 +1167,7 @@ function App() {
             )}
           </>
         )}
-        {activePage === 'weekly-report' && (
+        {!isAdminAccount && activePage === 'weekly-report' && (
           <WeeklyReportPage
             members={members}
             weeklyReports={weeklyReports}
@@ -952,6 +1175,11 @@ function App() {
             setWeeklyReportDraft={setWeeklyReportDraft}
             isWeeklyReportModalOpen={isWeeklyReportModalOpen}
             setIsWeeklyReportModalOpen={setIsWeeklyReportModalOpen}
+            isWeeklyScheduleModalOpen={isWeeklyScheduleModalOpen}
+            setIsWeeklyScheduleModalOpen={setIsWeeklyScheduleModalOpen}
+            weeklyScheduleDraft={weeklyScheduleDraft}
+            setWeeklyScheduleDraft={setWeeklyScheduleDraft}
+            onSaveWeeklyReportSchedule={saveWeeklyReportSchedule}
             onCreateWeeklyReportPeriod={createWeeklyReportPeriod}
             weeklyWarningMessage={weeklyWarningMessage}
             setWeeklyWarningMessage={setWeeklyWarningMessage}
@@ -970,6 +1198,7 @@ function App() {
             weeklyWritingEntry={weeklyWritingEntry}
             weeklyEntryProjects={weeklyEntryProjects}
             weeklyEntryDraft={weeklyEntryDraft}
+            weeklyDateCheckOn={weeklyDateCheckOn}
             setWeeklyEntryDraft={setWeeklyEntryDraft}
             selectedWeeklyEntryId={selectedWeeklyEntryId}
             onSelectWeeklyProject={selectWeeklyProject}
@@ -978,8 +1207,8 @@ function App() {
             onCloseWeeklyEntryModal={closeWeeklyEntryModal}
           />
         )}
-        {activePage === 'weekly-lounge' && <WeeklyReportLoungePage currentTeam={currentTeam} />}
-        {(activePage === 'member-management' || activePage === 'project-management') && (
+        {!isAdminAccount && activePage === 'weekly-lounge' && <WeeklyReportLoungePage currentTeam={currentTeam} />}
+        {!isAdminAccount && (activePage === 'member-management' || activePage === 'project-management') && (
           <TeamManagementPage
             activeTeamTab={activePage === 'member-management' ? 'members' : 'tasks'}
             showTabs={false}
@@ -1014,11 +1243,27 @@ function App() {
             setDraggingMemberId={setDraggingMemberId}
           />
         )}
+        {isAdminAccount && activePage === 'admin-overview' && (
+          <AdminOverviewPage
+            overview={overview}
+            loading={overviewLoading}
+            period={overviewPeriod}
+            setPeriod={setOverviewPeriod}
+            onRefresh={() => loadOverview(overviewPeriod)}
+          />
+        )}
         {isAdminAccount && activePage === 'accounts' && (
-          <AccountManagementPage teams={teams} teamDraft={teamDraft} setTeamDraft={setTeamDraft} onCreateTeam={createTeam} />
+          <AccountManagementPage teams={teams} currentTeamId={currentTeam?.team_id} teamDraft={teamDraft} setTeamDraft={setTeamDraft} onCreateTeam={createTeam} onResetTeamPassword={resetTeamPassword} onDeleteTeam={deleteTeam} />
         )}
       </section>
 
+      {currentTeam.must_change_password && (
+        <PasswordChangeModal
+          passwordDraft={passwordDraft}
+          setPasswordDraft={setPasswordDraft}
+          onChangePassword={changePassword}
+        />
+      )}
       {isUsageGuideOpen && <UsageGuideModal onClose={() => setIsUsageGuideOpen(false)} />}
     </main>
   );
@@ -1086,7 +1331,7 @@ function UsageGuideModal({ onClose }) {
               <p>각 멤버 카드에서 비밀번호 확인 후, 먼저 이번 주에 실제로 진행한 정규 과제를 선택합니다. 선택한 과제만 작성 화면 왼쪽 목록에 배치되고, 과제를 하나씩 눌러 주간 내용을 입력합니다.</p>
               <ul>
                 <li>내가 참여 멤버로 지정된 진행 중 과제가 선택 화면에 자동으로 표시됩니다.</li>
-                <li>작성 중에도 <strong>선택 수정</strong>을 눌러 이번 주 작성 대상 과제를 언제든지 다시 고를 수 있습니다.</li>
+                <li>작성 중에도 <strong>과제 다시 선택</strong>을 눌러 이번 주 작성 대상 과제를 언제든지 다시 고를 수 있습니다.</li>
                 <li><strong>기타 업무 (교육/출장 등)</strong>는 정규 과제 선택 화면에는 포함되지 않고, 작성 화면의 <strong>기타 (교육, 출장 등) 업무 추가</strong> 버튼으로 별도 추가합니다.</li>
                 <li>정규 과제 외 교육, 출장, 회의, 지원 업무처럼 별도 과제로 묶기 어려운 내용을 기타 업무에 입력합니다.</li>
               </ul>
@@ -1174,6 +1419,60 @@ function TeamStatusPage({ currentTeam, members, projects, teamProjects, weeklyRe
   );
 }
 
+function CalendarDayEvents({ iso, events, members, onClose, onOpen }) {
+  const dialogRef = useRef(null);
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+  useEffect(() => {
+    const previousFocus = document.activeElement;
+    const dialog = dialogRef.current;
+    const overflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    dialog.querySelector('button')?.focus();
+    function handleKey(event) {
+      if (event.key === 'Escape') { event.preventDefault(); closeRef.current(); }
+      if (event.key !== 'Tab') return;
+      const buttons = [...dialog.querySelectorAll('button')];
+      const first = buttons[0], last = buttons[buttons.length - 1];
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    }
+    document.addEventListener('keydown', handleKey);
+    return () => {
+      document.body.style.overflow = overflow;
+      document.removeEventListener('keydown', handleKey);
+      if (previousFocus?.isConnected) previousFocus.focus();
+    };
+  }, []);
+  const date = toDate(iso);
+  return (
+    <div className="modal-backdrop calendar-day-backdrop" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div ref={dialogRef} className="calendar-day-dialog" role="dialog" aria-modal="true" aria-labelledby="calendar-day-title">
+        <div className="calendar-day-head">
+          <div className="calendar-event-date-stamp" aria-hidden="true"><span>{date.getMonth() + 1}월</span><strong>{date.getDate()}</strong><small>{DOW[date.getDay()]}요일</small></div>
+          <div className="calendar-day-heading"><span>{date.getFullYear()}년 {date.getMonth() + 1}월</span><h2 id="calendar-day-title">{date.getDate()}일 {DOW[date.getDay()]}요일 일정</h2><p>이날의 일정을 한눈에 확인하세요</p></div>
+          <button className="icon-btn" type="button" onClick={onClose} aria-label="일정 목록 닫기"><X size={18} /></button>
+        </div>
+        <div className="calendar-day-summary"><strong>전체 일정 <span>{events.length}</span></strong><span>선택하면 상세 보기</span></div>
+        <ul className="calendar-day-list">
+          {events.map((item) => {
+            const meta = calendarEventTypeMeta(item.event_type);
+            const participants = item.members?.length ? item.members : members.filter((member) => item.member_ids?.includes(member.user_id));
+            return <li key={item.event_id}>
+              <button className={`calendar-day-item ${meta.className}`} type="button" onClick={() => onOpen(item)}>
+                <span className="calendar-day-item-top"><span className="calendar-day-kind">{meta.label}</span><span className="calendar-day-period">종일</span></span>
+                <strong>{item.title}</strong>
+                {item.start_date !== item.end_date && <span className="calendar-day-range"><CalendarRange size={13} aria-hidden="true" />{item.start_date} ~ {item.end_date}</span>}
+                <span className="calendar-day-item-footer"><span className="calendar-day-members"><User size={14} aria-hidden="true" /><span>{item.event_type === 'team' ? '팀 전체' : (participants.map((member) => [member.name, member.role].filter(Boolean).join(' ')).join(', ') || '참여 인원 없음')}</span></span><ChevronRight className="calendar-day-arrow" size={16} aria-hidden="true" /></span>
+              </button>
+            </li>;
+          })}
+        </ul>
+      </div>
+    </div>
+  );
+}
+
 function TeamCalendar({ currentTeam, members }) {
   const [monthIso, setMonthIso] = useState(todayIso().slice(0, 7) + '-01');
   const [events, setEvents] = useState([]);
@@ -1182,6 +1481,7 @@ function TeamCalendar({ currentTeam, members }) {
   const [selection, setSelection] = useState(null);
   const [isSelecting, setIsSelecting] = useState(false);
   const [draft, setDraft] = useState(null);
+  const [dayListIso, setDayListIso] = useState(null);
 
   useEffect(() => {
     if (!currentTeam?.team_id) return;
@@ -1222,6 +1522,7 @@ function TeamCalendar({ currentTeam, members }) {
   }
 
   function moveMonth(delta) {
+    setDayListIso(null);
     const next = new Date(monthStart);
     next.setMonth(next.getMonth() + delta);
     setMonthIso(isoOf(new Date(next.getFullYear(), next.getMonth(), 1)));
@@ -1406,6 +1707,7 @@ function TeamCalendar({ currentTeam, members }) {
         {calendarDays.map((day) => {
           const dayEvents = eventsForDate(day.iso);
           const dayEventSlots = calendarEventLayout.get(day.iso) || [];
+          const hiddenCount = dayEvents.length - dayEventSlots.slice(0, 3).filter(Boolean).length;
           return (
             <div
               key={day.iso}
@@ -1419,6 +1721,7 @@ function TeamCalendar({ currentTeam, members }) {
               onPointerEnter={() => updateSelection(day.iso)}
               onPointerUp={() => finishSelection(day.iso)}
               onKeyDown={(e) => {
+                if (e.target !== e.currentTarget) return;
                 if (e.key === 'Enter' || e.key === ' ') {
                   e.preventDefault();
                   openDraft(day.iso, day.iso);
@@ -1455,7 +1758,15 @@ function TeamCalendar({ currentTeam, members }) {
                     </button>
                   );
                 })}
-                {dayEvents.length > 3 && <span className="team-calendar-more">+{dayEvents.length - 3}</span>}
+                {hiddenCount > 0 && <button className="team-calendar-more" type="button"
+                  aria-label={`${day.iso} 일정 ${dayEvents.length}개 전체 보기, 숨겨진 일정 ${hiddenCount}개`}
+                  aria-haspopup="dialog"
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onPointerUp={(e) => e.stopPropagation()}
+                  onClick={(e) => {
+                    e.stopPropagation(); e.currentTarget.focus();
+                    setIsSelecting(false); setSelection(null); setDayListIso(day.iso);
+                  }}>+{hiddenCount}개 더보기</button>}
               </span>
             </div>
           );
@@ -1463,46 +1774,49 @@ function TeamCalendar({ currentTeam, members }) {
       </div>
       {loadingEvents && <div className="team-calendar-loading">일정을 불러오는 중</div>}
 
+      {dayListIso && !draft && <CalendarDayEvents iso={dayListIso}
+        events={sortEvents(eventsForDate(dayListIso))} members={members}
+        onClose={() => setDayListIso(null)} onOpen={openEvent} />}
+
       {draft && (() => {
         const isPersonalDraft = PERSONAL_CALENDAR_EVENT_TYPES.includes(draft.event_type);
         const draftMeta = calendarEventTypeMeta(draft.event_type);
         const selectedMembers = members.filter((member) => draft.member_ids.includes(member.user_id));
-        const periodLabel = draft.start_date === draft.end_date ? draft.start_date : `${draft.start_date} ~ ${draft.end_date}`;
+        const formatEventDate = (iso) => new Intl.DateTimeFormat('ko-KR', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'short' }).format(toDate(iso));
         return (
           <div className="modal-backdrop" role="presentation">
-            <div className="team-calendar-modal" role="dialog" aria-modal="true" aria-labelledby="team-calendar-title">
+            <div className={`team-calendar-modal${draft.mode === 'view' ? ' calendar-event-view' : ''}`} role="dialog" aria-modal="true" aria-labelledby="team-calendar-title">
               <div className="project-modal-head">
                 <div>
-                  <span>Team Schedule</span>
-                  <h2 id="team-calendar-title">{draft.event_id ? '팀 일정 상세' : '팀 일정 추가'}</h2>
+                  {draft.mode !== 'view' && <span>Team Schedule</span>}
+                  <h2 id="team-calendar-title" className={draft.mode === 'view' ? `calendar-event-kind ${draftMeta.className}` : undefined}>{draft.mode === 'view' ? draftMeta.label : (draft.event_id ? '팀 일정 수정' : '팀 일정 추가')}</h2>
                 </div>
                 <button className="icon-btn" type="button" onClick={() => setDraft(null)} aria-label="닫기"><X size={16} /></button>
               </div>
 
               {draft.mode === 'view' ? (
                 <div className="team-calendar-detail">
-                  <div className={`team-calendar-detail-badge ${draftMeta.className}`}>{isPersonalDraft ? `개인 일정 · ${draftMeta.label}` : draftMeta.label}</div>
                   <h3>{draft.title}</h3>
-                  <div className="team-calendar-detail-grid">
-                    <div>
-                      <span>일정 기간</span>
-                      <strong>{periodLabel}</strong>
-                    </div>
-                    <div>
-                      <span>일정 유형</span>
-                      <strong>{isPersonalDraft ? draftMeta.label : '팀 일정'}</strong>
-                    </div>
-                  </div>
-                  {isPersonalDraft && (
-                    <div className="team-calendar-detail-people">
-                      <span>참여 인원</span>
-                      <div>
-                        {selectedMembers.length ? selectedMembers.map((member) => (
-                          <span key={member.user_id} className="team-calendar-detail-person">{member.name} {member.role}</span>
-                        )) : <em>인원 없음</em>}
+                  <div className="calendar-event-sections">
+                    <section className="calendar-event-date-section" aria-label="일정 기간">
+                      <div className="calendar-event-section-label"><CalendarRange size={16} aria-hidden="true" />일정 기간<span>종일</span></div>
+                      <div className="calendar-event-date-content">
+                        <div className="calendar-event-date-stamp" aria-hidden="true"><span>{toDate(draft.start_date).getMonth() + 1}월</span><strong>{toDate(draft.start_date).getDate()}</strong><small>{DOW[toDate(draft.start_date).getDay()]}요일</small></div>
+                        <div className="calendar-event-date-text">
+                          <span>{formatEventDate(draft.start_date)}</span>
+                          {draft.start_date !== draft.end_date && <span className="calendar-event-end">~ {formatEventDate(draft.end_date)}</span>}
+                        </div>
                       </div>
-                    </div>
-                  )}
+                    </section>
+                    <section className="calendar-event-people-section" aria-label="참여자">
+                      <div className="calendar-event-section-label"><User size={16} aria-hidden="true" />참여자<span>{isPersonalDraft ? `${selectedMembers.length}명` : '팀 전체'}</span></div>
+                      <div className="calendar-event-roster">
+                        {!isPersonalDraft ? <div className="calendar-event-person"><span className="calendar-event-avatar" aria-hidden="true"><User size={18} /></span><div><strong>{currentTeam.department}</strong><small>팀 전체가 함께하는 일정</small></div></div> : selectedMembers.length ? selectedMembers.map((member) => (
+                          <div className="calendar-event-person" key={member.user_id}><span className="calendar-event-avatar" aria-hidden="true"><User size={18} /></span><div><strong>{member.name}</strong><small>{member.role}</small></div></div>
+                        )) : <span className="calendar-event-unassigned">지정된 참여자가 없습니다</span>}
+                      </div>
+                    </section>
+                  </div>
                 </div>
               ) : (
                 <div className="team-calendar-form">
@@ -1571,8 +1885,8 @@ function TeamCalendar({ currentTeam, members }) {
               <div className={`project-modal-actions team-calendar-actions${draft.mode === 'view' ? ' view-actions' : ''}`}>
                 {draft.mode === 'view' ? (
                   <>
-                    <button className="mt-btn danger" type="button" onClick={deleteEvent}>제거</button>
-                    <button className="mt-btn primary" type="button" onClick={() => setDraft({ ...draft, mode: 'edit' })}>수정</button>
+                    <button className="mt-btn danger" type="button" onClick={deleteEvent}><Trash2 size={15} />삭제</button>
+                    <button className="mt-btn primary" type="button" onClick={() => setDraft({ ...draft, mode: 'edit' })}><Pencil size={15} />일정 수정</button>
                   </>
                 ) : (
                   <>
@@ -1598,6 +1912,11 @@ function WeeklyReportPage({
   setWeeklyReportDraft,
   isWeeklyReportModalOpen,
   setIsWeeklyReportModalOpen,
+  isWeeklyScheduleModalOpen,
+  setIsWeeklyScheduleModalOpen,
+  weeklyScheduleDraft,
+  setWeeklyScheduleDraft,
+  onSaveWeeklyReportSchedule,
   onCreateWeeklyReportPeriod,
   weeklyWarningMessage,
   setWeeklyWarningMessage,
@@ -1616,6 +1935,7 @@ function WeeklyReportPage({
   weeklyWritingEntry,
   weeklyEntryProjects,
   weeklyEntryDraft,
+  weeklyDateCheckOn,
   setWeeklyEntryDraft,
   selectedWeeklyEntryId,
   onSelectWeeklyProject,
@@ -1631,12 +1951,70 @@ function WeeklyReportPage({
   const [confluenceEditor, setConfluenceEditor] = useState(null);
   const [deleteConfirmReport, setDeleteConfirmReport] = useState(null);
   const [isDeletingReport, setIsDeletingReport] = useState(false);
+  const weeklyMissingDates = useMemo(
+    () => (weeklyDateCheckOn ? findMissingWeeklyDates(weeklyEntryDraft) : { progress: [], plan: [] }),
+    [weeklyDateCheckOn, weeklyEntryDraft],
+  );
+  const weeklyMissingDateCount = weeklyMissingDates.progress.length + weeklyMissingDates.plan.length;
   const regularWeeklyProjects = weeklyEntryProjects.filter((project) => project.project_name !== OTHER_WORK_PROJECT_NAME);
   const otherWeeklyProject = weeklyEntryProjects.find((project) => project.project_name === OTHER_WORK_PROJECT_NAME) || null;
   const writableWeeklyProjects = weeklyEntryProjects.filter((project) => !project.is_excluded);
   const selectedWeeklyProject = writableWeeklyProjects.find((project) => project.project_id === selectedWeeklyEntryId) || null;
   const weeklySelectionMax = Math.max(regularWeeklyProjects.length, 1);
   const weeklySelectionPercent = Math.round((weeklySelectionDraft.length / weeklySelectionMax) * 100);
+  // 저장본과 현재 draft 를 같은 방식(compact)으로 정규화해 비교한다.
+  // 공백/날짜 포맷 차이로 인한 오탐이 없고, 저장 성공 시 baseline 이 갱신되어 자동으로 해제된다.
+  const weeklyEntryDirty = useMemo(() => {
+    if (!selectedWeeklyProject) return false;
+    return JSON.stringify(compactWeeklyDraft(weeklyEntryDraft))
+      !== JSON.stringify(compactWeeklyDraft(weeklyDraftFromProject(selectedWeeklyProject)));
+  }, [weeklyEntryDraft, selectedWeeklyProject]);
+  const [pendingLeave, setPendingLeave] = useState(null);
+  const [pendingOtherRemove, setPendingOtherRemove] = useState(false);
+  // 기타 업무를 뺀 정규 과제 목록과, 추가되어 있는 기타 업무를 분리해서 렌더한다
+  const writableRegularProjects = writableWeeklyProjects.filter((project) => project.project_name !== OTHER_WORK_PROJECT_NAME);
+  const addedOtherProject = writableWeeklyProjects.find((project) => project.project_name === OTHER_WORK_PROJECT_NAME) || null;
+  // 제외는 서버에서 작성 내용과 첨부 이미지를 되돌릴 수 없게 삭제하므로(main.py 의 exclusion 엔드포인트),
+  // 지울 내용이 있으면 반드시 확인을 받는다. 저장 전 draft 도 함께 본다.
+  const otherProjectHasContent = useMemo(() => {
+    if (!addedOtherProject) return false;
+    const saved = compactWeeklyDraft(weeklyDraftFromProject(addedOtherProject));
+    const live = selectedWeeklyEntryId === addedOtherProject.project_id
+      ? compactWeeklyDraft(weeklyEntryDraft)
+      : { progress_log: [], risk_issue: [], next_plan: [] };
+    return Boolean(saved.progress_log.length || saved.risk_issue.length || saved.next_plan.length
+      || live.progress_log.length || live.risk_issue.length || live.next_plan.length);
+  }, [addedOtherProject, selectedWeeklyEntryId, weeklyEntryDraft]);
+
+  function requestRemoveOtherProject() {
+    if (!addedOtherProject) return;
+    if (otherProjectHasContent) { setPendingOtherRemove(true); return; }
+    onUpdateWeeklyEntryStatus(addedOtherProject.project_id, true);
+  }
+
+  function confirmRemoveOtherProject() {
+    setPendingOtherRemove(false);
+    if (addedOtherProject) onUpdateWeeklyEntryStatus(addedOtherProject.project_id, true);
+  }
+
+  function requestCloseWeeklyEntry() {
+    if (weeklyEntryDirty) { setPendingLeave({ type: 'close' }); return; }
+    onCloseWeeklyEntryModal();
+  }
+
+  function requestSelectWeeklyProject(project) {
+    if (project.project_id === selectedWeeklyEntryId) return;
+    if (weeklyEntryDirty) { setPendingLeave({ type: 'switch', project }); return; }
+    onSelectWeeklyProject(project);
+  }
+
+  function confirmPendingLeave() {
+    const leave = pendingLeave;
+    setPendingLeave(null);
+    if (!leave) return;
+    if (leave.type === 'close') onCloseWeeklyEntryModal();
+    else onSelectWeeklyProject(leave.project);
+  }
   const hasWeeklyReports = weeklyReports.length > 0;
 
   useEffect(() => {
@@ -1789,7 +2167,10 @@ function WeeklyReportPage({
         <div>
           <h1>주간 보고 작성</h1>
         </div>
-        <button className="weekly-open-btn" type="button" onClick={() => setIsWeeklyReportModalOpen(true)}><Plus size={16} />새 보고 주간 개설</button>
+        <div className="weekly-page-actions">
+          <button className="weekly-schedule-btn" type="button" onClick={() => setIsWeeklyScheduleModalOpen(true)}><CalendarClock size={16} />개설 스케쥴링</button>
+          <button className="weekly-open-btn" type="button" onClick={() => setIsWeeklyReportModalOpen(true)}><Plus size={16} />새 보고 주간 개설</button>
+        </div>
       </div>
 
       {hasWeeklyReports ? (
@@ -1860,6 +2241,108 @@ function WeeklyReportPage({
           </div>
         </div>
       )}
+
+      {isWeeklyScheduleModalOpen && (() => {
+        const scheduleEnabled = !!weeklyScheduleDraft.enabled;
+        const scheduleTime = weeklyScheduleDraft.time || DEFAULT_REPORT_SCHEDULE.time;
+        const scheduleInterval = clampIntervalDays(weeklyScheduleDraft.interval_days);
+        const nextRun = nextScheduleRun(weeklyScheduleDraft.weekday, scheduleTime);
+        const nextEnd = new Date(nextRun);
+        nextEnd.setDate(nextEnd.getDate() + scheduleInterval - 1);
+        return (
+        <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && setIsWeeklyScheduleModalOpen(false)}>
+          <div className="weekly-report-modal weekly-schedule-modal" role="dialog" aria-modal="true" aria-labelledby="weekly-schedule-title" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="project-modal-head weekly-schedule-head">
+              <div className="weekly-schedule-head-copy">
+                <span className="weekly-schedule-head-icon"><CalendarClock size={19} /></span>
+                <div>
+                  <h2 id="weekly-schedule-title">보고 주간 개설 스케쥴링</h2>
+                  <p>설정한 주기에 맞춰 보고 주간이 자동으로 열립니다.</p>
+                </div>
+              </div>
+              <button className="icon-btn" type="button" onClick={() => setIsWeeklyScheduleModalOpen(false)} aria-label="닫기"><X size={16} /></button>
+            </div>
+
+            <label className={`weekly-schedule-switch${scheduleEnabled ? " on" : ""}`}>
+              <span className="weekly-schedule-switch-icon"><Zap size={16} /></span>
+              <span className="weekly-schedule-switch-copy">
+                <b>자동 개설 사용</b>
+                <small>{scheduleEnabled ? "예약된 시각에 보고 주간이 자동 생성됩니다." : "직접 개설할 때만 보고 주간이 만들어집니다."}</small>
+              </span>
+              <input type="checkbox" checked={scheduleEnabled} onChange={(e) => setWeeklyScheduleDraft({ ...weeklyScheduleDraft, enabled: e.target.checked })} />
+              <span className="weekly-schedule-switch-track" aria-hidden="true"><i /></span>
+            </label>
+
+            <fieldset className="weekly-schedule-body" disabled={!scheduleEnabled}>
+              <div className="weekly-schedule-field">
+                <span className="weekly-schedule-label"><CalendarRange size={13} />개설 요일</span>
+                <div className="weekly-schedule-days" role="radiogroup" aria-label="개설 요일">
+                  {WEEKDAY_OPTIONS.map((day) => (
+                    <button
+                      key={day.value}
+                      type="button"
+                      role="radio"
+                      aria-checked={Number(weeklyScheduleDraft.weekday) === day.value}
+                      className={`weekly-schedule-day${Number(weeklyScheduleDraft.weekday) === day.value ? " active" : ""}${day.value >= 5 ? " weekend" : ""}`}
+                      onClick={() => setWeeklyScheduleDraft({ ...weeklyScheduleDraft, weekday: day.value })}
+                    >{day.label.charAt(0)}</button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="weekly-schedule-row">
+                <div className="weekly-schedule-field">
+                  <span className="weekly-schedule-label"><Clock size={13} />개설 시간</span>
+                  <input
+                    className="weekly-schedule-time"
+                    type="time"
+                    value={scheduleTime}
+                    onChange={(e) => setWeeklyScheduleDraft({ ...weeklyScheduleDraft, time: e.target.value })}
+                  />
+                </div>
+                <div className="weekly-schedule-field">
+                  <span className="weekly-schedule-label"><CalendarClock size={13} />보고 기간<em>{MIN_INTERVAL_DAYS}~{MAX_INTERVAL_DAYS}일</em></span>
+                  <div className="weekly-schedule-interval-input">
+                    <input
+                      type="number"
+                      min={MIN_INTERVAL_DAYS}
+                      max={MAX_INTERVAL_DAYS}
+                      step={1}
+                      inputMode="numeric"
+                      aria-label="보고 기간 (일)"
+                      value={weeklyScheduleDraft.interval_days ?? ""}
+                      onChange={(e) => setWeeklyScheduleDraft({ ...weeklyScheduleDraft, interval_days: e.target.value === "" ? "" : Number(e.target.value) })}
+                      onBlur={(e) => setWeeklyScheduleDraft({ ...weeklyScheduleDraft, interval_days: clampIntervalDays(e.target.value) })}
+                    />
+                    <span>일</span>
+                  </div>
+                </div>
+              </div>
+            </fieldset>
+
+            <div className={`weekly-schedule-preview${scheduleEnabled ? "" : " muted"}`}>
+              <span className="weekly-schedule-preview-badge">{scheduleEnabled ? "다음 개설 예정" : "사용 안 함"}</span>
+              {scheduleEnabled ? (
+                <>
+                  <strong>{formatKoreanDate(nextRun)} {scheduleTime}</strong>
+                  <span>{formatShortDate(nextRun)} ~ {formatShortDate(nextEnd)} ({scheduleInterval}일)의 보고 기간이 한국시간 기준으로 생성됩니다.</span>
+                </>
+              ) : (
+                <>
+                  <strong>자동 개설이 꺼져 있습니다</strong>
+                  <span>보고 주간은 &lsquo;새 보고 주간 개설&rsquo; 버튼으로만 만들 수 있습니다.</span>
+                </>
+              )}
+            </div>
+
+            <div className="project-modal-actions">
+              <button className="mt-btn" type="button" onClick={() => setIsWeeklyScheduleModalOpen(false)}>취소</button>
+              <button className="mt-btn primary" type="button" onClick={onSaveWeeklyReportSchedule}><Save size={13} />저장</button>
+            </div>
+          </div>
+        </div>
+        );
+      })()}
 
       {isWeeklyReportModalOpen && (
         <div className="modal-backdrop" role="presentation">
@@ -1938,12 +2421,18 @@ function WeeklyReportPage({
       {weeklyWritingEntry && (
         <div className="modal-backdrop" role="presentation">
           <div className="weekly-entry-modal" role="dialog" aria-modal="true" aria-labelledby="weekly-entry-title">
-            <div className="project-modal-head">
-              <div>
-                <h2 id="weekly-entry-title">주간 보고 작성</h2>
-                <p>{writingEntryName}</p>
+            <div className="project-modal-head weekly-entry-head">
+              <div className="weekly-entry-head-copy">
+                <span className="weekly-entry-head-icon"><ClipboardList size={19} /></span>
+                <div>
+                  <h2 id="weekly-entry-title">주간 보고 작성</h2>
+                  <p>
+                    <b>{writingEntryName}</b>
+                    {weeklyWritingEntry.report_period && <><span className="weekly-entry-head-sep">·</span>{weeklyWritingEntry.report_period}</>}
+                  </p>
+                </div>
               </div>
-              <button className="icon-btn" type="button" onClick={onCloseWeeklyEntryModal} aria-label="닫기"><X size={16} /></button>
+              <button className="icon-btn" type="button" onClick={requestCloseWeeklyEntry} aria-label="닫기"><X size={16} /></button>
             </div>
             {isWeeklyProjectPickerOpen ? (
               <section className="weekly-project-picker">
@@ -1987,101 +2476,153 @@ function WeeklyReportPage({
               <aside className="weekly-project-list" aria-label="작성 과제">
                 <div className="weekly-project-list-head">
                   <strong>작성 과제</strong>
-                  <button type="button" onClick={() => setIsWeeklyProjectPickerOpen(true)}>선택 수정</button>
+                  <em className="weekly-project-count">{writableRegularProjects.length}</em>
+                  <button type="button" onClick={() => setIsWeeklyProjectPickerOpen(true)}>과제 다시 선택</button>
                 </div>
-                {writableWeeklyProjects.map((project) => (
-                  <button className={selectedWeeklyEntryId === project.project_id ? 'active' : ''} type="button" key={`${project.entry_id}-${project.project_id}`} onClick={() => onSelectWeeklyProject(project)}>
-                    <span>{project.project_name}</span>
-                    {project.status === 'done' && <b className="entry-state done">작성 완료</b>}
-                    {project.project_name === OTHER_WORK_PROJECT_NAME && <b className="entry-state other">기타 업무</b>}
-                  </button>
-                ))}
-                {otherWeeklyProject?.is_excluded && (
-                  <button className="weekly-other-add" type="button" onClick={addOtherWeeklyProject}><Plus size={14} /><span>기타 (교육, 출장 등) 업무 추가</span></button>
+                <div className="weekly-project-items">
+                  {writableRegularProjects.map((project) => (
+                    <button className={`weekly-project-item${selectedWeeklyEntryId === project.project_id ? ' active' : ''}`} type="button" key={`${project.entry_id}-${project.project_id}`} onClick={() => requestSelectWeeklyProject(project)}>
+                      <span>{project.project_name}</span>
+                      {project.status === 'done' && <b className="entry-state done">작성 완료</b>}
+                    </button>
+                  ))}
+                  {writableRegularProjects.length === 0 && <div className="empty compact">선택된 과제가 없습니다</div>}
+                </div>
+
+                {otherWeeklyProject && (
+                <div className="weekly-other-section">
+                  <div className="weekly-other-divider"><span>기타 업무</span></div>
+                  {addedOtherProject ? (
+                    <div className={`weekly-other-row${selectedWeeklyEntryId === addedOtherProject.project_id ? ' active' : ''}`}>
+                      <button className="weekly-other-open" type="button" onClick={() => requestSelectWeeklyProject(addedOtherProject)}>
+                        <span>{addedOtherProject.project_name}</span>
+                        {addedOtherProject.status === 'done' && <b className="entry-state done">작성 완료</b>}
+                      </button>
+                      <button className="weekly-other-remove" type="button" onClick={requestRemoveOtherProject} title="기타 업무를 이번 주 보고에서 뺍니다" aria-label="기타 업무 제거"><X size={15} strokeWidth={2.6} /></button>
+                    </div>
+                  ) : (
+                    <button className="weekly-other-add" type="button" onClick={addOtherWeeklyProject}><Plus size={14} /><span>기타 (교육, 출장 등) 업무 추가</span></button>
+                  )}
+                </div>
                 )}
-                {writableWeeklyProjects.length === 0 && <div className="empty compact">선택된 과제가 없습니다</div>}
               </aside>
               <section className="weekly-entry-panel">
                 {selectedWeeklyProject ? (
                   <>
+                    {(() => {
+                      const locked = selectedWeeklyProject.status === 'excluded';
+                      return (
+                    <>
                     <div className="weekly-entry-panel-head">
                       <div>
                         <h3>{selectedWeeklyProject.project_name}</h3>
                         <p>과제별로 이번 주 내용을 작성합니다.</p>
                       </div>
-                      <button className={`weekly-exclude-btn${selectedWeeklyProject.status === 'excluded' ? ' active' : ''}`} type="button" onClick={() => onUpdateWeeklyEntryStatus(selectedWeeklyProject.project_id, selectedWeeklyProject.status !== 'excluded')}>
-                        {selectedWeeklyProject.status === 'excluded' ? '업무 추가' : '이번 주 제외'}
-                      </button>
                     </div>
                     <div className="weekly-entry-list-fields">
-                      <section className="weekly-list-block">
+                      <section className="weekly-list-block progress">
                         <div className="weekly-list-title">
-                          <span>Progress Log</span>
-                          <button type="button" disabled={selectedWeeklyProject.status === 'excluded'} onClick={addProgressItem}><Plus size={14} />추가</button>
+                          <span className="weekly-list-name">Progress Log</span>
+                          <em className="weekly-list-count">{weeklyEntryDraft.progress_log.length}</em>
+                          <button type="button" disabled={locked} onClick={addProgressItem}><Plus size={14} />추가</button>
                         </div>
                         <div className="weekly-list-items">
                           {weeklyEntryDraft.progress_log.map((item, index) => (
-                            <div className="weekly-list-row progress" key={"progress-" + index}>
-                              <input disabled={selectedWeeklyProject.status === 'excluded'} value={item.log} onChange={(e) => updateProgressItem(index, 'log', e.target.value)} placeholder="진행 내용을 입력하세요" />
-                              <select disabled={selectedWeeklyProject.status === 'excluded'} value={item.status} onChange={(e) => updateProgressItem(index, 'status', e.target.value)} aria-label="진행 상태">
-                                <option value="done">Done</option>
-                                <option value="in_progress">In Progress</option>
-                              </select>
-                              <input className="weekly-due-input" type="date" disabled={selectedWeeklyProject.status === 'excluded'} value={item.date} onChange={(e) => updateProgressItem(index, 'date', e.target.value)} aria-label="Progress Log 날짜" />
-                              <div className="weekly-item-actions">
-                                <button className={(item.detail || item.images?.length) ? 'has-content' : ''} type="button" disabled={selectedWeeklyProject.status === 'excluded'} onClick={() => openDetailEditor('progress_log', index)} title="상세 글과 이미지를 작성합니다"><FileText size={14} />상세</button>
-                                <button className={item.confluence_url ? 'has-content' : ''} type="button" disabled={selectedWeeklyProject.status === 'excluded'} onClick={() => openConfluenceEditor('progress_log', index)} title="Confluence 링크를 연결합니다"><Link2 size={14} />Confluence</button>
+                            <div className={`weekly-item-card progress${weeklyMissingDates.progress.includes(index) ? ' invalid' : ''}`} key={"progress-" + index}>
+                              <div className="weekly-item-main">
+                                <span className="weekly-item-index">{String(index + 1).padStart(2, '0')}</span>
+                                <input disabled={locked} value={item.log} onChange={(e) => updateProgressItem(index, 'log', e.target.value)} placeholder="진행 내용을 입력하세요" />
                               </div>
-                              <button className="weekly-row-remove" type="button" disabled={selectedWeeklyProject.status === 'excluded'} onClick={() => removeProgressItem(index)} aria-label="Progress Log 삭제"><Trash2 size={15} /></button>
+                              <div className="weekly-item-meta">
+                                <select className="weekly-item-status" disabled={locked} value={item.status} onChange={(e) => updateProgressItem(index, 'status', e.target.value)} aria-label="진행 상태">
+                                  <option value="done">Done</option>
+                                  <option value="in_progress">In Progress</option>
+                                </select>
+                                <input className={`weekly-due-input${weeklyMissingDates.progress.includes(index) ? ' date-missing' : ''}`} type="date" disabled={locked} value={item.date} onChange={(e) => updateProgressItem(index, 'date', e.target.value)} aria-label="Progress Log 날짜" aria-invalid={weeklyMissingDates.progress.includes(index)} />
+                                <div className="weekly-item-actions">
+                                  <button className={(item.detail || item.images?.length) ? 'has-content' : ''} type="button" disabled={locked} onClick={() => openDetailEditor('progress_log', index)} title="상세 글과 이미지를 작성합니다"><FileText size={14} />상세</button>
+                                  <button className={item.confluence_url ? 'has-content' : ''} type="button" disabled={locked} onClick={() => openConfluenceEditor('progress_log', index)} title="Confluence 링크를 연결합니다"><Link2 size={14} />Confluence</button>
+                                </div>
+                                <button className="weekly-row-remove" type="button" disabled={locked} onClick={() => removeProgressItem(index)} aria-label="Progress Log 삭제"><Trash2 size={15} /></button>
+                              </div>
                             </div>
                           ))}
                         </div>
                       </section>
 
-                      <section className="weekly-list-block">
+                      <section className="weekly-list-block risk">
                         <div className="weekly-list-title">
-                          <span>Risk & Issue</span>
-                          <button type="button" disabled={selectedWeeklyProject.status === 'excluded'} onClick={addRiskItem}><Plus size={14} />추가</button>
+                          <span className="weekly-list-name">Risk &amp; Issue</span>
+                          <em className="weekly-list-count">{weeklyEntryDraft.risk_issue.length}</em>
+                          <button type="button" disabled={locked} onClick={addRiskItem}><Plus size={14} />추가</button>
                         </div>
                         <div className="weekly-list-items">
                           {weeklyEntryDraft.risk_issue.map((item, index) => (
-                            <div className="weekly-list-row risk" key={"risk-" + index}>
-                              <input disabled={selectedWeeklyProject.status === 'excluded'} value={item.issue} onChange={(e) => updateRiskItem(index, 'issue', e.target.value)} placeholder="리스크와 이슈를 입력하세요" />
-                              <select disabled={selectedWeeklyProject.status === 'excluded'} value={item.importance} onChange={(e) => updateRiskItem(index, 'importance', e.target.value)} aria-label="중요도">
-                                <option value="상">상</option>
-                                <option value="중">중</option>
-                                <option value="하">하</option>
-                              </select>
-                              <div className="weekly-item-actions">
-                                <button className={(item.detail || item.images?.length) ? 'has-content' : ''} type="button" disabled={selectedWeeklyProject.status === 'excluded'} onClick={() => openDetailEditor('risk_issue', index)} title="상세 글과 이미지를 작성합니다"><FileText size={14} />상세</button>
-                                <button className={item.confluence_url ? 'has-content' : ''} type="button" disabled={selectedWeeklyProject.status === 'excluded'} onClick={() => openConfluenceEditor('risk_issue', index)} title="Confluence 링크를 연결합니다"><Link2 size={14} />Confluence</button>
+                            <div className="weekly-item-card risk" key={"risk-" + index}>
+                              <div className="weekly-item-main">
+                                <span className="weekly-item-index">{String(index + 1).padStart(2, '0')}</span>
+                                <input disabled={locked} value={item.issue} onChange={(e) => updateRiskItem(index, 'issue', e.target.value)} placeholder="리스크와 이슈를 입력하세요" />
                               </div>
-                              <button className="weekly-row-remove" type="button" disabled={selectedWeeklyProject.status === 'excluded'} onClick={() => removeRiskItem(index)} aria-label="Risk & Issue 삭제"><Trash2 size={15} /></button>
+                              <div className="weekly-item-meta">
+                                <select className="weekly-item-importance" disabled={locked} value={item.importance} onChange={(e) => updateRiskItem(index, 'importance', e.target.value)} aria-label="중요도">
+                                  <option value="상">중요도 상</option>
+                                  <option value="중">중요도 중</option>
+                                  <option value="하">중요도 하</option>
+                                </select>
+                                <div className="weekly-item-actions">
+                                  <button className={(item.detail || item.images?.length) ? 'has-content' : ''} type="button" disabled={locked} onClick={() => openDetailEditor('risk_issue', index)} title="상세 글과 이미지를 작성합니다"><FileText size={14} />상세</button>
+                                  <button className={item.confluence_url ? 'has-content' : ''} type="button" disabled={locked} onClick={() => openConfluenceEditor('risk_issue', index)} title="Confluence 링크를 연결합니다"><Link2 size={14} />Confluence</button>
+                                </div>
+                                <button className="weekly-row-remove" type="button" disabled={locked} onClick={() => removeRiskItem(index)} aria-label="Risk & Issue 삭제"><Trash2 size={15} /></button>
+                              </div>
                             </div>
                           ))}
                         </div>
                       </section>
 
-                      <section className="weekly-list-block">
+                      <section className="weekly-list-block plan">
                         <div className="weekly-list-title">
-                          <span>Next Plan</span>
-                          <button type="button" disabled={selectedWeeklyProject.status === 'excluded'} onClick={addPlanItem}><Plus size={14} />추가</button>
+                          <span className="weekly-list-name">Next Plan</span>
+                          <em className="weekly-list-count">{weeklyEntryDraft.next_plan.length}</em>
+                          <button type="button" disabled={locked} onClick={addPlanItem}><Plus size={14} />추가</button>
                         </div>
                         <div className="weekly-list-items">
                           {weeklyEntryDraft.next_plan.map((item, index) => (
-                            <div className="weekly-list-row plan" key={"plan-" + index}>
-                              <input disabled={selectedWeeklyProject.status === 'excluded'} value={item.plan} onChange={(e) => updatePlanItem(index, 'plan', e.target.value)} placeholder="다음 계획을 입력하세요" />
-                              <input className="weekly-due-input" type="date" disabled={selectedWeeklyProject.status === 'excluded'} value={item.due} onChange={(e) => updatePlanItem(index, 'due', e.target.value)} aria-label="Due" />
-                              <button className="weekly-row-remove" type="button" disabled={selectedWeeklyProject.status === 'excluded'} onClick={() => removePlanItem(index)} aria-label="Next Plan 삭제"><Trash2 size={15} /></button>
+                            <div className={`weekly-item-card plan${weeklyMissingDates.plan.includes(index) ? ' invalid' : ''}`} key={"plan-" + index}>
+                              <div className="weekly-item-main">
+                                <span className="weekly-item-index">{String(index + 1).padStart(2, '0')}</span>
+                                <input disabled={locked} value={item.plan} onChange={(e) => updatePlanItem(index, 'plan', e.target.value)} placeholder="다음 계획을 입력하세요" />
+                              </div>
+                              <div className="weekly-item-meta">
+                                <span className="weekly-item-duelabel">Due</span>
+                                <input className={`weekly-due-input${weeklyMissingDates.plan.includes(index) ? ' date-missing' : ''}`} type="date" disabled={locked} value={item.due} onChange={(e) => updatePlanItem(index, 'due', e.target.value)} aria-label="Due" aria-invalid={weeklyMissingDates.plan.includes(index)} />
+                                <button className="weekly-row-remove" type="button" disabled={locked} onClick={() => removePlanItem(index)} aria-label="Next Plan 삭제"><Trash2 size={15} /></button>
+                              </div>
                             </div>
                           ))}
                         </div>
                       </section>
                     </div>
-                    <div className="project-modal-actions">
-                      <button className="mt-btn" type="button" onClick={onCloseWeeklyEntryModal}>닫기</button>
-                      <button className="mt-btn primary" type="button" disabled={selectedWeeklyProject.status === 'excluded'} onClick={() => onSaveWeeklyEntry(selectedWeeklyProject.project_id)}>저장</button>
+                    <div className="project-modal-actions weekly-entry-actions">
+                      {weeklyMissingDateCount > 0 ? (
+                        <p className="weekly-date-warning" role="alert">
+                          <AlertTriangle size={14} />
+                          날짜를 입력해야 저장할 수 있습니다.
+                          <b>
+                            {weeklyMissingDates.progress.length > 0 && `Progress Log ${weeklyMissingDates.progress.length}건`}
+                            {weeklyMissingDates.progress.length > 0 && weeklyMissingDates.plan.length > 0 && ' · '}
+                            {weeklyMissingDates.plan.length > 0 && `Next Plan ${weeklyMissingDates.plan.length}건`}
+                          </b>
+                        </p>
+                      ) : weeklyEntryDirty ? (
+                        <p className="weekly-dirty-chip"><span className="weekly-dirty-dot" />저장되지 않은 변경사항이 있습니다</p>
+                      ) : null}
+                      <button className="mt-btn" type="button" onClick={requestCloseWeeklyEntry}>닫기</button>
+                      <button className="mt-btn primary" type="button" disabled={locked} onClick={() => onSaveWeeklyEntry(selectedWeeklyProject.project_id)}>저장</button>
                     </div>
+                    </>
+                      );
+                    })()}
                   </>
                 ) : (
                   <div className="empty">선택 가능한 과제가 없습니다</div>
@@ -2089,6 +2630,45 @@ function WeeklyReportPage({
               </section>
             </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {pendingLeave && (
+        <div className="modal-backdrop weekly-submodal-backdrop" role="presentation">
+          <div className="weekly-report-modal compact-modal weekly-leave-modal" role="alertdialog" aria-modal="true" aria-labelledby="weekly-leave-title" aria-describedby="weekly-leave-desc">
+            <div className="weekly-leave-icon"><AlertTriangle size={22} /></div>
+            <div className="weekly-leave-copy">
+              <h2 id="weekly-leave-title">저장하지 않고 나갈까요?</h2>
+              <p id="weekly-leave-desc">
+                {pendingLeave.type === 'switch'
+                  ? '작성 중인 내용이 저장되지 않았습니다. 다른 과제로 이동하면 변경사항이 사라집니다.'
+                  : '작성 중인 내용이 저장되지 않았습니다. 지금 닫으면 변경사항이 사라집니다.'}
+              </p>
+            </div>
+            <div className="project-modal-actions">
+              <button className="mt-btn" type="button" onClick={() => setPendingLeave(null)}>계속 작성</button>
+              <button className="mt-btn weekly-leave-discard" type="button" onClick={confirmPendingLeave}>저장 안 하고 나가기</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {pendingOtherRemove && (
+        <div className="modal-backdrop weekly-submodal-backdrop" role="presentation">
+          <div className="weekly-report-modal compact-modal weekly-otherdel-modal" role="alertdialog" aria-modal="true" aria-labelledby="weekly-otherdel-title" aria-describedby="weekly-otherdel-desc">
+            <div className="weekly-otherdel-icon"><AlertTriangle size={22} /></div>
+            <div className="weekly-otherdel-copy">
+              <h2 id="weekly-otherdel-title">기타 업무를 뺄까요?</h2>
+              <p id="weekly-otherdel-desc">
+                <strong>{OTHER_WORK_PROJECT_NAME}</strong>에 작성한 내용이 있습니다.
+                이번 주 보고에서 빼면 작성한 Progress Log · Risk &amp; Issue · Next Plan과 첨부한 이미지가 <b>모두 삭제되며 되돌릴 수 없습니다.</b>
+              </p>
+            </div>
+            <div className="project-modal-actions">
+              <button className="mt-btn" type="button" onClick={() => setPendingOtherRemove(false)}>취소</button>
+              <button className="mt-btn weekly-otherdel-confirm" type="button" onClick={confirmRemoveOtherProject}>내용 삭제하고 빼기</button>
+            </div>
           </div>
         </div>
       )}
@@ -2463,6 +3043,10 @@ function ProjectManagementBoard({ members, teamProjects, teamProjectDraft, setTe
   const inProgressProjects = teamProjects.filter((project) => project.status !== 'done');
   const doneProjects = teamProjects.filter((project) => project.status === 'done');
 
+  const selectedLeader = members.find((member) => member.user_id === teamProjectDraft.leaderId);
+  const selectedMemberCount = (teamProjectDraft.memberIds || []).length;
+  const canSaveProject = Boolean(teamProjectDraft.project_name.trim() && teamProjectDraft.leaderId);
+
   function updateDraftMember(userId, checked) {
     setTeamProjectDraft((prev) => {
       const currentIds = prev.memberIds || [];
@@ -2514,7 +3098,7 @@ function ProjectManagementBoard({ members, teamProjects, teamProjectDraft, setTe
 
       {isProjectModalOpen && (
         <div className="modal-backdrop" role="presentation">
-          <div className="project-modal" role="dialog" aria-modal="true" aria-labelledby="project-create-title">
+          <div className="project-modal project-create-modal" role="dialog" aria-modal="true" aria-labelledby="project-create-title">
             <div className="project-modal-head">
               <div>
                 <h2 id="project-create-title">{editingTeamProjectId ? '과제 수정' : '과제 추가'}</h2>
@@ -2522,9 +3106,13 @@ function ProjectManagementBoard({ members, teamProjects, teamProjectDraft, setTe
               </div>
               <button className="icon-btn" type="button" onClick={closeModal} aria-label="닫기"><X size={16} /></button>
             </div>
+            <div className="project-create-summary" aria-label="과제 구성 요약">
+              <div><span>리더</span><strong>{selectedLeader ? selectedLeader.name : "미지정"}</strong></div>
+              <div><span>참여 멤버</span><strong>{selectedMemberCount}명</strong></div>
+            </div>
             <label className="project-leader-field">
               <span>과제명</span>
-              <input autoFocus placeholder="과제명을 입력하세요" value={teamProjectDraft.project_name} onChange={(e) => setTeamProjectDraft((prev) => ({ ...prev, project_name: e.target.value }))} onKeyDown={(e) => e.key === 'Enter' && onCreateTeamProject()} />
+              <input autoFocus placeholder="과제명을 입력하세요" value={teamProjectDraft.project_name} onChange={(e) => setTeamProjectDraft((prev) => ({ ...prev, project_name: e.target.value }))} onKeyDown={(e) => e.key === 'Enter' && canSaveProject && onCreateTeamProject()} />
             </label>
             <label className="project-leader-field">
               <span>과제 리더</span>
@@ -2543,7 +3131,7 @@ function ProjectManagementBoard({ members, teamProjects, teamProjectDraft, setTe
                   return (
                     <label className={`project-member-option${disabled ? ' disabled' : ''}`} key={member.user_id}>
                       <input type="checkbox" checked={checked} disabled={disabled} onChange={(e) => updateDraftMember(member.user_id, e.target.checked)} />
-                      <span>{member.name}</span>
+                      <span className="project-member-option-copy"><b>{member.name}</b><small>{disabled ? "리더" : ROLE_LABELS[member.role] || member.role}</small></span>
                     </label>
                   );
                 })}
@@ -2552,7 +3140,7 @@ function ProjectManagementBoard({ members, teamProjects, teamProjectDraft, setTe
             </div>
             <div className="project-modal-actions">
               <button className="mt-btn" type="button" onClick={closeModal}>취소</button>
-              <button className="mt-btn primary" type="button" onClick={onCreateTeamProject}><Save size={13} />{editingTeamProjectId ? '저장' : '추가'}</button>
+              <button className="mt-btn primary" type="button" disabled={!canSaveProject} onClick={onCreateTeamProject}><Save size={13} />{editingTeamProjectId ? '저장' : '추가'}</button>
             </div>
           </div>
         </div>
@@ -2601,7 +3189,273 @@ function ProjectCard({ project, actionLabel, nextStatus, onMove, onEdit, onDelet
 }
 
 
-function AccountManagementPage({ teams, teamDraft, setTeamDraft, onCreateTeam }) {
+function OverviewStat({ icon, label, value, hint, tone }) {
+  return (
+    <div className={`ov-stat${tone ? ` ${tone}` : ''}`}>
+      <div className="ov-stat-icon">{icon}</div>
+      <div className="ov-stat-body">
+        <span className="ov-stat-label">{label}</span>
+        <b className="ov-stat-value">{value}</b>
+        {hint && <span className="ov-stat-hint">{hint}</span>}
+      </div>
+    </div>
+  );
+}
+
+function OverviewRankTable({ title, subtitle, columns, rows, renderRow }) {
+  const pageSize = 10;
+  const [page, setPage] = useState(0);
+  const totalPages = Math.max(1, Math.ceil(rows.length / pageSize));
+  const currentPage = Math.min(page, totalPages - 1);
+  const start = currentPage * pageSize;
+  const visible = rows.slice(start, start + pageSize);
+
+  useEffect(() => {
+    setPage(0);
+  }, [rows]);
+
+  return (
+    <section className="ov-panel">
+      <div className="ov-panel-head">
+        <div>
+          <h2>{title}</h2>
+          {subtitle && <p>{subtitle}</p>}
+        </div>
+      </div>
+      <div className="ov-table" style={{ '--ov-cols': columns.map((c) => c.width).join(' ') }}>
+        <div className="ov-table-head">
+          {columns.map((col) => <span key={col.key} className={col.align === 'right' ? 'right' : undefined}>{col.label}</span>)}
+        </div>
+        <div className="ov-table-body">
+          {visible.map(renderRow)}
+          {visible.length === 0 && <div className="empty">기간 내 데이터가 없습니다</div>}
+        </div>
+      </div>
+      {rows.length > pageSize && (
+        <div className="ov-pagination">
+          <span>{start + 1}-{Math.min(start + pageSize, rows.length)} / {rows.length}</span>
+          <div>
+            <button type="button" disabled={currentPage === 0} onClick={() => setPage((prev) => Math.max(0, prev - 1))}>이전</button>
+            <button type="button" disabled={currentPage >= totalPages - 1} onClick={() => setPage((prev) => Math.min(totalPages - 1, prev + 1))}>다음</button>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function AdminOverviewPage({ overview, loading, period, setPeriod, onRefresh }) {
+  const summary = overview?.summary;
+  const periodLabel = OVERVIEW_PERIODS.find((item) => item.value === period)?.label || '';
+  const scopeHint = period === 'all' ? '전체 기간' : `최근 ${periodLabel}`;
+  const recentWritersWithProjects = (overview?.recent_writers || []).filter((row) => Number(row.project_count) > 0);
+
+  return (
+    <>
+      <div className="page-head">
+        <div>
+          <h1>운영 현황</h1>
+          <p>
+            전체 계정의 사용 현황을 집계합니다
+            {overview && ` · ${formatUtcStamp(overview.generated_at)} 기준`}
+          </p>
+        </div>
+        <div className="ov-toolbar">
+          <div className="ov-period" role="group" aria-label="집계 기간">
+            {OVERVIEW_PERIODS.map((item) => (
+              <button
+                key={item.value}
+                type="button"
+                className={`ov-period-btn${period === item.value ? ' active' : ''}`}
+                onClick={() => setPeriod(item.value)}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+          <button className="mt-btn sm" type="button" onClick={onRefresh} disabled={loading}>
+            {loading ? '불러오는 중…' : '새로고침'}
+          </button>
+        </div>
+      </div>
+
+      {!overview && loading && <div className="empty">운영 현황을 불러오는 중입니다…</div>}
+      {!overview && !loading && <div className="empty">운영 현황을 불러오지 못했습니다</div>}
+
+      {overview && (
+        <>
+          <section className="ov-stat-grid">
+            <OverviewStat
+              tone="live"
+              icon={<Wifi size={18} />}
+              label="접속 중인 계정"
+              value={summary.online_accounts}
+              hint={`전체 ${summary.total_accounts}개 계정 · 최근 ${overview.online_window_minutes}분 활동 기준`}
+            />
+            <OverviewStat
+              icon={<FileText size={18} />}
+              label="진행중인 보고"
+              value={summary.in_progress_reports}
+              hint="멤버가 배정된 작성 마감 전 주간 보고"
+            />
+            <OverviewStat
+              icon={<Check size={18} />}
+              label="완료된 보고"
+              value={summary.done_reports}
+              hint="마감 처리된 주간 보고"
+            />
+            <OverviewStat
+              icon={<ClipboardList size={18} />}
+              label="등록된 진행 과제"
+              value={summary.in_progress_projects}
+              hint="상태가 진행중인 과제"
+            />
+            <OverviewStat
+              icon={<Check size={18} />}
+              label="완료된 진행 과제"
+              value={summary.done_projects}
+              hint="상태가 완료인 과제"
+            />
+          </section>
+
+          <OverviewRankTable
+            title="최근 보고 작성 멤버"
+            subtitle={scopeHint + " 내 작성 기록 " + recentWritersWithProjects.length + "건 (최대 100건)"}
+            columns={[
+              { key: "time", label: "작성 시간", width: "minmax(150px, 1.1fr)" },
+              { key: "team", label: "팀", width: "minmax(120px, 1fr)" },
+              { key: "member", label: "멤버", width: "minmax(90px, .7fr)" },
+              { key: "week", label: "보고 주차", width: "minmax(160px, 1.1fr)" },
+              { key: "count", label: "작성 과제 수", width: "96px", align: "right" },
+            ]}
+            rows={recentWritersWithProjects}
+            renderRow={(row, index) => (
+              <div className="ov-row" key={`${row.updated_at}-${row.login_id}-${row.member_name}-${index}`}>
+                <span className="ov-mono">{formatUtcStamp(row.updated_at)}</span>
+                <span>{row.department}</span>
+                <strong>{row.member_name}</strong>
+                <span className="ov-mono">{row.report_range}</span>
+                <span className="right"><b>{row.project_count}</b></span>
+              </div>
+            )}
+          />
+
+          <div className="ov-panel-grid">
+            <OverviewRankTable
+              title="팀별 멤버 수"
+              subtitle={`괄호 안은 ${scopeHint} 내 신규 등록`}
+              columns={[
+                { key: 'team', label: '팀', width: 'minmax(0, 1fr)' },
+                { key: 'count', label: '멤버 수', width: '96px', align: 'right' },
+              ]}
+              rows={overview.team_members}
+              renderRow={(row) => (
+                <div className="ov-row" key={row.team_id}>
+                  <span>{row.department}</span>
+                  <span className="right"><b>{row.total}</b>{row.recent > 0 && <em className="ov-delta"> (+{row.recent})</em>}</span>
+                </div>
+              )}
+            />
+
+            <OverviewRankTable
+              title="팀별 과제 수"
+              subtitle={`괄호 안은 ${scopeHint} 내 신규 등록`}
+              columns={[
+                { key: 'team', label: '팀', width: 'minmax(0, 1fr)' },
+                { key: 'ip', label: '진행중', width: '54px', align: 'right' },
+                { key: 'done', label: '완료', width: '44px', align: 'right' },
+                { key: 'total', label: '합계', width: '78px', align: 'right' },
+              ]}
+              rows={overview.team_projects}
+              renderRow={(row) => (
+                <div className="ov-row" key={row.team_id}>
+                  <span>{row.department}</span>
+                  <span className="right">{row.in_progress}</span>
+                  <span className="right">{row.done}</span>
+                  <span className="right"><b>{row.total}</b>{row.recent > 0 && <em className="ov-delta"> (+{row.recent})</em>}</span>
+                </div>
+              )}
+            />
+
+            <OverviewRankTable
+              title="계정별 접속 사용"
+              subtitle={`${scopeHint} 내 로그인 횟수`}
+              columns={[
+                { key: 'team', label: '계정', width: 'minmax(0, 1fr)' },
+                { key: 'last', label: '최근 접속', width: '92px' },
+                { key: 'count', label: '접속 수', width: '68px', align: 'right' },
+              ]}
+              rows={overview.account_logins}
+              renderRow={(row) => (
+                <div className="ov-row" key={row.team_id}>
+                  <span className="ov-account">
+                    {row.is_online && <i className="ov-dot" title="접속 중" />}
+                    {row.department}
+                  </span>
+                  <span className="ov-mono">{formatUtcStampShort(row.last_login_at)}</span>
+                  <span className="right"><b>{row.login_count}</b></span>
+                </div>
+              )}
+            />
+
+            <OverviewRankTable
+              title="계정별 완료된 보고"
+              subtitle="전체 완료 처리된 주간보고"
+              columns={[
+                { key: "team", label: "계정", width: "minmax(0, 1fr)" },
+                { key: "last", label: "최근 완료 보고", width: "minmax(130px, 1.1fr)" },
+                { key: "count", label: "완료", width: "68px", align: "right" },
+              ]}
+              rows={overview.account_completed_reports || []}
+              renderRow={(row) => (
+                <div className="ov-row" key={row.team_id}>
+                  <span>{row.department}</span>
+                  <span className="ov-mono">{row.last_report_range || "-"}</span>
+                  <span className="right"><b>{row.count}</b></span>
+                </div>
+              )}
+            />
+
+            <OverviewRankTable
+              title="계정별 마일스톤 수"
+              subtitle={`${scopeHint} 내 생성된 마일스톤`}
+              columns={[
+                { key: 'team', label: '계정', width: 'minmax(0, 1fr)' },
+                { key: 'count', label: '마일스톤', width: '88px', align: 'right' },
+              ]}
+              rows={overview.account_milestones}
+              renderRow={(row) => (
+                <div className="ov-row" key={row.team_id}>
+                  <span>{row.department}</span>
+                  <span className="right"><b>{row.count}</b></span>
+                </div>
+              )}
+            />
+
+            <OverviewRankTable
+              title="계정별 팀일정 작성 수"
+              subtitle={`${scopeHint} 내 등록된 팀 일정`}
+              columns={[
+                { key: 'team', label: '계정', width: 'minmax(0, 1fr)' },
+                { key: 'count', label: '일정', width: '88px', align: 'right' },
+              ]}
+              rows={overview.account_events}
+              renderRow={(row) => (
+                <div className="ov-row" key={row.team_id}>
+                  <span>{row.department}</span>
+                  <span className="right"><b>{row.count}</b></span>
+                </div>
+              )}
+            />
+          </div>
+        </>
+      )}
+    </>
+  );
+}
+
+
+function AccountManagementPage({ teams, currentTeamId, teamDraft, setTeamDraft, onCreateTeam, onResetTeamPassword, onDeleteTeam }) {
   return (
     <>
       <div className="page-head">
@@ -2615,6 +3469,10 @@ function AccountManagementPage({ teams, teamDraft, setTeamDraft, onCreateTeam })
         <div className="account-form team-form">
           <input placeholder="소속" value={teamDraft.department} onChange={(e) => setTeamDraft({ ...teamDraft, department: e.target.value })} />
           <input placeholder="ID" value={teamDraft.login_id} onChange={(e) => setTeamDraft({ ...teamDraft, login_id: e.target.value })} onKeyDown={(e) => e.key === 'Enter' && onCreateTeam()} />
+          <select value={teamDraft.account_role} onChange={(e) => setTeamDraft({ ...teamDraft, account_role: e.target.value })}>
+            <option value="user">일반 사용자</option>
+            <option value="admin">관리자</option>
+          </select>
           <button className="mt-btn primary" type="button" onClick={onCreateTeam}><Plus size={15} />계정 부여</button>
         </div>
       </section>
@@ -2622,16 +3480,27 @@ function AccountManagementPage({ teams, teamDraft, setTeamDraft, onCreateTeam })
       <section className="account-card">
         <div className="account-table team-table">
           <div className="account-table-head">
-            <span>소속</span><span>ID</span><span>Team ID</span><span>상태</span>
+            <span>소속</span><span>ID</span><span>권한</span><span>Team ID</span><span>상태</span><span>관리</span>
           </div>
-          {teams.map((team) => (
-            <div className="account-row" key={team.team_id}>
-              <strong>{team.department}</strong>
-              <span>{team.login_id}</span>
-              <code>{team.team_id}</code>
-              <span className={`password-state${team.must_change_password ? ' initial' : ''}`}>{team.must_change_password ? '초기 비밀번호' : '변경 완료'}</span>
-            </div>
-          ))}
+          {teams.map((team) => {
+            const isAdminTeam = team.account_role === 'admin';
+            const isSelf = team.team_id === currentTeamId;
+            const isProtected = team.login_id === 'admin' || isSelf;
+            const protectedReason = isSelf ? '현재 로그인한 계정은 제거할 수 없습니다' : '관리자 계정은 제거할 수 없습니다';
+            return (
+              <div className="account-row" key={team.team_id}>
+                <strong>{team.department}</strong>
+                <span>{team.login_id}</span>
+                <span className={`account-role-tag${isAdminTeam ? ' admin' : ''}`}>{isAdminTeam ? '관리자' : '일반 사용자'}</span>
+                <code>{team.team_id}</code>
+                <span className={`password-state${team.must_change_password ? ' initial' : ''}`}>{team.must_change_password ? '초기 비밀번호' : '변경 완료'}</span>
+                <div className="account-row-actions">
+                  <button className="mt-btn sm" type="button" onClick={() => onResetTeamPassword(team.team_id)}>초기화</button>
+                  <button className="mt-btn danger sm" type="button" disabled={isProtected} title={isProtected ? protectedReason : undefined} onClick={() => onDeleteTeam(team.team_id)}><Trash2 size={13} />제거</button>
+                </div>
+              </div>
+            );
+          })}
           {teams.length === 0 && <div className="empty">등록된 팀 계정이 없습니다</div>}
         </div>
       </section>
@@ -2900,7 +3769,16 @@ function ProjectIssueManagement({ project }) {
     return value ? items.filter((item) => item.importance === value) : items;
   }
 
-  function importanceClass(value) {
+  function formatResolvedDate(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const utc = new Date(/[Zz]|[+-]\d{2}:?\d{2}$/.test(raw) ? raw : raw + "Z");
+  if (Number.isNaN(utc.getTime())) return raw.slice(0, 10).replaceAll("-", ".");
+  const kst = new Date(utc.getTime() + 9 * 3600000);
+  return kst.getUTCFullYear() + "." + String(kst.getUTCMonth() + 1).padStart(2, "0") + "." + String(kst.getUTCDate()).padStart(2, "0");
+}
+
+function importanceClass(value) {
     if (value === "상") return "high";
     if (value === "하") return "low";
     return "medium";
@@ -2995,6 +3873,7 @@ function ProjectIssueManagement({ project }) {
           return (
             <article className={"issue-management-item " + level + (isResolvedSection ? " resolved" : "")} key={item.issue_id}>
               <div className="issue-management-item-head">
+                {isResolvedSection && <span className="issue-resolved-chip"><Check size={11} strokeWidth={3} />해결</span>}
                 <span className={"issue-importance " + level}>중요도 {item.importance}</span>
                 <span className="issue-management-author">{item.reported_by} {ROLE_LABELS[item.reported_role] || item.reported_role}</span>
               </div>
@@ -3018,7 +3897,12 @@ function ProjectIssueManagement({ project }) {
               )}
               {isResolvedSection && renderResolvedMeta(item)}
               <div className="issue-management-footer">
-                <span>보고 주간 {item.report_start_date} ~ {item.report_end_date}</span>
+                <span className="issue-management-period">
+                  보고 주간 {item.report_start_date} ~ {item.report_end_date}
+                  {isResolvedSection && formatResolvedDate(item.resolved_at) && (
+                    <b className="issue-resolved-date">해결 {formatResolvedDate(item.resolved_at)}</b>
+                  )}
+                </span>
                 <div className="issue-management-actions">
                   {item.confluence_url && <a href={item.confluence_url} target="_blank" rel="noopener noreferrer">Confluence 상세 <ExternalLink size={12} /></a>}
                   {isResolvedSection ? (
@@ -3068,15 +3952,17 @@ function ProjectIssueManagement({ project }) {
         <div className="issue-management-sections">
           <section className="issue-management-section ongoing" aria-label="미해결 Issue">
             <div className="issue-management-section-head">
+              <span className="issue-section-mark"><AlertTriangle size={15} /></span>
               <div><h3>미해결</h3><p>아직 해결되지 않아 계속 추적해야 하는 Issue입니다.</p></div>
-              <span>{filteredOpenIssues.length}건</span>
+              <span className="issue-section-count">{filteredOpenIssues.length}건</span>
             </div>
             {renderIssueList(filteredOpenIssues, importanceFilter === "all" ? "미해결 Issue가 없습니다." : "선택한 중요도의 미해결 Issue가 없습니다.")}
           </section>
           <section className="issue-management-section resolved" aria-label="해결된 Issue">
             <div className="issue-management-section-head">
+              <span className="issue-section-mark"><Check size={15} strokeWidth={3} /></span>
               <div><h3>해결</h3><p>해결 처리되어 기록으로 보관되는 Issue입니다.</p></div>
-              <span>{filteredResolvedIssues.length}건</span>
+              <span className="issue-section-count">{filteredResolvedIssues.length}건</span>
             </div>
             {renderIssueList(filteredResolvedIssues, importanceFilter === "all" ? "해결된 Issue가 없습니다." : "선택한 중요도의 해결 Issue가 없습니다.", true)}
           </section>
@@ -3356,10 +4242,14 @@ function ProjectTimeline({
   }
 
   function renderEpicLabel(epic, milestone, isLast) {
-    const status = STATUS_STYLE[normalizeStatus(epic.status)] || STATUS_STYLE.planned;
+    const statusKey = normalizeStatus(epic.status);
+    const status = STATUS_STYLE[statusKey] || STATUS_STYLE.planned;
     return (
-      <div className={`mt-row-label epic${isLast ? ' last' : ''}`} key={`axis-${epic.id}`}>
-        <div><div className="name">{epic.title}</div><div className="meta"><span className="mt-avatar"><User size={9} /></span>{epic.owner || '담당 미지정'} · <span className="mt-badge" style={{ background: status.bg, color: status.text }}>{status.label}</span></div></div>
+      <div className={"mt-row-label epic status-row-" + statusKey + (isLast ? " last" : "")} key={`axis-${epic.id}`}>
+        <div className="work-label-copy">
+          <div className="work-title-line"><div className="name">{epic.title}</div><span className={"mt-badge status-" + statusKey} style={{ background: status.bg, color: status.text, borderColor: status.border }}>{status.label}</span></div>
+          <div className="meta"><span className="mt-avatar"><User size={9} /></span>{epic.owner || "담당 미지정"}</div>
+        </div>
         <div className="row-actions">
           <button className="mt-icon-action" onClick={() => startEditEpic(epic, milestone)} aria-label="Work 편집"><Pencil size={13} /></button>
           <button className="mt-delete" onClick={() => onRemoveEpic(epic.id)} aria-label="Work 삭제"><Trash2 size={13} /></button>
