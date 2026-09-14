@@ -268,6 +268,7 @@ function App() {
   const [addingMilestone, setAddingMilestone] = useState(false);
   const [milestoneDraft, setMilestoneDraft] = useState({ title: '', start_date: todayIso(), end_date: plusDays(todayIso(), 14) });
   const [weeklyReports, setWeeklyReports] = useState([]);
+  const [completedWeeklyReports, setCompletedWeeklyReports] = useState([]);
   const [weeklyReportDraft, setWeeklyReportDraft] = useState({ start_date: todayIso(), end_date: plusDays(todayIso(), 7) });
   const [isWeeklyReportModalOpen, setIsWeeklyReportModalOpen] = useState(false);
   const [isWeeklyScheduleModalOpen, setIsWeeklyScheduleModalOpen] = useState(false);
@@ -396,10 +397,15 @@ function App() {
   async function loadWeeklyReport(teamId = currentTeam?.team_id) {
     if (!teamId) {
       setWeeklyReports([]);
+      setCompletedWeeklyReports([]);
       return;
     }
-    const reports = await request(`/api/teams/${teamId}/reports/active-list`);
+    const [reports, archive] = await Promise.all([
+      request(`/api/teams/${teamId}/reports/active-list`),
+      request(`/api/teams/${teamId}/reports/archive`),
+    ]);
     setWeeklyReports(reports || []);
+    setCompletedWeeklyReports(archive || []);
   }
 
   async function loadWeeklySchedule(teamId = currentTeam?.team_id) {
@@ -947,7 +953,7 @@ function App() {
     if (!reportId) return;
     try {
       await request(`/api/reports/${reportId}/complete`, { method: 'PUT' });
-      setWeeklyReports((prev) => prev.filter((report) => report.report_id !== reportId));
+      await loadWeeklyReport();
       setWeeklyPasswordEntry(null);
       setWeeklyPasswordDraft('');
       closeWeeklyEntryModal();
@@ -956,6 +962,12 @@ function App() {
     } catch (err) {
       setError(err.message);
     }
+  }
+
+  async function reopenWeeklyReport(reportId) {
+    const report = await request(`/api/reports/${reportId}/reopen`, { method: 'PUT' });
+    setWeeklyReports((prev) => [report, ...prev.filter((item) => item.report_id !== reportId)]);
+    setCompletedWeeklyReports((prev) => prev.filter((item) => item.report_id !== reportId));
   }
 
   async function toggleWeeklyAbsence(report, member) {
@@ -1177,6 +1189,8 @@ function App() {
         )}
         {!isAdminAccount && activePage === 'weekly-report' && (
           <WeeklyReportPage
+            completedWeeklyReports={completedWeeklyReports}
+            onReopenWeeklyReport={reopenWeeklyReport}
             members={members}
             weeklyReports={weeklyReports}
             weeklyReportDraft={weeklyReportDraft}
@@ -1914,6 +1928,8 @@ function TeamCalendar({ currentTeam, members }) {
 }
 
 function WeeklyReportPage({
+  completedWeeklyReports,
+  onReopenWeeklyReport,
   members,
   weeklyReports,
   weeklyReportDraft,
@@ -1959,6 +1975,27 @@ function WeeklyReportPage({
   const [confluenceEditor, setConfluenceEditor] = useState(null);
   const [deleteConfirmReport, setDeleteConfirmReport] = useState(null);
   const [isDeletingReport, setIsDeletingReport] = useState(false);
+  const [archiveSelection, setArchiveSelection] = useState('');
+  const [archiveBusy, setArchiveBusy] = useState(false);
+  const [archiveMessage, setArchiveMessage] = useState('');
+  const archiveSelectionValid = completedWeeklyReports.some((report) => report.report_id === archiveSelection);
+  function archiveCompletionLabel(value) {
+    if (!value) return '완료 일시 미기록';
+    const parsed = new Date(/[zZ]|[+-]\d{2}:?\d{2}$/.test(value) ? value : value + 'Z');
+    if (Number.isNaN(parsed.getTime())) return '완료 일시 미기록';
+    return '완료 ' + new Intl.DateTimeFormat('ko-KR', { timeZone: 'Asia/Seoul', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).format(parsed);
+  }
+  async function reopenArchiveSelection() {
+    if (!archiveSelectionValid || archiveBusy) return;
+    setArchiveBusy(true); setArchiveMessage('');
+    try {
+      await onReopenWeeklyReport(archiveSelection);
+      setArchiveSelection('');
+      setArchiveMessage('보고 주간을 다시 열었습니다. 위에서 이어서 작성할 수 있습니다.');
+    } catch (err) { setArchiveMessage(err.message || '보고 주간을 열지 못했습니다.'); }
+    finally { setArchiveBusy(false); }
+  }
+
   const weeklyMissingDates = useMemo(
     () => (weeklyDateCheckOn ? findMissingWeeklyDates(weeklyEntryDraft) : { progress: [], plan: [] }),
     [weeklyDateCheckOn, weeklyEntryDraft],
@@ -2226,6 +2263,18 @@ function WeeklyReportPage({
           </div>
         </section>
       )}
+
+      <section className="weekly-archive" aria-labelledby="weekly-archive-title">
+        <div className="weekly-archive-head">
+          <h2 id="weekly-archive-title">완료된 주간보고</h2>
+          <button className="mt-btn" type="button" disabled={!archiveSelectionValid || archiveBusy} onClick={reopenArchiveSelection}>{archiveBusy ? '여는 중…' : '다시 열기'}</button>
+        </div>
+        {completedWeeklyReports.length ? <select className="weekly-archive-list" size={Math.min(5, Math.max(2, completedWeeklyReports.length))} aria-label="다시 열 주간보고 선택"
+          value={archiveSelectionValid ? archiveSelection : ''} disabled={archiveBusy} onChange={(e) => setArchiveSelection(e.target.value)}>
+          {completedWeeklyReports.map((report) => <option key={report.report_id} value={report.report_id}>{report.start_date} ~ {report.end_date}　·　{archiveCompletionLabel(report.completed_at)}</option>)}
+        </select> : <p className="weekly-archive-empty">완료된 주간보고가 없습니다.</p>}
+        {archiveMessage && <p className="weekly-archive-message" role="status">{archiveMessage}</p>}
+      </section>
 
       {deleteConfirmReport && (
         <div className="modal-backdrop" role="presentation">
@@ -4105,6 +4154,25 @@ function ProjectTimeline({
     if (drag?.targetId) saveWorkOrder(drag.milestoneId, drag.sourceId, drag.targetId, drag.after);
   }
   const [hideDoneWorks, setHideDoneWorks] = useState(false);
+  const [collapsedMilestones, setCollapsedMilestones] = useState(() => {
+    try {
+      const stored = JSON.parse(localStorage.getItem('wiareport_collapsed_milestones') || '[]');
+      return new Set(Array.isArray(stored) ? stored.filter((id) => typeof id === 'string') : []);
+    } catch { return new Set(); }
+  });
+  useEffect(() => {
+    try { localStorage.setItem('wiareport_collapsed_milestones', JSON.stringify([...collapsedMilestones])); } catch {}
+  }, [collapsedMilestones]);
+  function toggleMilestoneWorks(id) {
+    cancelWorkDrag();
+    setCollapsedMilestones((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
   const timelineScrollRef = useRef(null);
 
   const range = useMemo(() => {
@@ -4187,6 +4255,7 @@ function ProjectTimeline({
   }
 
   function startAddEpic(milestone) {
+    setCollapsedMilestones((prev) => { const next = new Set(prev); next.delete(milestone.id); return next; });
     setEpicDraft({ name: '', owner: '', status: 'planned', start_date: milestone.start_date, end_date: milestone.start_date });
     setWorkModal({ mode: 'add', milestone });
   }
@@ -4281,8 +4350,16 @@ function ProjectTimeline({
   function renderMilestoneLabel(milestone) {
     return (
       <div className="mt-row-label milestone-label" key={`axis-${milestone.id}`}>
-        <div>
-          <div className="name">{milestone.title}</div>
+        <button className="milestone-collapse" type="button"
+          aria-label={`${milestone.title} 워크 ${collapsedMilestones.has(milestone.id) ? '펼치기' : '접기'}`}
+          aria-expanded={!collapsedMilestones.has(milestone.id)}
+          title={`${collapsedMilestones.has(milestone.id) ? '워크 펼치기' : '워크 전체 숨기기'} (${milestone.epics.length}개)`}
+          disabled={milestone.epics.length === 0}
+          onClick={() => toggleMilestoneWorks(milestone.id)}>
+          <ChevronRight size={16} />
+        </button>
+        <div className="milestone-label-copy">
+          <div className="name" title={milestone.title}>{milestone.title}</div>
           <div className="meta">{milestone.start_date} → {milestone.end_date}</div>
         </div>
         <div className="row-actions">
@@ -4395,7 +4472,7 @@ function ProjectTimeline({
           {visibleMilestones.map((milestone) => (
             <React.Fragment key={`axis-${milestone.id}`}>
               {renderMilestoneLabel(milestone)}
-              {milestone.epics.map((epic, index) => renderEpicLabel(epic, milestone, index === milestone.epics.length - 1))}
+              {!collapsedMilestones.has(milestone.id) && milestone.epics.map((epic, index) => renderEpicLabel(epic, milestone, index === milestone.epics.length - 1))}
             </React.Fragment>
           ))}
           <div className="timeline-add-milestone axis">
@@ -4427,7 +4504,7 @@ function ProjectTimeline({
                     </div>
                   </div>
 
-                  {milestone.epics.map((epic, index) => {
+                  {!collapsedMilestones.has(milestone.id) && milestone.epics.map((epic, index) => {
                     const epicSpan = spanFor(epic.start_date, epic.end_date);
                     return (
                       <div className="mt-track" key={`calendar-${epic.id}`} style={{ gridColumn: `1 / span ${colCount}`, gridTemplateColumns: dateGridTemplate }}>

@@ -3824,3 +3824,20 @@ input:focus, textarea:focus, select:focus { border-color: var(--wia-blue); box-s
 .mt-row-label.epic.work-drop-before { box-shadow: inset 0 3px #5888ba; }
 .mt-row-label.epic.work-drop-after { box-shadow: inset 0 -3px #5888ba; }
 .work-order-status { min-height: 18px; padding: 8px 16px; color: #748195; font-size: 11px; border-top: 1px solid #edf0f4; }
+
+.milestone-collapse { display: grid; place-items: center; flex-shrink: 0; width: 24px; height: 30px; padding: 0; border: 0; border-radius: 5px; background: transparent; color: #60758e; cursor: pointer; }
+.milestone-collapse[aria-expanded="true"] svg { transform: rotate(90deg); }
+.milestone-collapse:hover:not(:disabled) { background: #e7eef7; color: #345b85; }
+.milestone-collapse:focus-visible { outline: 2px solid #5588bb; outline-offset: 1px; }
+.milestone-collapse:disabled { opacity: .3; cursor: default; }
+.milestone-label-copy { flex: 1; min-width: 0; }
+.milestone-label-copy .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.weekly-archive { margin-top: 20px; padding: 20px; border: 1px solid #e0e6ee; background: #fff; }
+.weekly-archive-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.weekly-archive-head h2 { margin: 0; font-size: 15px; color: #3e4c5f; font-weight: 650; }
+.weekly-archive-head button { flex: none; min-height: 34px; }
+.weekly-archive-list { display: block; width: 100%; max-width: 100%; border: 1px solid #e2e7ef; border-radius: 6px; padding: 5px; color: #536175; background: #fafbfc; font: inherit; font-size: 12px; }
+.weekly-archive-list option { padding: 12px 10px; border-bottom: 1px solid #edf0f4; }
+.weekly-archive-list:focus-visible { outline: 2px solid #5588bb; outline-offset: 2px; }
+.weekly-archive-empty, .weekly-archive-message { margin: 10px 0 0; color: #778598; font-size: 12px; line-height: 1.6; }

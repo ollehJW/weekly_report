@@ -330,6 +330,9 @@ def init_db():
             )
             """
         )
+        if not has_column(conn, "reports", "completed_at"):
+            conn.execute("ALTER TABLE reports ADD COLUMN completed_at TEXT")
+
         if has_table(conn, "report_entries") and has_column(conn, "report_entries", "project_id"):
             conn.execute("ALTER TABLE report_entries RENAME TO report_entries_legacy")
         conn.execute(
@@ -482,6 +485,9 @@ def init_db():
 
         if not has_column(conn, "project", "status"):
             conn.execute("ALTER TABLE project ADD COLUMN status TEXT NOT NULL DEFAULT 'in_progress'")
+        if not has_column(conn, "project", "completed_at"):
+            conn.execute("ALTER TABLE project ADD COLUMN completed_at TEXT")
+
         if not has_column(conn, "users", "sort_order"):
             conn.execute("ALTER TABLE users ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0")
             team_rows = conn.execute("SELECT team_id FROM teams").fetchall()
@@ -1139,7 +1145,7 @@ def ensure_other_work_project(conn, team_id: str, user_id: str):
     if project:
         project_id = project["project_id"]
         if project["status"] != "in_progress":
-            conn.execute("UPDATE project SET status = 'in_progress' WHERE project_id = ?", (project_id,))
+            conn.execute("UPDATE project SET status = 'in_progress', completed_at = NULL WHERE project_id = ?", (project_id,))
     else:
         project_id = str(uuid.uuid4())
         conn.execute(
@@ -2668,10 +2674,10 @@ def create_team_project(team_id: str, payload: TeamProjectIn):
             raise HTTPException(status_code=422, detail="과제 리더는 한 명만 지정할 수 있습니다")
         cursor = conn.execute(
             """
-            INSERT INTO project (project_id, team_id, project_name, status, created_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO project (project_id, team_id, project_name, status, created_at, completed_at)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (project_id, team_id, payload.project_name.strip(), payload.status, now),
+            (project_id, team_id, payload.project_name.strip(), payload.status, now, now if payload.status == "done" else None),
         )
         for member in payload.members:
             user = conn.execute(
@@ -2688,11 +2694,22 @@ def create_team_project(team_id: str, payload: TeamProjectIn):
         return project_with_members(conn, row)
 
 
+def project_completion_time(project, next_status: str):
+    if next_status != "done":
+        return None
+    if project["status"] == "done":
+        return project["completed_at"]
+    return datetime.utcnow().isoformat()
+
+
 @app.put("/api/team-projects/{project_id}/status")
 def update_team_project_status(project_id: str, payload: TeamProjectStatusIn):
     with get_conn() as conn:
-        ensure_team_project(conn, project_id)
-        conn.execute("UPDATE project SET status = ? WHERE project_id = ?", (payload.status, project_id))
+        project = ensure_team_project(conn, project_id)
+        conn.execute(
+            "UPDATE project SET status = ?, completed_at = ? WHERE project_id = ?",
+            (payload.status, project_completion_time(project, payload.status), project_id),
+        )
         row = conn.execute("SELECT * FROM project WHERE project_id = ?", (project_id,)).fetchone()
         return project_with_members(conn, row)
 
@@ -2704,8 +2721,8 @@ def update_team_project(project_id: str, payload: TeamProjectIn):
         if sum(1 for member in payload.members if member.role == "L") > 1:
             raise HTTPException(status_code=422, detail="과제 리더는 한 명만 지정할 수 있습니다")
         conn.execute(
-            "UPDATE project SET project_name = ?, status = ? WHERE project_id = ?",
-            (payload.project_name.strip(), payload.status, project_id),
+            "UPDATE project SET project_name = ?, status = ?, completed_at = ? WHERE project_id = ?",
+            (payload.project_name.strip(), payload.status, project_completion_time(project, payload.status), project_id),
         )
         conn.execute("DELETE FROM project_members WHERE project_id = ?", (project_id,))
         for member in payload.members:
@@ -2792,6 +2809,31 @@ def delete_user(user_id: str):
             raise HTTPException(status_code=404, detail="User not found")
 
 
+
+
+@app.get("/api/teams/{team_id}/reports/archive")
+def list_report_archive(team_id: str):
+    with get_conn() as conn:
+        ensure_team(conn, team_id)
+        rows = conn.execute(
+            "SELECT report_id, start_date, end_date, completed_at FROM reports "
+            "WHERE team_id = ? AND status = 'done' "
+            "ORDER BY end_date DESC, start_date DESC, created_at DESC",
+            (team_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+
+@app.put("/api/reports/{report_id}/reopen")
+def reopen_report(report_id: str):
+    with get_conn() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        report = conn.execute("SELECT * FROM reports WHERE report_id = ?", (report_id,)).fetchone()
+        if not report:
+            raise HTTPException(status_code=404, detail="Report not found")
+        conn.execute("UPDATE reports SET status = 'in_progress' WHERE report_id = ?", (report_id,))
+        row = conn.execute("SELECT * FROM reports WHERE report_id = ?", (report_id,)).fetchone()
+        return report_with_entries(conn, row)
 
 
 @app.get("/api/teams/{team_id}/reports/completed")
@@ -2898,7 +2940,8 @@ def complete_report(report_id: str):
             raise HTTPException(status_code=422, detail="완료할 보고 대상이 없습니다")
         if any(row["status"] not in ("done", "absent") for row in entries):
             raise HTTPException(status_code=422, detail="모든 멤버가 작성 완료 또는 부재 상태여야 완료할 수 있습니다")
-        conn.execute("UPDATE reports SET status = 'done' WHERE report_id = ?", (report_id,))
+        completed_at = report["completed_at"] if report["status"] == "done" else datetime.utcnow().isoformat()
+        conn.execute("UPDATE reports SET status = 'done', completed_at = ? WHERE report_id = ?", (completed_at, report_id))
         row = conn.execute("SELECT * FROM reports WHERE report_id = ?", (report_id,)).fetchone()
         return report_with_entries(conn, row)
 
@@ -2949,6 +2992,8 @@ def get_report_user_html(report_id: str, user_id: str):
             raise HTTPException(status_code=404, detail="Report member not found")
         if entry["status"] != "done":
             raise HTTPException(status_code=422, detail="작성 완료된 멤버만 리포트를 볼 수 있습니다")
+        # A completed personal report's updated_at is its last saved completion time.
+        # Keep included content and unknown historical completion times unchanged.
         projects = conn.execute(
             """
             SELECT p.project_id, p.project_name, pe.entry_id, pe.is_excluded,
@@ -2956,9 +3001,15 @@ def get_report_user_html(report_id: str, user_id: str):
             FROM project_entry pe
             JOIN project p ON p.project_id = pe.project_id
             WHERE pe.entry_id = ?
+              AND (
+                  pe.is_excluded = 0
+                  OR julianday(p.completed_at) IS NULL
+                  OR julianday(?) IS NULL
+                  OR julianday(p.completed_at) > julianday(?)
+              )
             ORDER BY CASE WHEN p.project_name = ? THEN 1 ELSE 0 END, p.created_at DESC, p.project_name
             """,
-            (entry["entry_id"], OTHER_WORK_PROJECT_NAME),
+            (entry["entry_id"], entry["updated_at"], entry["updated_at"], OTHER_WORK_PROJECT_NAME),
         ).fetchall()
         return {"html": render_weekly_report_html(row_to_dict(report), row_to_dict(user), [row_to_dict(row) for row in projects])}
 
