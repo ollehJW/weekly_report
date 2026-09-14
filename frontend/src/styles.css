@@ -3814,3 +3814,13 @@ input:focus, textarea:focus, select:focus { border-color: var(--wia-blue); box-s
   .calendar-event-date-text { font-size: 12px; }
   .calendar-event-roster { grid-template-columns: 1fr; }
 }
+
+.work-drag-handle { display: grid; place-items: center; flex-shrink: 0; width: 24px; min-height: 32px; border: 0; border-radius: 5px; background: transparent; color: #9aa6b5; cursor: grab; touch-action: none; }
+.work-drag-handle:hover { color: #3b648b; background: #edf3fa; }
+.work-drag-handle:active { cursor: grabbing; }
+.work-drag-handle:focus-visible { outline: 2px solid #5588bb; outline-offset: 1px; }
+.work-drag-handle:disabled { opacity: .4; cursor: wait; }
+.mt-row-label.epic.work-dragging { opacity: .5; }
+.mt-row-label.epic.work-drop-before { box-shadow: inset 0 3px #5888ba; }
+.mt-row-label.epic.work-drop-after { box-shadow: inset 0 -3px #5888ba; }
+.work-order-status { min-height: 18px; padding: 8px 16px; color: #748195; font-size: 11px; border-top: 1px solid #edf0f4; }

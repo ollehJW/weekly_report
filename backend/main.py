@@ -230,6 +230,17 @@ def init_db():
             )
             """
         )
+        if not has_column(conn, "epics", "sort_order"):
+            conn.execute("ALTER TABLE epics ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0")
+            rows = conn.execute(
+                "SELECT epic_id, milestone_id FROM epics ORDER BY start_date, created_at, rowid"
+            ).fetchall()
+            positions = {}
+            for row in rows:
+                position = positions.get(row["milestone_id"], 0)
+                conn.execute("UPDATE epics SET sort_order = ? WHERE epic_id = ?", (position, row["epic_id"]))
+                positions[row["milestone_id"]] = position + 1
+
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS project_members (
@@ -870,6 +881,10 @@ class MilestoneIn(BaseModel):
     description: str = ""
     start_date: date
     end_date: date
+
+
+class EpicOrderIn(BaseModel):
+    epic_ids: list[str]
 
 
 class EpicIn(BaseModel):
@@ -3532,7 +3547,7 @@ def get_milestone(milestone_id: str):
     with get_conn() as conn:
         milestone = ensure_milestone(conn, milestone_id)
         epics = conn.execute(
-            "SELECT * FROM epics WHERE milestone_id = ? ORDER BY start_date, created_at",
+            "SELECT * FROM epics WHERE milestone_id = ? ORDER BY sort_order, start_date, created_at, rowid",
             (milestone_id,),
         ).fetchall()
         return public_milestone(milestone, [public_epic(row) for row in epics])
@@ -3562,17 +3577,38 @@ def delete_milestone(milestone_id: str):
             raise HTTPException(status_code=404, detail="Milestone not found")
 
 
+@app.put("/api/milestones/{milestone_id}/epics/order")
+def reorder_epics(milestone_id: str, payload: EpicOrderIn):
+    with get_conn() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        ensure_milestone(conn, milestone_id)
+        current_ids = {row["epic_id"] for row in conn.execute(
+            "SELECT epic_id FROM epics WHERE milestone_id = ?", (milestone_id,)
+        )}
+        if len(payload.epic_ids) != len(set(payload.epic_ids)) or set(payload.epic_ids) != current_ids:
+            raise HTTPException(status_code=409, detail="워크 목록이 변경되었습니다. 새로고침 후 다시 시도하세요.")
+        conn.executemany(
+            "UPDATE epics SET sort_order = ? WHERE milestone_id = ? AND epic_id = ?",
+            [(index, milestone_id, epic_id) for index, epic_id in enumerate(payload.epic_ids)],
+        )
+    return get_milestone(milestone_id)
+
+
 @app.post("/api/milestones/{milestone_id}/epics", status_code=201)
 def create_epic(milestone_id: str, payload: EpicIn):
     ensure_range(payload.start_date, payload.end_date)
     now = datetime.utcnow().isoformat()
     epic_id = str(uuid.uuid4())
     with get_conn() as conn:
+        conn.execute("BEGIN IMMEDIATE")
         ensure_epic_inside_milestone(conn, milestone_id, payload)
+        next_order = conn.execute(
+            "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM epics WHERE milestone_id = ?", (milestone_id,)
+        ).fetchone()[0]
         conn.execute(
             """
-            INSERT INTO epics (epic_id, milestone_id, title, owner, status, color, start_date, end_date, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO epics (epic_id, milestone_id, title, owner, status, color, start_date, end_date, created_at, sort_order)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 epic_id,
@@ -3584,6 +3620,7 @@ def create_epic(milestone_id: str, payload: EpicIn):
                 str(payload.start_date),
                 str(payload.end_date),
                 now,
+                next_order,
             ),
         )
         row = conn.execute("SELECT * FROM epics WHERE epic_id = ?", (epic_id,)).fetchone()

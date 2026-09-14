@@ -817,6 +817,13 @@ function App() {
     }
   }
 
+  async function reorderEpics(milestoneId, epicIds) {
+    const saved = await request(`/api/milestones/${milestoneId}/epics/order`, {
+      method: 'PUT', body: JSON.stringify({ epic_ids: epicIds }),
+    });
+    setMilestones((prev) => prev.map((item) => item.id === milestoneId ? saved : item));
+  }
+
   async function createEpic(milestone, draft) {
     if (!draft.name.trim()) return;
     try {
@@ -1159,6 +1166,7 @@ function App() {
                   onAddEpic={createEpic}
                   onUpdateEpic={updateEpic}
                   onRemoveEpic={deleteEpic}
+                  onReorderEpics={reorderEpics}
                 />
                 <ProjectProgressHistory project={selectedProject} />
                 <ProjectIssueManagement project={selectedProject} />
@@ -4044,6 +4052,7 @@ function ProjectTimeline({
   onAddEpic,
   onUpdateEpic,
   onRemoveEpic,
+  onReorderEpics,
 }) {
   const [workModal, setWorkModal] = useState(null);
   const [milestoneModal, setMilestoneModal] = useState(null);
@@ -4051,6 +4060,50 @@ function ProjectTimeline({
   const [milestoneEditDraft, setMilestoneEditDraft] = useState({ title: '', start_date: todayIso(), end_date: todayIso() });
   const [editDraft, setEditDraft] = useState({ name: '', owner: '', status: 'planned', start_date: todayIso(), end_date: todayIso() });
   const [timelineActionId, setTimelineActionId] = useState('');
+  const [workDrag, setWorkDrag] = useState(null);
+  const workDragRef = useRef(null);
+  const orderSavingRef = useRef(false);
+  const [orderSaving, setOrderSaving] = useState(false);
+  const [orderMessage, setOrderMessage] = useState('');
+  async function saveWorkOrder(milestoneId, sourceId, targetId, after) {
+    if (orderSavingRef.current || sourceId === targetId) return;
+    const milestone = milestones.find((item) => item.id === milestoneId);
+    if (!milestone) return;
+    const ids = milestone.epics.map((item) => item.id);
+    if (!ids.includes(sourceId) || !ids.includes(targetId)) return;
+    const next = ids.filter((id) => id !== sourceId);
+    next.splice(next.indexOf(targetId) + (after ? 1 : 0), 0, sourceId);
+    if (next.every((id, index) => id === ids[index])) return;
+    orderSavingRef.current = true;
+    setOrderSaving(true);
+    setOrderMessage('');
+    try {
+      await onReorderEpics(milestoneId, next);
+      setOrderMessage('워크 순서를 저장했습니다.');
+    } catch (err) {
+      setOrderMessage(err.message || '순서를 저장하지 못했습니다. 다시 시도하세요.');
+    } finally {
+      orderSavingRef.current = false;
+      setOrderSaving(false);
+    }
+  }
+  function moveWorkPointer(event) {
+    const drag = workDragRef.current;
+    if (!drag) return;
+    const row = document.elementFromPoint(event.clientX, event.clientY)?.closest('[data-work-id]');
+    const valid = row?.dataset.milestoneId === drag.milestoneId;
+    const next = { ...drag, targetId: valid ? row.dataset.workId : null,
+      after: valid && event.clientY > row.getBoundingClientRect().top + row.getBoundingClientRect().height / 2 };
+    workDragRef.current = next;
+    setWorkDrag(next);
+  }
+  function cancelWorkDrag() { workDragRef.current = null; setWorkDrag(null); }
+  function finishWorkPointer(event) {
+    moveWorkPointer(event);
+    const drag = workDragRef.current;
+    cancelWorkDrag();
+    if (drag?.targetId) saveWorkOrder(drag.milestoneId, drag.sourceId, drag.targetId, drag.after);
+  }
   const [hideDoneWorks, setHideDoneWorks] = useState(false);
   const timelineScrollRef = useRef(null);
 
@@ -4245,7 +4298,26 @@ function ProjectTimeline({
     const statusKey = normalizeStatus(epic.status);
     const status = STATUS_STYLE[statusKey] || STATUS_STYLE.planned;
     return (
-      <div className={"mt-row-label epic status-row-" + statusKey + (isLast ? " last" : "")} key={`axis-${epic.id}`}>
+      <div data-work-id={epic.id} data-milestone-id={milestone.id}
+        className={"mt-row-label epic status-row-" + statusKey + (isLast ? " last" : "") + (workDrag?.sourceId === epic.id ? " work-dragging" : "") + (workDrag?.targetId === epic.id && workDrag.sourceId !== epic.id ? (workDrag.after ? " work-drop-after" : " work-drop-before") : "")} key={`axis-${epic.id}`}>
+        <button className="work-drag-handle" type="button" disabled={orderSaving}
+          aria-label={`${epic.title} 순서 이동`} title="드래그로 순서 이동 · 키보드 ↑↓"
+          onPointerDown={(e) => {
+            if (e.button !== 0 || orderSavingRef.current) return;
+            e.preventDefault(); e.currentTarget.focus(); e.currentTarget.setPointerCapture(e.pointerId);
+            const drag = { milestoneId: milestone.id, sourceId: epic.id, targetId: null, after: false };
+            workDragRef.current = drag; setWorkDrag(drag);
+          }}
+          onPointerMove={moveWorkPointer} onPointerUp={finishWorkPointer}
+          onPointerCancel={cancelWorkDrag} onLostPointerCapture={cancelWorkDrag}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') { cancelWorkDrag(); return; }
+            if (!['ArrowUp', 'ArrowDown'].includes(e.key)) return;
+            e.preventDefault();
+            const index = milestone.epics.findIndex((item) => item.id === epic.id);
+            const target = milestone.epics[index + (e.key === 'ArrowUp' ? -1 : 1)];
+            if (target) saveWorkOrder(milestone.id, epic.id, target.id, e.key === 'ArrowDown');
+          }}><GripVertical size={15} /></button>
         <div className="work-label-copy">
           <div className="work-title-line"><div className="name">{epic.title}</div><span className={"mt-badge status-" + statusKey} style={{ background: status.bg, color: status.text, borderColor: status.border }}>{status.label}</span></div>
           <div className="meta"><span className="mt-avatar"><User size={9} /></span>{epic.owner || "담당 미지정"}</div>
@@ -4309,6 +4381,7 @@ function ProjectTimeline({
         </section>
       )}
 
+      <div className="work-order-status" role="status" aria-live="polite">{orderSaving ? '워크 순서 저장 중…' : orderMessage || '워크 왼쪽 손잡이를 드래그해 순서를 바꿀 수 있습니다.'}</div>
       <div className="mt-split-wrap">
         <div className="mt-axis-col">
           <div className="mt-headercell timeline-axis-head">
