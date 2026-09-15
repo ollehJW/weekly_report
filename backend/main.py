@@ -19,6 +19,7 @@ from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from string import Template
+from backend import parts as part_support
 
 
 BACKEND_DIR = Path(__file__).resolve().parent
@@ -50,6 +51,7 @@ WEEKLY_REPORT_SCHEDULE_HOUR = 17
 def get_conn():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
+    conn.create_function("part_visible", 2, part_support.visible)
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
 
@@ -501,6 +503,7 @@ def init_db():
                         "UPDATE users SET sort_order = ? WHERE user_id = ?",
                         (index, user_row["user_id"]),
                     )
+        part_support.init_parts(conn)
         backfill_project_tracking(conn)
 
 
@@ -823,7 +826,8 @@ def seconds_until_next_weekly_report_schedule(now_kst=None):
     try:
         with get_conn() as conn:
             teams = conn.execute("SELECT * FROM teams ORDER BY created_at ASC").fetchall()
-            seconds = [seconds_until_next_report_schedule_for_team(team, now_kst) for team in teams]
+            configs = list(teams) + list(conn.execute("SELECT p.* FROM parts p JOIN teams t ON t.team_id=p.team_id WHERE t.parts_enabled=1"))
+            seconds = [seconds_until_next_report_schedule_for_team(team, now_kst) for team in configs]
             seconds = [value for value in seconds if value is not None]
             if seconds:
                 return min(seconds)
@@ -1134,13 +1138,17 @@ def public_weekly_project(row):
 
 def ensure_other_work_project(conn, team_id: str, user_id: str):
     now = datetime.utcnow().isoformat()
+    user = conn.execute("SELECT part_id FROM users WHERE user_id=? AND team_id=?", (user_id, team_id)).fetchone()
+    if not user:
+        raise HTTPException(404, "User not found")
+    part_id = user["part_id"]
     project = conn.execute(
         """
         SELECT * FROM project
-        WHERE team_id = ? AND project_name = ?
+        WHERE team_id = ? AND project_name = ? AND part_id IS ?
         LIMIT 1
         """,
-        (team_id, OTHER_WORK_PROJECT_NAME),
+        (team_id, OTHER_WORK_PROJECT_NAME, part_id),
     ).fetchone()
     if project:
         project_id = project["project_id"]
@@ -1150,10 +1158,10 @@ def ensure_other_work_project(conn, team_id: str, user_id: str):
         project_id = str(uuid.uuid4())
         conn.execute(
             """
-            INSERT INTO project (project_id, team_id, project_name, status, created_at)
-            VALUES (?, ?, ?, 'in_progress', ?)
+            INSERT INTO project (project_id, team_id, project_name, status, created_at, part_id)
+            VALUES (?, ?, ?, 'in_progress', ?, ?)
             """,
-            (project_id, team_id, OTHER_WORK_PROJECT_NAME, now),
+            (project_id, team_id, OTHER_WORK_PROJECT_NAME, now, part_id),
         )
     conn.execute(
         """
@@ -1811,10 +1819,10 @@ def report_with_entries(conn, report_row):
         SELECT u.user_id, u.name, u.role, re.entry_id, COALESCE(re.status, 'pending') AS report_status
         FROM users u
         LEFT JOIN report_entries re ON re.user_id = u.user_id AND re.report_id = ?
-        WHERE u.team_id = ? AND u.role != 'L'
+        WHERE u.team_id = ? AND u.role != 'L' AND (u.part_id IS ? OR re.entry_id IS NOT NULL OR (? IS NULL AND (SELECT parts_enabled FROM teams WHERE team_id=u.team_id)=0))
         ORDER BY u.sort_order ASC, u.created_at ASC, u.name
         """,
-        (report_row["report_id"], report_row["team_id"]),
+        (report_row["report_id"], report_row["team_id"], report_row["part_id"], report_row["part_id"]),
     ).fetchall()
     entries = conn.execute(
         """
@@ -1865,20 +1873,20 @@ def report_with_entries(conn, report_row):
     return data
 
 
-def create_weekly_report(conn, team_id: str, start_date: date, end_date: date, skip_existing=False):
+def create_weekly_report(conn, team_id: str, start_date: date, end_date: date, skip_existing=False, part_id=None):
     ensure_range(start_date, end_date)
-    ensure_team(conn, team_id)
+    team = ensure_team(conn, team_id)
     start_text = str(start_date)
     end_text = str(end_date)
     if skip_existing:
         existing = conn.execute(
             """
             SELECT * FROM reports
-            WHERE team_id = ? AND start_date = ? AND end_date = ?
+            WHERE team_id = ? AND start_date = ? AND end_date = ? AND part_id IS ?
             ORDER BY created_at DESC
             LIMIT 1
             """,
-            (team_id, start_text, end_text),
+            (team_id, start_text, end_text, part_id),
         ).fetchone()
         if existing:
             return existing, False
@@ -1886,18 +1894,18 @@ def create_weekly_report(conn, team_id: str, start_date: date, end_date: date, s
     report_id = str(uuid.uuid4())
     conn.execute(
         """
-        INSERT INTO reports (report_id, team_id, start_date, end_date, status, created_at)
-        VALUES (?, ?, ?, ?, 'in_progress', ?)
+        INSERT INTO reports (report_id, team_id, start_date, end_date, status, created_at, part_id)
+        VALUES (?, ?, ?, ?, 'in_progress', ?, ?)
         """,
-        (report_id, team_id, start_text, end_text, now),
+        (report_id, team_id, start_text, end_text, now, part_id),
     )
     users = conn.execute(
         """
         SELECT user_id FROM users
-        WHERE team_id = ? AND role != 'L'
+        WHERE team_id = ? AND role != 'L' AND (part_id IS ? OR ? = 0)
         ORDER BY sort_order ASC, created_at ASC, name
         """,
-        (team_id,),
+        (team_id, part_id, int(bool(team["parts_enabled"]))),
     ).fetchall()
     conn.executemany(
         """
@@ -1916,12 +1924,16 @@ def create_due_weekly_reports(now_kst=None):
     created_periods = {}
     with get_conn() as conn:
         teams = conn.execute("SELECT * FROM teams ORDER BY created_at ASC").fetchall()
+        schedule_scopes = [(team, None) for team in teams]
         for team in teams:
+            if team["parts_enabled"]:
+                schedule_scopes.extend((part, part["part_id"]) for part in conn.execute("SELECT * FROM parts WHERE team_id=?", (team["team_id"],)))
+        for team, part_id in schedule_scopes:
             period = scheduled_weekly_report_period_for_team(team, now_kst)
             if not period:
                 continue
             start_date, end_date = period
-            row, created = create_weekly_report(conn, team["team_id"], start_date, end_date, skip_existing=True)
+            row, created = create_weekly_report(conn, team["team_id"], start_date, end_date, skip_existing=True, part_id=part_id)
             if created:
                 created_reports.append(row["report_id"])
                 key = f"{start_date}..{end_date}"
@@ -1936,7 +1948,12 @@ def ensure_report_user_entries(conn, report_id: str, user_id: str):
     report = conn.execute("SELECT * FROM reports WHERE report_id = ?", (report_id,)).fetchone()
     if not report:
         raise HTTPException(status_code=404, detail="Report not found")
-    user = conn.execute("SELECT * FROM users WHERE user_id = ? AND team_id = ?", (user_id, report["team_id"])).fetchone()
+    team = ensure_team(conn, report["team_id"])
+    user = conn.execute(
+        "SELECT * FROM users WHERE user_id = ? AND team_id = ? AND "
+        "(part_id IS ? OR ? = 0 OR EXISTS (SELECT 1 FROM report_entries WHERE report_id=? AND user_id=users.user_id))",
+        (user_id, report["team_id"], report["part_id"], int(bool(team["parts_enabled"])), report_id),
+    ).fetchone()
     if not user or user["role"] == "L":
         raise HTTPException(status_code=404, detail="Report member not found")
     now = datetime.utcnow().isoformat()
@@ -1961,10 +1978,10 @@ def ensure_report_user_entries(conn, report_id: str, user_id: str):
         SELECT DISTINCT p.project_id, p.project_name
         FROM project p
         JOIN project_members pm ON pm.project_id = p.project_id
-        WHERE p.team_id = ? AND p.status = 'in_progress' AND pm.user_id = ?
+        WHERE p.team_id = ? AND p.status = 'in_progress' AND pm.user_id = ? AND (p.part_id IS ? OR ? = 0)
         ORDER BY CASE WHEN p.project_name = ? THEN 1 ELSE 0 END, p.created_at DESC, p.project_name
         """,
-        (report["team_id"], user_id, OTHER_WORK_PROJECT_NAME),
+        (report["team_id"], user_id, user["part_id"], int(bool(team["parts_enabled"])), OTHER_WORK_PROJECT_NAME),
     ).fetchall()
     for project in projects:
         exists = conn.execute(
@@ -2478,7 +2495,7 @@ def list_team_users(team_id: str):
         rows = conn.execute(
             """
             SELECT * FROM users
-            WHERE team_id = ?
+            WHERE team_id = ? AND part_visible(team_id, part_id)
             ORDER BY sort_order ASC, created_at ASC, name
             """,
             (team_id,),
@@ -2511,6 +2528,7 @@ def create_team_user(team_id: str, payload: MemberIn):
                 now,
             ),
         )
+        conn.execute("UPDATE users SET part_id=? WHERE user_id=?", (part_support.selected_part(), user_id))
         row = conn.execute("SELECT * FROM users WHERE rowid = ?", (cursor.lastrowid,)).fetchone()
         return public_user(row)
 
@@ -2520,7 +2538,7 @@ def reorder_team_users(team_id: str, payload: MemberOrderIn):
     with get_conn() as conn:
         ensure_team(conn, team_id)
         rows = conn.execute(
-            "SELECT user_id FROM users WHERE team_id = ? ORDER BY sort_order ASC, created_at ASC, name",
+            "SELECT user_id FROM users WHERE team_id = ? AND part_visible(team_id, part_id) ORDER BY sort_order ASC, created_at ASC, name",
             (team_id,),
         ).fetchall()
         existing_ids = [row["user_id"] for row in rows]
@@ -2528,13 +2546,13 @@ def reorder_team_users(team_id: str, payload: MemberOrderIn):
             raise HTTPException(status_code=422, detail="멤버 목록이 현재 팀 구성과 일치하지 않습니다")
         for index, user_id in enumerate(payload.user_ids):
             conn.execute(
-                "UPDATE users SET sort_order = ? WHERE team_id = ? AND user_id = ?",
+                "UPDATE users SET sort_order = ? WHERE team_id = ? AND part_visible(team_id, part_id) AND user_id = ?",
                 (index, team_id, user_id),
             )
         updated = conn.execute(
             """
             SELECT * FROM users
-            WHERE team_id = ?
+            WHERE team_id = ? AND part_visible(team_id, part_id)
             ORDER BY sort_order ASC, created_at ASC, name
             """,
             (team_id,),
@@ -2549,7 +2567,7 @@ def list_team_events(team_id: str):
         rows = conn.execute(
             """
             SELECT * FROM team_events
-            WHERE team_id = ?
+            WHERE team_id = ? AND part_visible(team_id, part_id)
             ORDER BY start_date ASC, end_date ASC, created_at ASC
             """,
             (team_id,),
@@ -2569,7 +2587,7 @@ def create_team_event(team_id: str, payload: TeamEventIn):
         ensure_team(conn, team_id)
         for user_id in member_ids:
             user = conn.execute(
-                "SELECT user_id FROM users WHERE user_id = ? AND team_id = ?",
+                "SELECT user_id FROM users WHERE user_id = ? AND team_id = ? AND part_visible(team_id, part_id)",
                 (user_id, team_id),
             ).fetchone()
             if not user:
@@ -2594,6 +2612,7 @@ def create_team_event(team_id: str, payload: TeamEventIn):
                 "INSERT INTO team_event_members (event_id, user_id) VALUES (?, ?)",
                 (event_id, user_id),
             )
+        conn.execute("UPDATE team_events SET part_id=? WHERE event_id=?", (part_support.selected_part(), event_id))
         row = conn.execute("SELECT * FROM team_events WHERE rowid = ?", (cursor.lastrowid,)).fetchone()
         return team_event_with_members(conn, row)
 
@@ -2610,7 +2629,7 @@ def update_team_event(event_id: str, payload: TeamEventIn):
             raise HTTPException(status_code=404, detail="Event not found")
         for user_id in member_ids:
             user = conn.execute(
-                "SELECT user_id FROM users WHERE user_id = ? AND team_id = ?",
+                "SELECT user_id FROM users WHERE user_id = ? AND team_id = ? AND part_visible(team_id, part_id)",
                 (user_id, existing["team_id"]),
             ).fetchone()
             if not user:
@@ -2656,8 +2675,8 @@ def list_team_projects(team_id: str):
         rows = conn.execute(
             """
             SELECT * FROM project
-            WHERE team_id = ? AND project_name != ?
-            ORDER BY CASE status WHEN 'in_progress' THEN 0 ELSE 1 END, created_at DESC, project_name
+            WHERE team_id = ? AND part_visible(team_id, part_id) AND project_name != ?
+            ORDER BY sort_order, created_at DESC, project_name
             """,
             (team_id, OTHER_WORK_PROJECT_NAME),
         ).fetchall()
@@ -2681,7 +2700,7 @@ def create_team_project(team_id: str, payload: TeamProjectIn):
         )
         for member in payload.members:
             user = conn.execute(
-                "SELECT user_id FROM users WHERE user_id = ? AND team_id = ?",
+                "SELECT user_id FROM users WHERE user_id = ? AND team_id = ? AND part_visible(team_id, part_id)",
                 (member.user_id, team_id),
             ).fetchone()
             if not user:
@@ -2690,6 +2709,8 @@ def create_team_project(team_id: str, payload: TeamProjectIn):
                 "INSERT INTO project_members (project_id, user_id, role) VALUES (?, ?, ?)",
                 (project_id, member.user_id, member.role),
             )
+        conn.execute("UPDATE project SET part_id=?,sort_order=(SELECT COALESCE(MAX(sort_order)+1,0) FROM project WHERE team_id=? AND part_id IS ? AND project_id!=?) WHERE project_id=?",
+                     (part_support.selected_part(), team_id, part_support.selected_part(), project_id, project_id))
         row = conn.execute("SELECT * FROM project WHERE rowid = ?", (cursor.lastrowid,)).fetchone()
         return project_with_members(conn, row)
 
@@ -2718,6 +2739,7 @@ def update_team_project_status(project_id: str, payload: TeamProjectStatusIn):
 def update_team_project(project_id: str, payload: TeamProjectIn):
     with get_conn() as conn:
         project = ensure_team_project(conn, project_id)
+        existing_user_ids = {row[0] for row in conn.execute("SELECT user_id FROM project_members WHERE project_id=?", (project_id,))}
         if sum(1 for member in payload.members if member.role == "L") > 1:
             raise HTTPException(status_code=422, detail="과제 리더는 한 명만 지정할 수 있습니다")
         conn.execute(
@@ -2727,10 +2749,10 @@ def update_team_project(project_id: str, payload: TeamProjectIn):
         conn.execute("DELETE FROM project_members WHERE project_id = ?", (project_id,))
         for member in payload.members:
             user = conn.execute(
-                "SELECT user_id FROM users WHERE user_id = ? AND team_id = ?",
+                "SELECT user_id,part_visible(team_id,part_id) AS in_part FROM users WHERE user_id = ? AND team_id = ?",
                 (member.user_id, project["team_id"]),
             ).fetchone()
-            if not user:
+            if not user or (not user["in_part"] and member.user_id not in existing_user_ids):
                 raise HTTPException(status_code=422, detail="해당 팀의 멤버만 과제에 매칭할 수 있습니다")
             conn.execute(
                 "INSERT INTO project_members (project_id, user_id, role) VALUES (?, ?, ?)",
@@ -2744,15 +2766,16 @@ def update_team_project(project_id: str, payload: TeamProjectIn):
 def set_team_project_members(project_id: str, payload: ProjectMembersIn):
     with get_conn() as conn:
         project = ensure_team_project(conn, project_id)
+        existing_user_ids = {row[0] for row in conn.execute("SELECT user_id FROM project_members WHERE project_id=?", (project_id,))}
         if sum(1 for member in payload.members if member.role == "L") > 1:
             raise HTTPException(status_code=422, detail="과제 리더는 한 명만 지정할 수 있습니다")
         normalized = {}
         for member in payload.members:
             user = conn.execute(
-                "SELECT user_id FROM users WHERE user_id = ? AND team_id = ?",
+                "SELECT user_id,part_visible(team_id,part_id) AS in_part FROM users WHERE user_id = ? AND team_id = ?",
                 (member.user_id, project["team_id"]),
             ).fetchone()
-            if not user:
+            if not user or (not user["in_part"] and member.user_id not in existing_user_ids):
                 raise HTTPException(status_code=422, detail="해당 팀의 멤버만 과제에 매칭할 수 있습니다")
             normalized[member.user_id] = member.role
         conn.execute("DELETE FROM project_members WHERE project_id = ?", (project_id,))
@@ -2817,7 +2840,7 @@ def list_report_archive(team_id: str):
         ensure_team(conn, team_id)
         rows = conn.execute(
             "SELECT report_id, start_date, end_date, completed_at FROM reports "
-            "WHERE team_id = ? AND status = 'done' "
+            "WHERE team_id = ? AND part_visible(team_id, part_id) AND status = 'done' "
             "ORDER BY end_date DESC, start_date DESC, created_at DESC",
             (team_id,),
         ).fetchall()
@@ -2845,7 +2868,7 @@ def list_completed_reports(team_id: str):
             SELECT DISTINCT r.*
             FROM reports r
             LEFT JOIN report_entries re ON re.report_id = r.report_id
-            WHERE r.team_id = ?
+            WHERE r.team_id = ? AND part_visible(r.team_id, r.part_id)
               AND (
                 r.status = 'done'
                 OR (r.status = 'in_progress' AND re.status = 'done')
@@ -2864,7 +2887,7 @@ def get_active_report(team_id: str):
         row = conn.execute(
             """
             SELECT * FROM reports
-            WHERE team_id = ? AND status = 'in_progress'
+            WHERE team_id = ? AND part_visible(team_id, part_id) AND status = 'in_progress'
             ORDER BY created_at DESC
             LIMIT 1
             """,
@@ -2880,7 +2903,7 @@ def list_active_reports(team_id: str):
         rows = conn.execute(
             """
             SELECT * FROM reports
-            WHERE team_id = ? AND status = 'in_progress'
+            WHERE team_id = ? AND part_visible(team_id, part_id) AND status = 'in_progress'
             ORDER BY start_date DESC, end_date DESC, created_at DESC
             """,
             (team_id,),
@@ -2891,7 +2914,7 @@ def list_active_reports(team_id: str):
 @app.post("/api/teams/{team_id}/reports", status_code=201)
 def create_report(team_id: str, payload: ReportIn):
     with get_conn() as conn:
-        row, _ = create_weekly_report(conn, team_id, payload.start_date, payload.end_date)
+        row, _ = create_weekly_report(conn, team_id, payload.start_date, payload.end_date, part_id=part_support.selected_part())
         return report_with_entries(conn, row)
 
 
@@ -2899,6 +2922,8 @@ def create_report(team_id: str, payload: ReportIn):
 def get_report_schedule(team_id: str):
     with get_conn() as conn:
         team = ensure_team(conn, team_id)
+        if part_support.selected_part():
+            team = conn.execute("SELECT * FROM parts WHERE part_id=? AND team_id=?", (part_support.selected_part(), team_id)).fetchone()
         schedule = normalized_report_schedule(team)
         return {**schedule, "timezone": "Asia/Seoul"}
 
@@ -2907,24 +2932,27 @@ def get_report_schedule(team_id: str):
 def update_report_schedule(team_id: str, payload: ReportScheduleIn):
     with get_conn() as conn:
         ensure_team(conn, team_id)
+        table = "parts" if part_support.selected_part() else "teams"
+        key = "part_id" if part_support.selected_part() else "team_id"
+        target = part_support.selected_part() or team_id
         conn.execute(
-            """
-            UPDATE teams
+            f"""
+            UPDATE {table}
             SET report_schedule_enabled = ?,
                 report_schedule_weekday = ?,
                 report_schedule_time = ?,
                 report_schedule_interval_days = ?
-            WHERE team_id = ?
+            WHERE {key} = ?
             """,
             (
                 1 if payload.enabled else 0,
                 payload.weekday,
                 payload.time,
                 payload.interval_days,
-                team_id,
+                target,
             ),
         )
-        team = ensure_team(conn, team_id)
+        team = conn.execute(f"SELECT * FROM {table} WHERE {key}=?", (target,)).fetchone()
         schedule = normalized_report_schedule(team)
         return {**schedule, "timezone": "Asia/Seoul"}
 
@@ -3527,9 +3555,9 @@ def list_team_timeline_projects(team_id: str):
             FROM project p
             LEFT JOIN milestones m ON m.project_id = p.project_id
             LEFT JOIN epics e ON e.milestone_id = m.milestone_id
-            WHERE p.team_id = ? AND p.status = 'in_progress' AND p.project_name != ?
+            WHERE p.team_id = ? AND part_visible(p.team_id, p.part_id) AND p.status = 'in_progress' AND p.project_name != ?
             GROUP BY p.project_id
-            ORDER BY p.created_at DESC, p.project_name
+            ORDER BY p.sort_order, p.created_at DESC, p.project_name
             """,
             (team_id, OTHER_WORK_PROJECT_NAME),
         ).fetchall()
@@ -3586,6 +3614,8 @@ def list_milestones():
                 MAX(e.end_date) AS last_epic_date
             FROM milestones m
             LEFT JOIN epics e ON e.milestone_id = m.milestone_id
+            JOIN project p ON p.project_id=m.project_id
+            WHERE part_visible(p.team_id,p.part_id)
             GROUP BY m.milestone_id
             ORDER BY m.start_date, m.created_at
             """
@@ -3712,3 +3742,6 @@ def delete_epic(epic_id: str):
         cursor = conn.execute("DELETE FROM epics WHERE epic_id = ?", (epic_id,))
         if cursor.rowcount == 0:
             raise HTTPException(status_code=404, detail="Epic not found")
+
+
+part_support.install(app, get_conn, public_team)

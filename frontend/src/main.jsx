@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Plus, Trash2, AudioWaveform, User, ChevronRight, Pencil, Save, X, KeyRound, LogOut, Users, ClipboardList, GripVertical, HelpCircle, Check, FileText, Link2, ImagePlus, AlertTriangle, History, ExternalLink, CalendarClock, Clock, CalendarRange, Zap, Wifi } from 'lucide-react';
 import './styles.css';
+import PartManagement from './PartManagement.jsx';
 
 // 기본값은 같은 출처(''). vite 가 /api 를 백엔드로 프록시한다(vite.config.js).
 // 백엔드를 다른 주소로 직접 호출해야 하면 VITE_API_BASE 로 절대주소를 넣는다.
@@ -228,9 +229,16 @@ function accentFor(index) {
 }
 
 async function request(path, options = {}) {
+  let partHeaders = {};
+  try {
+    const team = JSON.parse(localStorage.getItem('wiareport_team') || 'null');
+    if (team?.team_id && !path.startsWith('/api/auth/')) {
+      partHeaders = { 'X-Wia-Team': team.team_id, 'X-Wia-Part': localStorage.getItem('wiareport_part_' + team.team_id) || '' };
+    }
+  } catch {}
   const res = await fetch(`${API_BASE}${path}`, {
-    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
     ...options,
+    headers: { 'Content-Type': 'application/json', ...partHeaders, ...(options.headers || {}) },
   });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
@@ -245,7 +253,17 @@ async function request(path, options = {}) {
 
 
 function App() {
-  const [activePage, setActivePage] = useState('team-status');
+  const [scopeVersion, setScopeVersion] = useState(0);
+  useEffect(() => {
+    const change = () => setScopeVersion((version) => version + 1);
+    window.addEventListener('wiareport-part-change', change);
+    return () => window.removeEventListener('wiareport-part-change', change);
+  }, []);
+  return <TeamWorkspace key={scopeVersion} />;
+}
+
+function TeamWorkspace() {
+  const [activePage, setActivePage] = useState(() => sessionStorage.getItem('wiareport_scope_page') || 'team-status');
   const [activeTeamTab, setActiveTeamTab] = useState('members');
   const [projects, setProjects] = useState([]);
   const [selectedProjectId, setSelectedProjectId] = useState(null);
@@ -263,6 +281,39 @@ function App() {
       return null;
     }
   });
+  const [partsConfig, setPartsConfig] = useState({ enabled: false, parts: [] });
+  const selectedPartId = currentTeam?.team_id ? localStorage.getItem('wiareport_part_' + currentTeam.team_id) || '' : '';
+  const selectedPart = partsConfig.enabled ? partsConfig.parts.find((part) => part.part_id === selectedPartId) : null;
+  function changePart(partId, nextPage = activePage) {
+    localStorage.setItem('wiareport_part_' + currentTeam.team_id, partId);
+    sessionStorage.setItem('wiareport_scope_page', nextPage);
+    window.dispatchEvent(new Event('wiareport-part-change'));
+  }
+  useEffect(() => {
+    if (!currentTeam?.team_id || currentTeam.account_role === 'admin') return;
+    let active = true;
+    request(`/api/teams/${currentTeam.team_id}/parts`).then((config) => {
+      if (!active) return;
+      setPartsConfig(config);
+      if (selectedPartId && (!config.enabled || !config.parts.some((part) => part.part_id === selectedPartId))) changePart('');
+    }).catch((err) => { if (active) setError(err.message); });
+    return () => { active = false; };
+  }, [currentTeam?.team_id]);
+  async function toggleParts(enabled) {
+    await request(`/api/teams/${currentTeam.team_id}/parts/settings`, { method: 'PUT', body: JSON.stringify({ enabled }) });
+    changePart('', 'part-management');
+  }
+  async function createPart(name) {
+    setPartsConfig(await request(`/api/teams/${currentTeam.team_id}/parts`, { method: 'POST', body: JSON.stringify({ name }) }));
+  }
+  async function renamePart(partId, name) {
+    setPartsConfig(await request(`/api/teams/${currentTeam.team_id}/parts/${partId}`, { method: 'PUT', body: JSON.stringify({ name }) }));
+  }
+  async function deletePart(partId) {
+    await request(`/api/teams/${currentTeam.team_id}/parts/${partId}`, { method: 'DELETE' });
+    if (partId === selectedPartId) changePart('', 'part-management');
+    else setPartsConfig(await request(`/api/teams/${currentTeam.team_id}/parts`));
+  }
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [addingMilestone, setAddingMilestone] = useState(false);
@@ -469,6 +520,7 @@ function App() {
         method: 'POST',
         body: JSON.stringify({ login_id: loginDraft.login_id.trim(), password: loginDraft.password }),
       });
+      localStorage.setItem('wiareport_team', JSON.stringify(team));
       setCurrentTeam(team);
       setLoginDraft({ login_id: '', password: '' });
       setPasswordDraft({ current_password: loginDraft.password, new_password: '', confirm_password: '' });
@@ -485,6 +537,7 @@ function App() {
         body: JSON.stringify({ session_id: sessionId }),
       }).catch(() => {});
     }
+    localStorage.removeItem('wiareport_team');
     setCurrentTeam(null);
     setPasswordDraft({ current_password: INITIAL_PASSWORD, new_password: '', confirm_password: '' });
   }
@@ -1112,10 +1165,23 @@ function App() {
           <button className={`side-tab${activePage === 'weekly-lounge' ? ' active' : ''}`} type="button" onClick={() => setActivePage('weekly-lounge')}>주간 보고 라운지</button>
           <button className={'side-tab' + (activePage === 'member-management' ? ' active' : '')} type="button" onClick={() => setActivePage('member-management')}>멤버 관리</button>
           <button className={'side-tab' + (activePage === 'project-management' ? ' active' : '')} type="button" onClick={() => setActivePage('project-management')}>과제 관리</button>
+          <button className={'side-tab' + (activePage === 'part-management' ? ' active' : '')} type="button" onClick={() => setActivePage('part-management')}>파트 관리</button>
           </>}
           {isAdminAccount && <button className={`side-tab${activePage === 'accounts' ? ' active' : ''}`} type="button" onClick={() => setActivePage('accounts')}>계정 관리</button>}
           {isAdminAccount && <button className={`side-tab${activePage === 'admin-overview' ? ' active' : ''}`} type="button" onClick={() => setActivePage('admin-overview')}>운영 현황</button>}
         </nav>
+
+        {!isAdminAccount && partsConfig.enabled && <label className="side-part-select">
+          <span className="side-part-caption">현재 파트</span>
+          <span className="side-part-control">
+            <Users className="side-part-icon" size={16} aria-hidden="true" />
+            <select aria-label="파트 선택" title={selectedPart?.name || '미지정 · 기존 데이터'} value={selectedPartId} onChange={(e) => changePart(e.target.value)}>
+              <option value="">미지정 · 기존 데이터</option>
+              {partsConfig.parts.map((part) => <option key={part.part_id} value={part.part_id}>{part.name}</option>)}
+            </select>
+            <ChevronRight className="side-part-chevron" size={14} aria-hidden="true" />
+          </span>
+        </label>}
 
         <button className="side-help" type="button" onClick={() => setIsUsageGuideOpen(true)}>
           <HelpCircle size={16} />
@@ -1134,6 +1200,8 @@ function App() {
 
       <section className="workspace">
         {error && <div className="error">{error}</div>}
+        {!isAdminAccount && partsConfig.enabled && activePage !== 'part-management' && <header className="part-context"><div className="part-context-icon"><Users size={30} aria-hidden="true" /></div><div className="part-context-copy"><span className="part-context-eyebrow">{currentTeam.department} · 현재 파트</span><h1>{selectedPart?.name || '미지정'}</h1><p>멤버 · 과제 · 일정 · 주간보고</p></div></header>}
+        {!isAdminAccount && activePage === 'part-management' && <PartManagement teamId={currentTeam.team_id} request={request} onMembersChanged={() => refresh().catch((err) => setError(err.message))} config={partsConfig} onToggle={toggleParts} onCreate={createPart} onRename={renamePart} onDelete={deletePart} />}
         {!isAdminAccount && activePage === 'team-status' && (
           <TeamStatusPage
             currentTeam={currentTeam}
@@ -3100,7 +3168,9 @@ function ProjectManagementBoard({ members, teamProjects, teamProjectDraft, setTe
   const inProgressProjects = teamProjects.filter((project) => project.status !== 'done');
   const doneProjects = teamProjects.filter((project) => project.status === 'done');
 
-  const selectedLeader = members.find((member) => member.user_id === teamProjectDraft.leaderId);
+  const existingMembers = teamProjects.find((project) => project.project_id === editingTeamProjectId)?.members || [];
+  const availableMembers = [...members, ...existingMembers.filter((assigned) => !members.some((member) => member.user_id === assigned.user_id)).map((assigned) => ({ ...assigned, role: assigned.member_role }))];
+  const selectedLeader = availableMembers.find((member) => member.user_id === teamProjectDraft.leaderId);
   const selectedMemberCount = (teamProjectDraft.memberIds || []).length;
   const canSaveProject = Boolean(teamProjectDraft.project_name.trim() && teamProjectDraft.leaderId);
 
@@ -3175,14 +3245,14 @@ function ProjectManagementBoard({ members, teamProjects, teamProjectDraft, setTe
               <span>과제 리더</span>
               <select value={teamProjectDraft.leaderId || ''} onChange={(e) => setTeamProjectDraft((prev) => ({ ...prev, leaderId: e.target.value, memberIds: (prev.memberIds || []).filter((userId) => userId !== e.target.value) }))}>
                 <option value="">리더 선택</option>
-                {members.map((member) => <option key={member.user_id} value={member.user_id}>{member.name} ({ROLE_LABELS[member.role] || member.role})</option>)}
+                {availableMembers.map((member) => <option key={member.user_id} value={member.user_id}>{member.name} ({ROLE_LABELS[member.role] || member.role})</option>)}
               </select>
             </label>
             <div className="project-member-picker">
               <span>과제 멤버</span>
               <div className="project-member-options modal-options">
                 <button className={`project-member-none${(teamProjectDraft.memberIds || []).length === 0 ? ' active' : ''}`} type="button" onClick={() => setTeamProjectDraft((prev) => ({ ...prev, memberIds: [] }))}>없음</button>
-                {members.map((member) => {
+                {availableMembers.map((member) => {
                   const disabled = member.user_id === teamProjectDraft.leaderId;
                   const checked = !disabled && (teamProjectDraft.memberIds || []).includes(member.user_id);
                   return (
@@ -3192,7 +3262,7 @@ function ProjectManagementBoard({ members, teamProjects, teamProjectDraft, setTe
                     </label>
                   );
                 })}
-                {members.length === 0 && <div className="empty compact">등록된 멤버가 없습니다</div>}
+                {availableMembers.length === 0 && <div className="empty compact">등록된 멤버가 없습니다</div>}
               </div>
             </div>
             <div className="project-modal-actions">
