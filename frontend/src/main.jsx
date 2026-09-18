@@ -3,6 +3,8 @@ import { createRoot } from 'react-dom/client';
 import { Plus, Trash2, AudioWaveform, User, ChevronRight, Pencil, Save, X, KeyRound, LogOut, Users, ClipboardList, GripVertical, HelpCircle, Check, FileText, Link2, ImagePlus, AlertTriangle, History, ExternalLink, CalendarClock, Clock, CalendarRange, Zap, Wifi } from 'lucide-react';
 import './styles.css';
 import PartManagement from './PartManagement.jsx';
+import { useProjectOrder } from './useProjectOrder.js';
+import WeeklyProjectOrderList from './WeeklyProjectOrderList.jsx';
 
 // 기본값은 같은 출처(''). vite 가 /api 를 백엔드로 프록시한다(vite.config.js).
 // 백엔드를 다른 주소로 직접 호출해야 하면 VITE_API_BASE 로 절대주소를 넣는다.
@@ -302,6 +304,18 @@ function TeamWorkspace() {
   async function toggleParts(enabled) {
     await request(`/api/teams/${currentTeam.team_id}/parts/settings`, { method: 'PUT', body: JSON.stringify({ enabled }) });
     changePart('', 'part-management');
+  }
+  async function reorderProjects(projectIds, expectedIds) {
+    try {
+      const rows = await request(`/api/teams/${currentTeam.team_id}/team-projects/order`, {
+        method: 'PUT', body: JSON.stringify({ project_ids: projectIds, expected_ids: expectedIds }),
+      });
+      setTeamProjects(rows);
+      loadProjects(selectedProjectId, currentTeam.team_id).catch((err) => setError(err.message));
+    } catch (err) {
+      await loadTeamProjects(currentTeam.team_id).catch(() => {});
+      throw err;
+    }
   }
   async function createPart(name) {
     setPartsConfig(await request(`/api/teams/${currentTeam.team_id}/parts`, { method: 'POST', body: JSON.stringify({ name }) }));
@@ -1075,6 +1089,17 @@ function TeamWorkspace() {
     }
   }
 
+  async function reorderWeeklyProjects(entryId, projectIds, expectedIds) {
+    if (!entryId) return;
+    const result = await request(`/api/report-entries/${entryId}/project-order`, {
+      method: 'PUT', body: JSON.stringify({ project_ids: projectIds, expected_ids: expectedIds }),
+    });
+    setWeeklyEntryProjects((prev) => {
+      if (!prev.length || prev[0].entry_id !== entryId) return prev;
+      const positions = new Map(result.project_ids.map((id, index) => [id, index]));
+      return [...prev].sort((a, b) => (positions.get(a.project_id) ?? Infinity) - (positions.get(b.project_id) ?? Infinity));
+    });
+  }
   function selectWeeklyProject(project) {
     setSelectedWeeklyEntryId(project.project_id);
     setWeeklyEntryDraft(weeklyDraftFromProject(project));
@@ -1286,6 +1311,7 @@ function TeamWorkspace() {
             onAuthorizeWeeklyEntry={authorizeWeeklyEntry}
             setWeeklyPasswordEntry={setWeeklyPasswordEntry}
             weeklyWritingEntry={weeklyWritingEntry}
+            onReorderWeeklyProjects={reorderWeeklyProjects}
             weeklyEntryProjects={weeklyEntryProjects}
             weeklyEntryDraft={weeklyEntryDraft}
             weeklyDateCheckOn={weeklyDateCheckOn}
@@ -1328,6 +1354,7 @@ function TeamWorkspace() {
             onUpdateMemberRole={updateMemberRole}
             onSetMemberPassword={setMemberPassword}
             onResetMemberPassword={resetMemberPassword}
+            onReorderProjects={reorderProjects}
             onReorderMembers={reorderMembers}
             draggingMemberId={draggingMemberId}
             setDraggingMemberId={setDraggingMemberId}
@@ -2026,6 +2053,7 @@ function WeeklyReportPage({
   setWeeklyPasswordEntry,
   weeklyWritingEntry,
   weeklyEntryProjects,
+  onReorderWeeklyProjects,
   weeklyEntryDraft,
   weeklyDateCheckOn,
   setWeeklyEntryDraft,
@@ -2545,7 +2573,7 @@ function WeeklyReportPage({
 
       {weeklyWritingEntry && (
         <div className="modal-backdrop" role="presentation">
-          <div className="weekly-entry-modal" role="dialog" aria-modal="true" aria-labelledby="weekly-entry-title">
+          <div className="weekly-entry-modal" data-project-order-scroll role="dialog" aria-modal="true" aria-labelledby="weekly-entry-title">
             <div className="project-modal-head weekly-entry-head">
               <div className="weekly-entry-head-copy">
                 <span className="weekly-entry-head-icon"><ClipboardList size={19} /></span>
@@ -2604,15 +2632,13 @@ function WeeklyReportPage({
                   <em className="weekly-project-count">{writableRegularProjects.length}</em>
                   <button type="button" onClick={() => setIsWeeklyProjectPickerOpen(true)}>과제 다시 선택</button>
                 </div>
-                <div className="weekly-project-items">
-                  {writableRegularProjects.map((project) => (
-                    <button className={`weekly-project-item${selectedWeeklyEntryId === project.project_id ? ' active' : ''}`} type="button" key={`${project.entry_id}-${project.project_id}`} onClick={() => requestSelectWeeklyProject(project)}>
-                      <span>{project.project_name}</span>
-                      {project.status === 'done' && <b className="entry-state done">작성 완료</b>}
-                    </button>
-                  ))}
-                  {writableRegularProjects.length === 0 && <div className="empty compact">선택된 과제가 없습니다</div>}
-                </div>
+                <WeeklyProjectOrderList
+                  key={writableRegularProjects[0]?.entry_id || 'empty'}
+                  projects={writableRegularProjects}
+                  selectedId={selectedWeeklyEntryId}
+                  onSelect={requestSelectWeeklyProject}
+                  onReorder={(ids, expected) => onReorderWeeklyProjects(writableRegularProjects[0]?.entry_id, ids, expected)}
+                />
 
                 {otherWeeklyProject && (
                 <div className="weekly-other-section">
@@ -3051,7 +3077,7 @@ function LoginPage({ loginDraft, setLoginDraft, onLogin, teams, teamDraft, setTe
 }
 
 
-function TeamManagementPage({ activeTeamTab, setActiveTeamTab, showTabs = true, currentTeam, members, teamProjects, teamProjectDraft, setTeamProjectDraft, isProjectModalOpen, setIsProjectModalOpen, editingTeamProjectId, setEditingTeamProjectId, projectAssignmentDrafts, setProjectAssignmentDrafts, memberDraft, setMemberDraft, memberPasswordDrafts, setMemberPasswordDrafts, onCreateMember, onCreateTeamProject, onEditTeamProject, onSaveProjectMembers, onUpdateTeamProjectStatus, onDeleteTeamProject, onDeleteMember, onUpdateMemberRole, onSetMemberPassword, onResetMemberPassword, onReorderMembers, draggingMemberId, setDraggingMemberId }) {
+function TeamManagementPage({ activeTeamTab, setActiveTeamTab, showTabs = true, currentTeam, members, teamProjects, teamProjectDraft, setTeamProjectDraft, isProjectModalOpen, setIsProjectModalOpen, editingTeamProjectId, setEditingTeamProjectId, projectAssignmentDrafts, setProjectAssignmentDrafts, memberDraft, setMemberDraft, memberPasswordDrafts, setMemberPasswordDrafts, onCreateMember, onCreateTeamProject, onEditTeamProject, onSaveProjectMembers, onUpdateTeamProjectStatus, onDeleteTeamProject, onDeleteMember, onUpdateMemberRole, onSetMemberPassword, onResetMemberPassword, onReorderProjects, onReorderMembers, draggingMemberId, setDraggingMemberId }) {
   const pageTitle = activeTeamTab === 'members' ? '멤버 관리' : '과제 관리';
   const pageDescription = activeTeamTab === 'members'
     ? currentTeam.department + ' 팀의 멤버와 비밀번호를 관리합니다'
@@ -3145,6 +3171,7 @@ function TeamManagementPage({ activeTeamTab, setActiveTeamTab, showTabs = true, 
         </section>
       ) : (
         <ProjectManagementBoard
+          onReorderProjects={onReorderProjects}
           members={members}
           teamProjects={teamProjects}
           teamProjectDraft={teamProjectDraft}
@@ -3164,7 +3191,8 @@ function TeamManagementPage({ activeTeamTab, setActiveTeamTab, showTabs = true, 
 }
 
 
-function ProjectManagementBoard({ members, teamProjects, teamProjectDraft, setTeamProjectDraft, isProjectModalOpen, setIsProjectModalOpen, editingTeamProjectId, setEditingTeamProjectId, onCreateTeamProject, onEditTeamProject, onUpdateTeamProjectStatus, onDeleteTeamProject }) {
+function ProjectManagementBoard({ onReorderProjects, members, teamProjects, teamProjectDraft, setTeamProjectDraft, isProjectModalOpen, setIsProjectModalOpen, editingTeamProjectId, setEditingTeamProjectId, onCreateTeamProject, onEditTeamProject, onUpdateTeamProjectStatus, onDeleteTeamProject }) {
+  const order = useProjectOrder(teamProjects, onReorderProjects);
   const inProgressProjects = teamProjects.filter((project) => project.status !== 'done');
   const doneProjects = teamProjects.filter((project) => project.status === 'done');
 
@@ -3195,13 +3223,20 @@ function ProjectManagementBoard({ members, teamProjects, teamProjectDraft, setTe
       <section className="project-board-toolbar">
         <div>
           <h2>과제 관리</h2>
-          <p>진행중인 과제와 완료된 과제를 분리해서 관리합니다.</p>
+          <p>카드의 손잡이를 드래그해 같은 상태 안에서 순서를 변경하세요.</p>
         </div>
-        <button className="mt-btn primary" type="button" onClick={() => { setEditingTeamProjectId(null); setTeamProjectDraft({ project_name: '', leaderId: '', memberIds: [], status: 'in_progress' }); setIsProjectModalOpen(true); }}><Plus size={15} />과제 추가</button>
+        <div className="project-order-actions">
+          <button className="mt-btn" type="button" disabled={order.locked || teamProjects.length < 2} onClick={order.sortAscending}><span aria-hidden="true">↑</span>과제명 오름차순</button>
+        <button className="mt-btn primary" type="button" disabled={order.locked} onClick={() => { setEditingTeamProjectId(null); setTeamProjectDraft({ project_name: '', leaderId: '', memberIds: [], status: 'in_progress' }); setIsProjectModalOpen(true); }}><Plus size={15} />과제 추가</button>
+        </div>
       </section>
+      {order.error && <p className="parts-error" role="alert">{order.error}</p>}
+      <p className="project-order-status" role="status">{order.saving ? '순서를 저장하고 있습니다…' : order.notice}</p>
+      {order.drag && <div className="project-order-ghost" aria-hidden="true" style={{ left: Math.min(order.drag.x + 14, window.innerWidth - 225), top: Math.min(order.drag.y + 14, window.innerHeight - 65) }}>{order.drag.project.project_name}</div>}
 
       <div className="project-board-grid">
         <ProjectColumn
+          order={order}
           title="진행중인 과제"
           projects={inProgressProjects}
           emptyText="진행중인 과제가 없습니다"
@@ -3212,6 +3247,7 @@ function ProjectManagementBoard({ members, teamProjects, teamProjectDraft, setTe
           onDelete={onDeleteTeamProject}
         />
         <ProjectColumn
+          order={order}
           title="완료된 과제"
           projects={doneProjects}
           emptyText="완료된 과제가 없습니다"
@@ -3276,27 +3312,29 @@ function ProjectManagementBoard({ members, teamProjects, teamProjectDraft, setTe
   );
 }
 
-function ProjectColumn({ title, projects, emptyText, nextActionLabel, nextStatus, onMove, onEdit, onDelete }) {
+function ProjectColumn({ order, title, projects, emptyText, nextActionLabel, nextStatus, onMove, onEdit, onDelete }) {
   return (
-    <section className="project-column">
+    <section className="project-column" data-project-order-status={nextStatus === 'done' ? 'in_progress' : 'done'}>
       <div className="project-column-head">
         <h3>{title}</h3>
         <span>{projects.length}</span>
       </div>
       <div className="project-card-list">
-        {projects.map((project) => <ProjectCard key={project.project_id} project={project} actionLabel={nextActionLabel} nextStatus={nextStatus} onMove={onMove} onEdit={onEdit} onDelete={onDelete} />)}
+        {projects.map((project) => <ProjectCard order={order} key={project.project_id} project={project} actionLabel={nextActionLabel} nextStatus={nextStatus} onMove={onMove} onEdit={onEdit} onDelete={onDelete} />)}
+        {order.drag?.target?.beforeId === null && order.drag.target.status === (nextStatus === 'done' ? 'in_progress' : 'done') && <div className="project-order-tail" aria-hidden="true">맨 뒤에 놓기</div>}
         {projects.length === 0 && <div className="empty compact">{emptyText}</div>}
       </div>
     </section>
   );
 }
 
-function ProjectCard({ project, actionLabel, nextStatus, onMove, onEdit, onDelete }) {
+function ProjectCard({ order, project, actionLabel, nextStatus, onMove, onEdit, onDelete }) {
   const leader = project.members.find((member) => member.role === 'L');
   const projectMembers = project.members.filter((member) => member.role === 'M');
   return (
-    <article className="team-project-card">
+    <article data-project-order-card={project.project_id} className={`team-project-card${order.drag?.project.project_id === project.project_id ? ' is-order-dragging' : ''}${order.drag?.target?.beforeId === project.project_id ? ' is-order-before' : ''}`}>
       <div className="team-project-card-head">
+        <button type="button" className="project-order-handle" aria-label={`${project.project_name} 순서 변경`} title="드래그 또는 위·아래 방향키로 순서 변경" disabled={order.saving} {...order.handleProps(project)}><GripVertical size={17} /></button>
         <div>
           <strong>{project.project_name}</strong>
         </div>
@@ -3307,9 +3345,9 @@ function ProjectCard({ project, actionLabel, nextStatus, onMove, onEdit, onDelet
         <div><b>멤버</b><span>{projectMembers.length ? projectMembers.map((member) => member.name).join(', ') : '없음'}</span></div>
       </div>
       <div className="team-project-card-actions">
-        <button className="project-card-btn" type="button" onClick={() => onEdit(project)}><Pencil size={13} />수정</button>
-        <button className="project-card-btn primary" type="button" onClick={() => onMove(project.project_id, nextStatus)}>{actionLabel}</button>
-        <button className="project-card-btn danger" type="button" onClick={() => onDelete(project.project_id)}><Trash2 size={13} />삭제</button>
+        <button className="project-card-btn" type="button" disabled={order.locked} onClick={() => onEdit(project)}><Pencil size={13} />수정</button>
+        <button className="project-card-btn primary" type="button" disabled={order.locked} onClick={() => onMove(project.project_id, nextStatus)}>{actionLabel}</button>
+        <button className="project-card-btn danger" type="button" disabled={order.locked} onClick={() => onDelete(project.project_id)}><Trash2 size={13} />삭제</button>
       </div>
     </article>
   );

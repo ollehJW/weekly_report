@@ -3984,3 +3984,28 @@ header.part-context { display: flex; align-items: center; gap: 22px; margin: 0 0
   .parts-catalog-head .parts-create { flex-basis: 100%; }
   .parts-catalog-list { grid-template-columns: 1fr; }
 }
+
+.project-order-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.project-order-actions .mt-btn { width: auto; min-width: 0; white-space: nowrap; }
+.project-order-status { margin: 0 0 12px; min-height: 16px; font-size: 12px; color: #6b7e97; }
+.project-order-handle { display: grid; place-items: center; flex: 0 0 28px; width: 28px; height: 30px; margin: -3px 0 -3px -7px; border: 0; border-radius: 5px; background: transparent; color: #91a0b4; cursor: grab; touch-action: none; user-select: none; }
+.project-order-handle:hover { color: #345e94; background: #edf2f8; }
+.project-order-handle:active { cursor: grabbing; }
+.project-order-handle:focus-visible { outline: 2px solid #7196c5; outline-offset: 2px; }
+.project-order-handle:disabled { cursor: wait; opacity: .5; }
+.team-project-card-head > .project-order-handle + div { flex: 1; min-width: 0; }
+.team-project-card.is-order-dragging { opacity: .4; }
+.team-project-card.is-order-before { border-top: 3px solid #477db9; box-shadow: 0 -3px 0 #dbe8f8; }
+.project-order-tail { border-top: 2px solid #477db9; padding: 5px; color: #477db9; font-size: 11px; text-align: right; }
+.project-order-ghost { position: fixed; z-index: 10000; pointer-events: none; width: 210px; padding: 13px 16px; border: 1px solid #9cb6d6; border-radius: 8px; background: #fff; color: #294465; box-shadow: 0 9px 28px #203c6226; font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+@media (max-width: 720px) { .project-order-actions { width: 100%; } .project-order-actions .mt-btn { flex: 1; } }
+
+.project-order-tail { grid-column: 1 / -1; }
+.weekly-order-guide, .weekly-order-status { margin: 2px 0 8px; font-size: 11px; color: #7b8ba1; line-height: 1.6; }
+.weekly-order-status { margin: 6px 0 0; }
+.weekly-order-status:empty { display: none; }
+.weekly-order-row { display: flex; align-items: stretch; gap: 4px; min-width: 0; }
+.weekly-order-row .project-order-handle { flex: 0 0 21px; width: 21px; margin: 0; height: auto; }
+.weekly-order-row .weekly-project-item { flex: 1; min-width: 0; width: auto; }
+.weekly-order-row.is-order-dragging { opacity: .4; }
+.weekly-order-row.is-order-before { border-top: 2px solid #477db9; }

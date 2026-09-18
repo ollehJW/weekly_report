@@ -503,6 +503,14 @@ def init_db():
                         "UPDATE users SET sort_order = ? WHERE user_id = ?",
                         (index, user_row["user_id"]),
                     )
+        if not has_column(conn, "project_entry", "sort_order"):
+            conn.execute("ALTER TABLE project_entry ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0")
+            positions = {}
+            rows = conn.execute("SELECT pe.entry_id,pe.project_id FROM project_entry pe JOIN project p ON p.project_id=pe.project_id ORDER BY CASE WHEN p.project_name=? THEN 1 ELSE 0 END,p.created_at DESC,p.project_name,p.project_id", (OTHER_WORK_PROJECT_NAME,)).fetchall()
+            for row in rows:
+                index = positions.get(row["entry_id"], 0)
+                conn.execute("UPDATE project_entry SET sort_order=? WHERE entry_id=? AND project_id=?", (index, row["entry_id"], row["project_id"]))
+                positions[row["entry_id"]] = index + 1
         part_support.init_parts(conn)
         backfill_project_tracking(conn)
 
@@ -938,6 +946,11 @@ class MemberPasswordIn(BaseModel):
 
 class MemberRoleIn(BaseModel):
     role: str = Field(pattern="^(L|CM|M)$")
+
+
+class ProjectOrderIn(BaseModel):
+    project_ids: list[str]
+    expected_ids: list[str]
 
 
 class MemberOrderIn(BaseModel):
@@ -1836,7 +1849,7 @@ def report_with_entries(conn, report_row):
         JOIN project_entry pe ON pe.entry_id = re.entry_id
         JOIN project p ON p.project_id = pe.project_id
         WHERE re.report_id = ?
-        ORDER BY u.sort_order ASC, u.created_at ASC, u.name, p.created_at DESC, p.project_name
+        ORDER BY u.sort_order ASC, u.created_at ASC, u.name, pe.sort_order, p.created_at DESC, p.project_name
         """,
         (report_row["report_id"],),
     ).fetchall()
@@ -1991,10 +2004,10 @@ def ensure_report_user_entries(conn, report_id: str, user_id: str):
         if not exists:
             conn.execute(
                 """
-                INSERT INTO project_entry (entry_id, project_id, is_excluded, progress_log, risk_issue, next_plan, updated_at)
-                VALUES (?, ?, 1, '[]', '[]', '[]', ?)
+                INSERT INTO project_entry (entry_id, project_id, is_excluded, progress_log, risk_issue, next_plan, updated_at, sort_order)
+                VALUES (?, ?, 1, '[]', '[]', '[]', ?, (SELECT COALESCE(MAX(sort_order)+1,0) FROM project_entry WHERE entry_id=?))
                 """,
-                (entry_id, project["project_id"], now),
+                (entry_id, project["project_id"], now, entry_id),
             )
     return report
 
@@ -2042,7 +2055,7 @@ def list_entry_projects(conn, report_id: str, user_id: str):
         FROM project_entry pe
         JOIN project p ON p.project_id = pe.project_id
         WHERE pe.entry_id = ?
-        ORDER BY CASE WHEN p.project_name = ? THEN 1 ELSE 0 END, p.created_at DESC, p.project_name
+        ORDER BY CASE WHEN p.project_name = ? THEN 1 ELSE 0 END, pe.sort_order, p.created_at DESC, p.project_name
         """,
         (entry["entry_id"], OTHER_WORK_PROJECT_NAME),
     ).fetchall()
@@ -2683,6 +2696,27 @@ def list_team_projects(team_id: str):
         return [project_with_members(conn, row) for row in rows]
 
 
+@app.put("/api/teams/{team_id}/team-projects/order")
+def reorder_team_projects(team_id: str, payload: ProjectOrderIn):
+    with get_conn() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        ensure_team(conn, team_id)
+        rows = conn.execute(
+            "SELECT project_id FROM project WHERE team_id=? AND part_visible(team_id,part_id) AND project_name!=? "
+            "ORDER BY sort_order,created_at DESC,project_name",
+            (team_id, OTHER_WORK_PROJECT_NAME),
+        ).fetchall()
+        current = [row["project_id"] for row in rows]
+        if len(payload.project_ids) != len(current) or set(payload.project_ids) != set(current):
+            raise HTTPException(409, "과제 목록이 변경되었습니다. 최신 목록에서 다시 정렬하세요.")
+        if payload.expected_ids != current:
+            raise HTTPException(409, "다른 곳에서 과제 순서가 변경되었습니다. 최신 목록에서 다시 정렬하세요.")
+        for index, project_id in enumerate(payload.project_ids):
+            conn.execute("UPDATE project SET sort_order=? WHERE project_id=? AND team_id=? AND part_visible(team_id,part_id)",
+                         (index, project_id, team_id))
+    return list_team_projects(team_id)
+
+
 @app.post("/api/teams/{team_id}/team-projects", status_code=201)
 def create_team_project(team_id: str, payload: TeamProjectIn):
     now = datetime.utcnow().isoformat()
@@ -3035,7 +3069,7 @@ def get_report_user_html(report_id: str, user_id: str):
                   OR julianday(?) IS NULL
                   OR julianday(p.completed_at) > julianday(?)
               )
-            ORDER BY CASE WHEN p.project_name = ? THEN 1 ELSE 0 END, p.created_at DESC, p.project_name
+            ORDER BY CASE WHEN p.project_name = ? THEN 1 ELSE 0 END, pe.sort_order, p.created_at DESC, p.project_name
             """,
             (entry["entry_id"], entry["updated_at"], entry["updated_at"], OTHER_WORK_PROJECT_NAME),
         ).fetchall()
@@ -3088,6 +3122,36 @@ def authorize_report_user(report_id: str, user_id: str, payload: ReportEntryAuth
         if entry and entry["status"] == "absent":
             raise HTTPException(status_code=422, detail="부재 상태에서는 보고를 작성할 수 없습니다")
         return {"report_id": report["report_id"], "user_id": user_id, "projects": list_entry_projects(conn, report_id, user_id)}
+
+
+@app.put("/api/report-entries/{entry_id}/project-order")
+def reorder_report_projects(entry_id: str, payload: ProjectOrderIn):
+    with get_conn() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        entry = ensure_report_entry(conn, entry_id)
+        report = conn.execute("SELECT status FROM reports WHERE report_id=?", (entry["report_id"],)).fetchone()
+        if entry["status"] == "absent" or report["status"] == "done":
+            raise HTTPException(409, "작성 가능한 보고를 다시 열어 순서를 변경하세요.")
+        rows = conn.execute(
+            "SELECT pe.project_id,pe.sort_order FROM project_entry pe JOIN project p ON p.project_id=pe.project_id "
+            "WHERE pe.entry_id=? AND pe.is_excluded=0 AND p.project_name!=? ORDER BY pe.sort_order,p.created_at DESC,p.project_name",
+            (entry_id, OTHER_WORK_PROJECT_NAME),
+        ).fetchall()
+        current = [row["project_id"] for row in rows]
+        if len(payload.project_ids) != len(current) or set(payload.project_ids) != set(current) or payload.expected_ids != current:
+            raise HTTPException(409, "작성 과제 목록이나 순서가 변경되었습니다. 보고를 다시 열고 정렬하세요.")
+        # Reorder only the selected regular projects. Content and completion timestamps are untouched.
+        all_rows = conn.execute(
+            "SELECT pe.project_id FROM project_entry pe JOIN project p ON p.project_id=pe.project_id WHERE pe.entry_id=? "
+            "ORDER BY CASE WHEN p.project_name=? THEN 1 ELSE 0 END,pe.sort_order,p.created_at DESC,p.project_name",
+            (entry_id, OTHER_WORK_PROJECT_NAME),
+        ).fetchall()
+        selected = set(current)
+        ordered = iter(payload.project_ids)
+        result = [next(ordered) if row["project_id"] in selected else row["project_id"] for row in all_rows]
+        for index, project_id in enumerate(result):
+            conn.execute("UPDATE project_entry SET sort_order=? WHERE entry_id=? AND project_id=?", (index, entry_id, project_id))
+        return {"project_ids": result}
 
 
 @app.put("/api/report-entries/{entry_id}/projects/{project_id}")
