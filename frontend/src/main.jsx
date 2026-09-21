@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Plus, Trash2, AudioWaveform, User, ChevronRight, Pencil, Save, X, KeyRound, LogOut, Users, ClipboardList, GripVertical, HelpCircle, Check, FileText, Link2, ImagePlus, AlertTriangle, History, ExternalLink, CalendarClock, Clock, CalendarRange, Zap, Wifi } from 'lucide-react';
 import './styles.css';
+import { emptyFormFields } from './formFields.mjs';
 import PartManagement from './PartManagement.jsx';
 import { useProjectOrder } from './useProjectOrder.js';
 import WeeklyProjectOrderList from './WeeklyProjectOrderList.jsx';
@@ -342,8 +343,8 @@ function TeamWorkspace() {
   const [isWeeklyScheduleModalOpen, setIsWeeklyScheduleModalOpen] = useState(false);
   const [weeklyScheduleDraft, setWeeklyScheduleDraft] = useState(DEFAULT_REPORT_SCHEDULE);
   const [weeklyWarningMessage, setWeeklyWarningMessage] = useState('');
-  const [weeklyPasswordEntry, setWeeklyPasswordEntry] = useState(null);
-  const [weeklyPasswordDraft, setWeeklyPasswordDraft] = useState('');
+  const [authorizationTarget, setAuthorizationTarget] = useState(null);
+  const [weeklyPasswordDraft, setEntrySecret] = useState('');
   const [weeklyWritingEntry, setWeeklyWritingEntry] = useState(null);
   const [weeklyEntryProjects, setWeeklyEntryProjects] = useState([]);
   const [selectedWeeklyEntryId, setSelectedWeeklyEntryId] = useState('');
@@ -361,15 +362,15 @@ function TeamWorkspace() {
   const [projectAssignmentDrafts, setProjectAssignmentDrafts] = useState({});
   const [memberPasswordDrafts, setMemberPasswordDrafts] = useState({});
   const [draggingMemberId, setDraggingMemberId] = useState(null);
-  const [loginDraft, setLoginDraft] = useState({ login_id: '', password: '' });
-  const [passwordDraft, setPasswordDraft] = useState({ current_password: '', new_password: '', confirm_password: '' });
+  const [loginDraft, setLoginDraft] = useState(emptyFormFields('login_id', 'password'));
+  const [passwordDraft, setAccountDraft] = useState(emptyFormFields('current_password', 'new_password', 'confirm_password'));
   const [isUsageGuideOpen, setIsUsageGuideOpen] = useState(false);
   const [issuedCredential, setIssuedCredential] = useState(null);
-  const [isPasswordChangeOpen, setIsPasswordChangeOpen] = useState(false);
+  const [isAccountUpdateOpen, setIsAccountUpdateOpen] = useState(false);
   const [loginNeedsChange, setLoginNeedsChange] = useState(false);
-  const [activationDraft, setActivationDraft] = useState({ password: '', confirm: '' });
+  const [activationDraft, setActivationDraft] = useState(emptyFormFields('password', 'confirm'));
   const [weeklyNeedsChange, setWeeklyNeedsChange] = useState(false);
-  const [weeklyActivationDraft, setWeeklyActivationDraft] = useState({ password: '', confirm: '' });
+  const [weeklyActivationDraft, setWeeklyActivationDraft] = useState(emptyFormFields('password', 'confirm'));
   useEffect(() => {
     const expired = () => {
       localStorage.removeItem('wiareport_team');
@@ -564,10 +565,10 @@ function TeamWorkspace() {
       });
       localStorage.setItem('wiareport_team', JSON.stringify(team));
       setCurrentTeam(team);
-      setLoginDraft({ login_id: '', password: '' });
-      setPasswordDraft({ current_password: '', new_password: '', confirm_password: '' });
+      setLoginDraft(emptyFormFields('login_id', 'password'));
+      setAccountDraft(emptyFormFields('current_password', 'new_password', 'confirm_password'));
       setLoginNeedsChange(false);
-      setActivationDraft({ password: '', confirm: '' });
+      setActivationDraft(emptyFormFields('password', 'confirm'));
       setError('');
     } catch (err) {
       if (err.status === 428) setLoginNeedsChange(true);
@@ -586,12 +587,12 @@ function TeamWorkspace() {
     localStorage.removeItem('wiareport_team');
     setIssuedCredential(null);
     setLoginNeedsChange(false);
-    setActivationDraft({ password: '', confirm: '' });
+    setActivationDraft(emptyFormFields('password', 'confirm'));
     setCurrentTeam(null);
-    setPasswordDraft({ current_password: '', new_password: '', confirm_password: '' });
+    setAccountDraft(emptyFormFields('current_password', 'new_password', 'confirm_password'));
   }
 
-  async function changePassword() {
+  async function submitAccountUpdate() {
     if (!currentTeam?.team_id) {
       setError('로그인 정보가 올바르지 않습니다. 다시 로그인하세요');
       logout();
@@ -615,8 +616,8 @@ function TeamWorkspace() {
         }),
       });
       setCurrentTeam((prev) => ({ ...team, session_id: prev?.session_id }));
-      setIsPasswordChangeOpen(false);
-      setPasswordDraft({ current_password: '', new_password: '', confirm_password: '' });
+      setIsAccountUpdateOpen(false);
+      setAccountDraft(emptyFormFields('current_password', 'new_password', 'confirm_password'));
       setError('');
     } catch (err) {
       setError(err.message);
@@ -655,7 +656,7 @@ function TeamWorkspace() {
     }
   }
 
-  async function resetTeamPassword(teamId) {
+  async function issueTeamAccess(teamId) {
     const team = teams.find((item) => item.team_id === teamId);
     if (!window.confirm(`${team ? team.login_id : '해당'} 계정에 새 임시 비밀번호를 발급할까요? 기존 비밀번호와 로그인은 만료됩니다.`)) return;
     try {
@@ -830,7 +831,7 @@ function TeamWorkspace() {
     }
   }
 
-  async function setMemberPassword(userId) {
+  async function saveMemberAccess(userId) {
     const password = memberPasswordDrafts[userId] || '';
     if (!password.trim()) {
       setError('설정할 비밀번호를 입력하세요');
@@ -848,7 +849,7 @@ function TeamWorkspace() {
     }
   }
 
-  async function resetMemberPassword(userId) {
+  async function issueMemberAccess(userId) {
     if (!window.confirm('새 임시 비밀번호를 발급할까요? 기존 비밀번호는 만료됩니다.')) return;
     try {
       const issued = await request(`/api/users/${userId}/password/reset`, { method: 'PUT' });
@@ -1042,8 +1043,8 @@ function TeamWorkspace() {
     try {
       await request(`/api/reports/${reportId}`, { method: 'DELETE' });
       setWeeklyReports((prev) => prev.filter((report) => report.report_id !== reportId));
-      setWeeklyPasswordEntry(null);
-      setWeeklyPasswordDraft('');
+      setAuthorizationTarget(null);
+      setEntrySecret('');
       closeWeeklyEntryModal();
       setWeeklyReportPreview(null);
       setError('');
@@ -1059,8 +1060,8 @@ function TeamWorkspace() {
     try {
       await request(`/api/reports/${reportId}/complete`, { method: 'PUT' });
       await loadWeeklyReport();
-      setWeeklyPasswordEntry(null);
-      setWeeklyPasswordDraft('');
+      setAuthorizationTarget(null);
+      setEntrySecret('');
       closeWeeklyEntryModal();
       setWeeklyReportPreview(null);
       setError('');
@@ -1097,16 +1098,16 @@ function TeamWorkspace() {
     }
   }
 
-  function openWeeklyPassword(report, entry) {
-    setWeeklyPasswordEntry({ ...entry, report_id: report.report_id, report_period: `${report.start_date} ~ ${report.end_date}` });
-    setWeeklyPasswordDraft('');
+  function openEntryAuthorization(report, entry) {
+    setAuthorizationTarget({ ...entry, report_id: report.report_id, report_period: `${report.start_date} ~ ${report.end_date}` });
+    setEntrySecret('');
     setWeeklyNeedsChange(false);
-    setWeeklyActivationDraft({ password: '', confirm: '' });
+    setWeeklyActivationDraft(emptyFormFields('password', 'confirm'));
     setError('');
   }
 
   async function authorizeWeeklyEntry() {
-    if (!weeklyPasswordEntry || !weeklyPasswordDraft || !weeklyPasswordEntry.report_id) {
+    if (!authorizationTarget || !weeklyPasswordDraft || !authorizationTarget.report_id) {
       setError('비밀번호를 입력하세요');
       return;
     }
@@ -1115,7 +1116,7 @@ function TeamWorkspace() {
       return;
     }
     try {
-      const result = await request(`/api/reports/${weeklyPasswordEntry.report_id}/users/${weeklyPasswordEntry.user_id}/authorize`, {
+      const result = await request(`/api/reports/${authorizationTarget.report_id}/users/${authorizationTarget.user_id}/authorize`, {
         method: 'POST',
         body: JSON.stringify({ password: weeklyPasswordDraft, ...(weeklyNeedsChange ? { new_password: weeklyActivationDraft.password } : {}) }),
       });
@@ -1123,12 +1124,12 @@ function TeamWorkspace() {
       const firstProject = nextProjects.find((project) => !project.is_excluded && project.project_name !== OTHER_WORK_PROJECT_NAME) || nextProjects.find((project) => !project.is_excluded) || null;
       setWeeklyEntryProjects(nextProjects);
       setSelectedWeeklyEntryId(firstProject?.project_id || '');
-      setWeeklyWritingEntry(weeklyPasswordEntry);
+      setWeeklyWritingEntry(authorizationTarget);
       setWeeklyEntryDraft(firstProject ? weeklyDraftFromProject(firstProject) : emptyWeeklyEntryDraft());
-      setWeeklyPasswordEntry(null);
-      setWeeklyPasswordDraft('');
+      setAuthorizationTarget(null);
+      setEntrySecret('');
       setWeeklyNeedsChange(false);
-      setWeeklyActivationDraft({ password: '', confirm: '' });
+      setWeeklyActivationDraft(emptyFormFields('password', 'confirm'));
       setError('');
     } catch (err) {
       if (err.status === 428) setWeeklyNeedsChange(true);
@@ -1269,7 +1270,7 @@ function TeamWorkspace() {
             <b>{currentTeam.department}</b>
             <span>{currentTeam.login_id}</span>
           </div>
-          <button className="side-logout" type="button" onClick={() => setIsPasswordChangeOpen(true)} aria-label="비밀번호 변경" title="비밀번호 변경"><KeyRound size={16} /></button>
+          <button className="side-logout" type="button" onClick={() => setIsAccountUpdateOpen(true)} aria-label="비밀번호 변경" title="비밀번호 변경"><KeyRound size={16} /></button>
           <button className="side-logout" type="button" onClick={logout} aria-label="로그아웃"><LogOut size={16} /></button>
         </div>
       </aside>
@@ -1352,18 +1353,18 @@ function TeamWorkspace() {
             onDeleteWeeklyReport={deleteWeeklyReport}
             onCompleteWeeklyReport={completeWeeklyReport}
             onToggleWeeklyAbsence={toggleWeeklyAbsence}
-            onOpenWeeklyPassword={openWeeklyPassword}
+            onOpenEntryAuthorization={openEntryAuthorization}
             onOpenWeeklyReportPreview={openWeeklyReportPreview}
             weeklyReportPreview={weeklyReportPreview}
             setWeeklyReportPreview={setWeeklyReportPreview}
-            weeklyPasswordEntry={weeklyPasswordEntry}
+            authorizationTarget={authorizationTarget}
             weeklyNeedsChange={weeklyNeedsChange}
             weeklyActivationDraft={weeklyActivationDraft}
             setWeeklyActivationDraft={setWeeklyActivationDraft}
             weeklyPasswordDraft={weeklyPasswordDraft}
-            setWeeklyPasswordDraft={setWeeklyPasswordDraft}
+            setEntrySecret={setEntrySecret}
             onAuthorizeWeeklyEntry={authorizeWeeklyEntry}
-            setWeeklyPasswordEntry={setWeeklyPasswordEntry}
+            setAuthorizationTarget={setAuthorizationTarget}
             weeklyWritingEntry={weeklyWritingEntry}
             onReorderWeeklyProjects={reorderWeeklyProjects}
             weeklyEntryProjects={weeklyEntryProjects}
@@ -1406,8 +1407,8 @@ function TeamWorkspace() {
             onDeleteTeamProject={deleteTeamProject}
             onDeleteMember={deleteMember}
             onUpdateMemberRole={updateMemberRole}
-            onSetMemberPassword={setMemberPassword}
-            onResetMemberPassword={resetMemberPassword}
+            onSaveMemberAccess={saveMemberAccess}
+            onIssueMemberAccess={issueMemberAccess}
             onReorderProjects={reorderProjects}
             onReorderMembers={reorderMembers}
             draggingMemberId={draggingMemberId}
@@ -1424,16 +1425,16 @@ function TeamWorkspace() {
           />
         )}
         {isAdminAccount && activePage === 'accounts' && (
-          <AccountManagementPage teams={teams} currentTeamId={currentTeam?.team_id} teamDraft={teamDraft} setTeamDraft={setTeamDraft} onCreateTeam={createTeam} onResetTeamPassword={resetTeamPassword} onDeleteTeam={deleteTeam} />
+          <AccountManagementPage teams={teams} currentTeamId={currentTeam?.team_id} teamDraft={teamDraft} setTeamDraft={setTeamDraft} onCreateTeam={createTeam} onIssueTeamAccess={issueTeamAccess} onDeleteTeam={deleteTeam} />
         )}
       </section>
 
-      {(currentTeam.must_change_password || isPasswordChangeOpen) && (
-        <PasswordChangeModal
+      {(currentTeam.must_change_password || isAccountUpdateOpen) && (
+        <AccountUpdateDialog
           passwordDraft={passwordDraft}
-          setPasswordDraft={setPasswordDraft}
-          onChangePassword={changePassword}
-          onClose={() => setIsPasswordChangeOpen(false)}
+          setAccountDraft={setAccountDraft}
+          onSubmitAccountUpdate={submitAccountUpdate}
+          onClose={() => setIsAccountUpdateOpen(false)}
         />
       )}
       {issuedCredential && <TemporaryCredentialDialog credential={issuedCredential} onClose={() => setIssuedCredential(null)} />}
@@ -2098,18 +2099,18 @@ function WeeklyReportPage({
   onDeleteWeeklyReport,
   onCompleteWeeklyReport,
   onToggleWeeklyAbsence,
-  onOpenWeeklyPassword,
+  onOpenEntryAuthorization,
   onOpenWeeklyReportPreview,
   weeklyReportPreview,
   setWeeklyReportPreview,
-  weeklyPasswordEntry,
+  authorizationTarget,
   weeklyNeedsChange,
   weeklyActivationDraft,
   setWeeklyActivationDraft,
   weeklyPasswordDraft,
-  setWeeklyPasswordDraft,
+  setEntrySecret,
   onAuthorizeWeeklyEntry,
-  setWeeklyPasswordEntry,
+  setAuthorizationTarget,
   weeklyWritingEntry,
   weeklyEntryProjects,
   onReorderWeeklyProjects,
@@ -2122,7 +2123,7 @@ function WeeklyReportPage({
   onUpdateWeeklyEntryStatus,
   onCloseWeeklyEntryModal,
 }) {
-  const activeEntryName = weeklyPasswordEntry ? `${weeklyPasswordEntry.name} ${weeklyPasswordEntry.role}` : '';
+  const activeEntryName = authorizationTarget ? `${authorizationTarget.name} ${authorizationTarget.role}` : '';
   const writingEntryName = weeklyWritingEntry ? `${weeklyWritingEntry.name} ${weeklyWritingEntry.role}` : '';
   const [isWeeklyProjectPickerOpen, setIsWeeklyProjectPickerOpen] = useState(false);
   const [weeklySelectionDraft, setWeeklySelectionDraft] = useState([]);
@@ -2398,7 +2399,7 @@ function WeeklyReportPage({
                     </div>
                     <div className="weekly-card-actions three">
                       <button className={`weekly-card-btn${member.status === 'absent' ? ' active' : ''}`} type="button" onClick={() => onToggleWeeklyAbsence(weeklyReport, member)}>부재</button>
-                      <button className="weekly-card-btn primary" type="button" disabled={member.status === 'absent'} onClick={() => onOpenWeeklyPassword(weeklyReport, member)}>작성</button>
+                      <button className="weekly-card-btn primary" type="button" disabled={member.status === 'absent'} onClick={() => onOpenEntryAuthorization(weeklyReport, member)}>작성</button>
                       <button className="weekly-card-btn report" type="button" disabled={member.status !== 'done'} title={member.status === 'done' ? '작성 리포트를 봅니다' : '작성 완료 후 리포트를 볼 수 있습니다'} onClick={() => onOpenWeeklyReportPreview(weeklyReport, member)}>리포트</button>
                     </div>
                   </article>
@@ -2601,17 +2602,17 @@ function WeeklyReportPage({
         </div>
       )}
 
-      {weeklyPasswordEntry && (
+      {authorizationTarget && (
         <div className="modal-backdrop" role="presentation">
           <div className="weekly-report-modal compact-modal" role="dialog" aria-modal="true" aria-labelledby="weekly-password-title">
             <div className="project-modal-head">
               <div>
                 <h2 id="weekly-password-title">비밀번호 확인</h2>
-                <p>{weeklyPasswordEntry?.report_period ? `${weeklyPasswordEntry.report_period} · ` : ''}{activeEntryName} 보고 작성을 시작합니다.</p>
+                <p>{authorizationTarget?.report_period ? `${authorizationTarget.report_period} · ` : ''}{activeEntryName} 보고 작성을 시작합니다.</p>
               </div>
-              <button className="icon-btn" type="button" onClick={() => setWeeklyPasswordEntry(null)} aria-label="닫기"><X size={16} /></button>
+              <button className="icon-btn" type="button" onClick={() => setAuthorizationTarget(null)} aria-label="닫기"><X size={16} /></button>
             </div>
-            <input type="password" placeholder="멤버 비밀번호" value={weeklyPasswordDraft} onChange={(e) => setWeeklyPasswordDraft(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && onAuthorizeWeeklyEntry()} autoFocus />
+            <input type="password" placeholder="멤버 비밀번호" value={weeklyPasswordDraft} onChange={(e) => setEntrySecret(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && onAuthorizeWeeklyEntry()} autoFocus />
             {weeklyNeedsChange && <>
               <p>임시 비밀번호를 대신할 새 비밀번호를 설정하세요.</p>
               <input type="password" autoComplete="new-password" placeholder="새 비밀번호 (12자 이상)" minLength={12} value={weeklyActivationDraft.password} onChange={(e) => setWeeklyActivationDraft({ ...weeklyActivationDraft, password: e.target.value })} />
@@ -2619,7 +2620,7 @@ function WeeklyReportPage({
             </>}
 
             <div className="project-modal-actions">
-              <button className="mt-btn" type="button" onClick={() => setWeeklyPasswordEntry(null)}>취소</button>
+              <button className="mt-btn" type="button" onClick={() => setAuthorizationTarget(null)}>취소</button>
               <button className="mt-btn primary" type="button" onClick={onAuthorizeWeeklyEntry}>확인</button>
             </div>
           </div>
@@ -3147,7 +3148,7 @@ function LoginPage({ loginNeedsChange, activationDraft, setActivationDraft, logi
 }
 
 
-function TeamManagementPage({ activeTeamTab, setActiveTeamTab, showTabs = true, currentTeam, members, teamProjects, teamProjectDraft, setTeamProjectDraft, isProjectModalOpen, setIsProjectModalOpen, editingTeamProjectId, setEditingTeamProjectId, projectAssignmentDrafts, setProjectAssignmentDrafts, memberDraft, setMemberDraft, memberPasswordDrafts, setMemberPasswordDrafts, onCreateMember, onCreateTeamProject, onEditTeamProject, onSaveProjectMembers, onUpdateTeamProjectStatus, onDeleteTeamProject, onDeleteMember, onUpdateMemberRole, onSetMemberPassword, onResetMemberPassword, onReorderProjects, onReorderMembers, draggingMemberId, setDraggingMemberId }) {
+function TeamManagementPage({ activeTeamTab, setActiveTeamTab, showTabs = true, currentTeam, members, teamProjects, teamProjectDraft, setTeamProjectDraft, isProjectModalOpen, setIsProjectModalOpen, editingTeamProjectId, setEditingTeamProjectId, projectAssignmentDrafts, setProjectAssignmentDrafts, memberDraft, setMemberDraft, memberPasswordDrafts, setMemberPasswordDrafts, onCreateMember, onCreateTeamProject, onEditTeamProject, onSaveProjectMembers, onUpdateTeamProjectStatus, onDeleteTeamProject, onDeleteMember, onUpdateMemberRole, onSaveMemberAccess, onIssueMemberAccess, onReorderProjects, onReorderMembers, draggingMemberId, setDraggingMemberId }) {
   const pageTitle = activeTeamTab === 'members' ? '멤버 관리' : '과제 관리';
   const pageDescription = activeTeamTab === 'members'
     ? currentTeam.department + ' 팀의 멤버와 비밀번호를 관리합니다'
@@ -3223,14 +3224,14 @@ function TeamManagementPage({ activeTeamTab, setActiveTeamTab, showTabs = true, 
                   {member.must_change_password ? (
                     <div className="member-password-inline">
                       <span className="password-state initial">비밀번호 설정 필요</span>
-                      <input type="password" placeholder="새 비밀번호" value={memberPasswordDrafts[member.user_id] || ''} onChange={(e) => setMemberPasswordDrafts((prev) => ({ ...prev, [member.user_id]: e.target.value }))} onKeyDown={(e) => e.key === 'Enter' && onSetMemberPassword(member.user_id)} />
-                      <button className="mt-btn sm" type="button" onClick={() => onSetMemberPassword(member.user_id)}>설정</button>
-                      <button className="mt-btn sm" type="button" onClick={() => onResetMemberPassword(member.user_id)}>임시 비밀번호 재발급</button>
+                      <input type="password" placeholder="새 비밀번호" value={memberPasswordDrafts[member.user_id] || ''} onChange={(e) => setMemberPasswordDrafts((prev) => ({ ...prev, [member.user_id]: e.target.value }))} onKeyDown={(e) => e.key === 'Enter' && onSaveMemberAccess(member.user_id)} />
+                      <button className="mt-btn sm" type="button" onClick={() => onSaveMemberAccess(member.user_id)}>설정</button>
+                      <button className="mt-btn sm" type="button" onClick={() => onIssueMemberAccess(member.user_id)}>임시 비밀번호 재발급</button>
                     </div>
                   ) : (
                     <>
                       <span className="password-state">비밀번호 설정 완료</span>
-                      <button className="mt-btn sm" type="button" onClick={() => onResetMemberPassword(member.user_id)}>초기화</button>
+                      <button className="mt-btn sm" type="button" onClick={() => onIssueMemberAccess(member.user_id)}>초기화</button>
                     </>
                   )}
                 </div>
@@ -3691,7 +3692,7 @@ function AdminOverviewPage({ overview, loading, period, setPeriod, onRefresh }) 
 }
 
 
-function AccountManagementPage({ teams, currentTeamId, teamDraft, setTeamDraft, onCreateTeam, onResetTeamPassword, onDeleteTeam }) {
+function AccountManagementPage({ teams, currentTeamId, teamDraft, setTeamDraft, onCreateTeam, onIssueTeamAccess, onDeleteTeam }) {
   return (
     <>
       <div className="page-head">
@@ -3731,7 +3732,7 @@ function AccountManagementPage({ teams, currentTeamId, teamDraft, setTeamDraft, 
                 <code>{team.team_id}</code>
                 <span className={`password-state${team.must_change_password ? ' initial' : ''}`}>{team.must_change_password ? '비밀번호 설정 필요' : '변경 완료'}</span>
                 <div className="account-row-actions">
-                  <button className="mt-btn sm" type="button" disabled={isSelf} title={isSelf ? "현재 계정은 비밀번호 변경을 이용하세요" : undefined} onClick={() => onResetTeamPassword(team.team_id)}>임시 비밀번호 발급</button>
+                  <button className="mt-btn sm" type="button" disabled={isSelf} title={isSelf ? "현재 계정은 비밀번호 변경을 이용하세요" : undefined} onClick={() => onIssueTeamAccess(team.team_id)}>임시 비밀번호 발급</button>
                   <button className="mt-btn danger sm" type="button" disabled={isProtected} title={isProtected ? protectedReason : undefined} onClick={() => onDeleteTeam(team.team_id)}><Trash2 size={13} />제거</button>
                 </div>
               </div>
@@ -3745,7 +3746,7 @@ function AccountManagementPage({ teams, currentTeamId, teamDraft, setTeamDraft, 
 }
 
 
-function PasswordChangeModal({ passwordDraft, setPasswordDraft, onChangePassword, onClose }) {
+function AccountUpdateDialog({ passwordDraft, setAccountDraft, onSubmitAccountUpdate, onClose }) {
   return (
     <div className="modal-backdrop" role="presentation">
       <div className="password-modal" role="dialog" aria-modal="true" aria-labelledby="password-change-title">
@@ -3753,10 +3754,10 @@ function PasswordChangeModal({ passwordDraft, setPasswordDraft, onChangePassword
           <h2 id="password-change-title">비밀번호 변경</h2>
           <p>현재 비밀번호를 확인하고 12자 이상의 새 비밀번호로 변경하세요.</p>
         </div>
-        <input type="password" placeholder="현재 비밀번호" value={passwordDraft.current_password} onChange={(e) => setPasswordDraft({ ...passwordDraft, current_password: e.target.value })} />
-        <input type="password" placeholder="새 비밀번호" value={passwordDraft.new_password} onChange={(e) => setPasswordDraft({ ...passwordDraft, new_password: e.target.value })} />
-        <input type="password" placeholder="새 비밀번호 확인" value={passwordDraft.confirm_password} onChange={(e) => setPasswordDraft({ ...passwordDraft, confirm_password: e.target.value })} onKeyDown={(e) => e.key === 'Enter' && onChangePassword()} />
-        <button className="mt-btn primary" type="button" onClick={onChangePassword}>변경</button>
+        <input type="password" placeholder="현재 비밀번호" value={passwordDraft.current_password} onChange={(e) => setAccountDraft({ ...passwordDraft, current_password: e.target.value })} />
+        <input type="password" placeholder="새 비밀번호" value={passwordDraft.new_password} onChange={(e) => setAccountDraft({ ...passwordDraft, new_password: e.target.value })} />
+        <input type="password" placeholder="새 비밀번호 확인" value={passwordDraft.confirm_password} onChange={(e) => setAccountDraft({ ...passwordDraft, confirm_password: e.target.value })} onKeyDown={(e) => e.key === 'Enter' && onSubmitAccountUpdate()} />
+        <button className="mt-btn primary" type="button" onClick={onSubmitAccountUpdate}>변경</button>
         <button className="mt-btn" type="button" onClick={onClose}>취소</button>
       </div>
     </div>
