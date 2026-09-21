@@ -14,12 +14,13 @@ import sqlite3
 import uuid
 from zoneinfo import ZoneInfo
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from string import Template
 from backend import parts as part_support
+from backend import credentials as credential_security
 
 
 BACKEND_DIR = Path(__file__).resolve().parent
@@ -35,7 +36,6 @@ WEEKLY_REPORT_TEMPLATE_PATH = BACKEND_DIR / "templates" / "weekly_report_static.
 PROJECT_REPORT_TEMPLATE_PATH = BACKEND_DIR / "templates" / "project_report_static.html"
 WORKSPACE_PATH = (DATA_ROOT / "workspace") if DATA_ROOT else BACKEND_DIR / "workspace"
 WORKSPACE_PATH.mkdir(parents=True, exist_ok=True)
-INITIAL_PASSWORD = "wia1234!"
 ADMIN_LOGIN_ID = "admin"
 ONLINE_WINDOW_MINUTES = 5
 ACCOUNT_ROLES = ("admin", "user")
@@ -77,6 +77,8 @@ def hash_password(password: str, salt: str | None = None) -> str:
 
 
 def verify_password(password: str, stored_hash: str) -> bool:
+    if credential_security.is_retired_password(password):
+        return False
     try:
         algorithm, salt, digest = stored_hash.split("$", 2)
     except ValueError:
@@ -514,6 +516,9 @@ def init_db():
         part_support.init_parts(conn)
         backfill_project_tracking(conn)
 
+    with get_conn() as conn:
+        credential_security.init_schema(conn)
+
 
 
 def normalize_project_issue_item(item):
@@ -923,6 +928,7 @@ class TeamIn(BaseModel):
 class LoginIn(BaseModel):
     login_id: str = Field(min_length=1, max_length=80)
     password: str = Field(min_length=1, max_length=200)
+    new_password: str | None = Field(default=None, min_length=12, max_length=200)
 
 
 class SessionIn(BaseModel):
@@ -990,6 +996,7 @@ class ReportScheduleIn(BaseModel):
 
 class ReportEntryAuthIn(BaseModel):
     password: str = Field(min_length=1, max_length=200)
+    new_password: str | None = Field(default=None, min_length=12, max_length=200)
 
 
 class ProgressLogIn(BaseModel):
@@ -2125,45 +2132,37 @@ def list_teams():
 
 
 @app.post("/api/teams", status_code=201)
-def create_team(payload: TeamIn):
+def create_team(payload: TeamIn, authorization: str | None = Header(default=None)):
     now = datetime.utcnow().isoformat()
     team_id = str(uuid.uuid4())
     login_id = payload.login_id.strip()
     account_role = "admin" if login_id == ADMIN_LOGIN_ID else payload.account_role
     with get_conn() as conn:
-        existing = conn.execute("SELECT team_id FROM teams WHERE login_id = ?", (login_id,)).fetchone()
-        if existing:
-            raise HTTPException(status_code=409, detail="이미 사용 중인 ID입니다")
-        cursor = conn.execute(
-            """
-            INSERT INTO teams (team_id, department, login_id, password_hash, account_role, must_change_password, created_at)
-            VALUES (?, ?, ?, ?, ?, 1, ?)
-            """,
-            (
-                team_id,
-                payload.department.strip(),
-                login_id,
-                hash_password(INITIAL_PASSWORD),
-                account_role,
-                now,
-            ),
+        credential_security.require_manager(conn, authorization, admin_only=True)
+        if conn.execute("SELECT team_id FROM teams WHERE login_id=?", (login_id,)).fetchone():
+            raise HTTPException(409, "이미 사용 중인 ID입니다")
+        temporary_password, expires_at = credential_security.new_temporary_password()
+        conn.execute(
+            "INSERT INTO teams (team_id, department, login_id, password_hash, account_role, must_change_password, password_expires_at, created_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?)",
+            (team_id, payload.department.strip(), login_id, hash_password(temporary_password), account_role, expires_at, now),
         )
-        row = conn.execute("SELECT * FROM teams WHERE rowid = ?", (cursor.lastrowid,)).fetchone()
-        return public_team(row)
+        team = public_team(conn.execute("SELECT * FROM teams WHERE team_id=?", (team_id,)).fetchone())
+        return {**team, "temporary_password": temporary_password}
 
 
 @app.put("/api/teams/{team_id}/password/reset")
-def reset_team_password(team_id: str):
+def reset_team_password(team_id: str, authorization: str | None = Header(default=None)):
     with get_conn() as conn:
-        row = conn.execute("SELECT * FROM teams WHERE team_id = ?", (team_id,)).fetchone()
-        if not row:
-            raise HTTPException(status_code=404, detail="Team not found")
-        conn.execute(
-            "UPDATE teams SET password_hash = ?, must_change_password = 1 WHERE team_id = ?",
-            (hash_password(INITIAL_PASSWORD), team_id),
-        )
-        updated = conn.execute("SELECT * FROM teams WHERE team_id = ?", (team_id,)).fetchone()
-        return public_team(updated)
+        actor = credential_security.require_manager(conn, authorization, admin_only=True)
+        if actor['team_id'] == team_id:
+            raise HTTPException(409, "현재 로그인한 계정은 비밀번호 변경 기능을 이용하세요.")
+        if not conn.execute("SELECT team_id FROM teams WHERE team_id=?", (team_id,)).fetchone():
+            raise HTTPException(404, "Team not found")
+        temporary_password, expires_at = credential_security.new_temporary_password()
+        conn.execute("UPDATE teams SET password_hash=?, must_change_password=1, password_expires_at=? WHERE team_id=?", (hash_password(temporary_password), expires_at, team_id))
+        credential_security.close_team_sessions(conn, team_id)
+        team = public_team(conn.execute("SELECT * FROM teams WHERE team_id=?", (team_id,)).fetchone())
+        return {**team, "temporary_password": temporary_password}
 
 
 def _period_cutoff(period: str) -> str | None:
@@ -2444,21 +2443,22 @@ def delete_team(team_id: str):
 @app.post("/api/auth/login")
 def login(payload: LoginIn):
     with get_conn() as conn:
-        row = conn.execute("SELECT * FROM teams WHERE login_id = ?", (payload.login_id.strip(),)).fetchone()
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT * FROM teams WHERE login_id=?", (payload.login_id.strip(),)).fetchone()
         if not row or not verify_password(payload.password, row["password_hash"]):
-            raise HTTPException(status_code=401, detail="ID 또는 비밀번호가 올바르지 않습니다")
+            raise HTTPException(401, "ID 또는 비밀번호가 올바르지 않습니다. 임시 비밀번호는 관리자에게 재발급을 요청하세요.")
+        credential_security.check_temporary_password(row)
+        if row['must_change_password']:
+            if payload.new_password is None:
+                raise HTTPException(428, "임시 비밀번호가 확인되었습니다. 새 비밀번호를 설정하세요.")
+            credential_security.validate_new_password(payload.new_password, payload.password)
+            conn.execute("UPDATE teams SET password_hash=?, must_change_password=0, password_expires_at=NULL WHERE team_id=?", (hash_password(payload.new_password), row['team_id']))
+            credential_security.close_team_sessions(conn, row['team_id'])
+            row = conn.execute("SELECT * FROM teams WHERE team_id=?", (row['team_id'],)).fetchone()
         now = datetime.utcnow().isoformat()
         session_id = str(uuid.uuid4())
-        conn.execute(
-            """
-            INSERT INTO login_sessions (session_id, team_id, login_at, last_seen_at, ended_at)
-            VALUES (?, ?, ?, ?, '')
-            """,
-            (session_id, row["team_id"], now, now),
-        )
-        team = public_team(row)
-        team["session_id"] = session_id
-        return team
+        conn.execute("INSERT INTO login_sessions (session_id, team_id, login_at, last_seen_at, ended_at) VALUES (?, ?, ?, ?, '')", (session_id, row['team_id'], now, now))
+        return {**public_team(row), "session_id": session_id}
 
 
 @app.post("/api/auth/heartbeat")
@@ -2484,21 +2484,19 @@ def logout(payload: SessionIn):
 
 
 @app.post("/api/auth/change-password")
-def change_password(payload: PasswordChangeIn):
-    if payload.new_password == INITIAL_PASSWORD:
-        raise HTTPException(status_code=422, detail="초기 비밀번호와 다른 비밀번호를 입력하세요")
+def change_password(payload: PasswordChangeIn, authorization: str | None = Header(default=None)):
+    credential_security.validate_new_password(payload.new_password, payload.current_password)
     with get_conn() as conn:
-        row = conn.execute("SELECT * FROM teams WHERE team_id = ?", (payload.team_id,)).fetchone()
-        if not row:
-            raise HTTPException(status_code=404, detail="Team not found")
-        if not verify_password(payload.current_password, row["password_hash"]):
-            raise HTTPException(status_code=401, detail="현재 비밀번호가 올바르지 않습니다")
-        conn.execute(
-            "UPDATE teams SET password_hash = ?, must_change_password = 0 WHERE team_id = ?",
-            (hash_password(payload.new_password), payload.team_id),
-        )
-        updated = conn.execute("SELECT * FROM teams WHERE team_id = ?", (payload.team_id,)).fetchone()
-        return public_team(updated)
+        conn.execute("BEGIN IMMEDIATE")
+        actor = credential_security.require_manager(conn, authorization)
+        if actor['team_id'] != payload.team_id:
+            raise HTTPException(403, "본인 계정의 비밀번호만 변경할 수 있습니다.")
+        if not verify_password(payload.current_password, actor['password_hash']):
+            raise HTTPException(401, "현재 비밀번호가 올바르지 않습니다")
+        conn.execute("UPDATE teams SET password_hash=?, must_change_password=0, password_expires_at=NULL WHERE team_id=?", (hash_password(payload.new_password), payload.team_id))
+        session_id = authorization[7:].strip()
+        conn.execute("UPDATE login_sessions SET ended_at=? WHERE team_id=? AND session_id!=? AND ended_at=''", (datetime.utcnow().isoformat(), payload.team_id, session_id))
+        return public_team(conn.execute("SELECT * FROM teams WHERE team_id=?", (payload.team_id,)).fetchone())
 
 
 @app.get("/api/teams/{team_id}/users")
@@ -2517,10 +2515,12 @@ def list_team_users(team_id: str):
 
 
 @app.post("/api/teams/{team_id}/users", status_code=201)
-def create_team_user(team_id: str, payload: MemberIn):
+def create_team_user(team_id: str, payload: MemberIn, authorization: str | None = Header(default=None)):
     now = datetime.utcnow().isoformat()
     user_id = str(uuid.uuid4())
     with get_conn() as conn:
+        credential_security.require_manager(conn, authorization, team_id=team_id)
+        temporary_password, expires_at = credential_security.new_temporary_password()
         ensure_team(conn, team_id)
         next_order = conn.execute(
             "SELECT COALESCE(MAX(sort_order) + 1, 0) AS next_order FROM users WHERE team_id = ?",
@@ -2536,14 +2536,15 @@ def create_team_user(team_id: str, payload: MemberIn):
                 team_id,
                 payload.name.strip(),
                 payload.role,
-                hash_password(INITIAL_PASSWORD),
+                hash_password(temporary_password),
                 next_order,
                 now,
             ),
         )
         conn.execute("UPDATE users SET part_id=? WHERE user_id=?", (part_support.selected_part(), user_id))
+        conn.execute("UPDATE users SET password_expires_at=? WHERE user_id=?", (expires_at, user_id))
         row = conn.execute("SELECT * FROM users WHERE rowid = ?", (cursor.lastrowid,)).fetchone()
-        return public_user(row)
+        return {**public_user(row), "temporary_password": temporary_password}
 
 
 @app.put("/api/teams/{team_id}/users/order")
@@ -2841,21 +2842,16 @@ def set_user_role(user_id: str, payload: MemberRoleIn):
 
 
 @app.put("/api/users/{user_id}/password")
-def set_user_password(user_id: str, payload: MemberPasswordIn):
-    if payload.password == INITIAL_PASSWORD:
-        must_change_password = 1
-    else:
-        must_change_password = 0
+def set_user_password(user_id: str, payload: MemberPasswordIn, authorization: str | None = Header(default=None)):
+    credential_security.validate_new_password(payload.password)
     with get_conn() as conn:
-        existing = conn.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)).fetchone()
+        actor = credential_security.require_manager(conn, authorization)
+        existing = conn.execute("SELECT * FROM users WHERE user_id=?", (user_id,)).fetchone()
         if not existing:
-            raise HTTPException(status_code=404, detail="User not found")
-        conn.execute(
-            "UPDATE users SET password_hash = ?, must_change_password = ? WHERE user_id = ?",
-            (hash_password(payload.password), must_change_password, user_id),
-        )
-        row = conn.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)).fetchone()
-        return public_user(row)
+            raise HTTPException(404, "User not found")
+        credential_security.require_manager(conn, authorization, team_id=existing['team_id'])
+        conn.execute("UPDATE users SET password_hash=?, must_change_password=0, password_expires_at=NULL WHERE user_id=?", (hash_password(payload.password), user_id))
+        return public_user(conn.execute("SELECT * FROM users WHERE user_id=?", (user_id,)).fetchone())
 
 
 @app.delete("/api/users/{user_id}", status_code=204)
@@ -3111,17 +3107,21 @@ def toggle_report_user_absence(report_id: str, user_id: str):
 @app.post("/api/reports/{report_id}/users/{user_id}/authorize")
 def authorize_report_user(report_id: str, user_id: str, payload: ReportEntryAuthIn):
     with get_conn() as conn:
+        conn.execute("BEGIN IMMEDIATE")
         report = ensure_report_user_entries(conn, report_id, user_id)
-        user = conn.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)).fetchone()
-        if not user or not verify_password(payload.password, user["password_hash"]):
-            raise HTTPException(status_code=401, detail="비밀번호가 올바르지 않습니다")
-        entry = conn.execute(
-            "SELECT status FROM report_entries WHERE report_id = ? AND user_id = ?",
-            (report_id, user_id),
-        ).fetchone()
-        if entry and entry["status"] == "absent":
-            raise HTTPException(status_code=422, detail="부재 상태에서는 보고를 작성할 수 없습니다")
-        return {"report_id": report["report_id"], "user_id": user_id, "projects": list_entry_projects(conn, report_id, user_id)}
+        user = conn.execute("SELECT * FROM users WHERE user_id=?", (user_id,)).fetchone()
+        if not user or not verify_password(payload.password, user['password_hash']):
+            raise HTTPException(401, "비밀번호가 올바르지 않습니다. 임시 비밀번호는 관리자에게 재발급을 요청하세요.")
+        credential_security.check_temporary_password(user)
+        entry = conn.execute("SELECT status FROM report_entries WHERE report_id=? AND user_id=?", (report_id, user_id)).fetchone()
+        if entry and entry['status'] == 'absent':
+            raise HTTPException(422, "부재 상태에서는 보고를 작성할 수 없습니다")
+        if user['must_change_password']:
+            if payload.new_password is None:
+                raise HTTPException(428, "임시 비밀번호가 확인되었습니다. 새 비밀번호를 설정하세요.")
+            credential_security.validate_new_password(payload.new_password, payload.password)
+            conn.execute("UPDATE users SET password_hash=?, must_change_password=0, password_expires_at=NULL WHERE user_id=?", (hash_password(payload.new_password), user_id))
+        return {"report_id": report['report_id'], "user_id": user_id, "projects": list_entry_projects(conn, report_id, user_id)}
 
 
 @app.put("/api/report-entries/{entry_id}/project-order")
@@ -3809,3 +3809,25 @@ def delete_epic(epic_id: str):
 
 
 part_support.install(app, get_conn, public_team)
+
+
+@app.put("/api/users/{user_id}/password/reset")
+def reset_member_password(user_id: str, authorization: str | None = Header(default=None)):
+    with get_conn() as conn:
+        credential_security.require_manager(conn, authorization)
+        row = conn.execute("SELECT * FROM users WHERE user_id=?", (user_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "User not found")
+        credential_security.require_manager(conn, authorization, team_id=row['team_id'])
+        temporary_password, expires_at = credential_security.new_temporary_password()
+        conn.execute("UPDATE users SET password_hash=?, must_change_password=1, password_expires_at=? WHERE user_id=?", (hash_password(temporary_password), expires_at, user_id))
+        member = public_user(conn.execute("SELECT * FROM users WHERE user_id=?", (user_id,)).fetchone())
+        return {**member, "temporary_password": temporary_password}
+
+
+@app.middleware("http")
+async def credential_no_store(request, call_next):
+    response = await call_next(request)
+    if request.url.path.startswith('/api/'):
+        response.headers['Cache-Control'] = 'no-store'
+    return response

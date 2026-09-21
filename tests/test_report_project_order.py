@@ -5,7 +5,7 @@ import os,tempfile
 with tempfile.TemporaryDirectory(prefix='report-project-order-') as tmp:
  os.environ['WIAREPORT_DATA_DIR']=tmp
  from backend import main as m
- from fastapi.testclient import TestClient
+ from tests.credential_support import TestClient, TEST_PASSWORD
  m.init_db();c=TestClient(m.app)
  def ok(r,status=200):
   assert r.status_code==status,(r.status_code,r.text)
@@ -17,7 +17,7 @@ with tempfile.TemporaryDirectory(prefix='report-project-order-') as tmp:
  for name in ['가과제','나과제','다과제']:
   ids.append(ok(c.post(base+'/team-projects',json={'project_name':name,'members':[{'user_id':u,'role':'M'} for u in users]}),201)['project_id'])
  report=ok(c.post(base+'/reports',json={'start_date':'2026-09-14','end_date':'2026-09-18'}),201)
- def auth(user):return ok(c.post('/api/reports/'+report['report_id']+'/users/'+user+'/authorize',headers=h,json={'password':m.INITIAL_PASSWORD}))['projects']
+ def auth(user):return ok(c.post('/api/reports/'+report['report_id']+'/users/'+user+'/authorize',headers=h,json={'password':TEST_PASSWORD}))['projects']
  first=auth(users[0]);second=auth(users[1]);entry=first[0]['entry_id']
  for pid in ids:
   ok(c.put('/api/report-entries/'+entry+'/projects/'+pid,headers=h,json={'progress_log':[{'log':'보고 내용 '+pid,'date':'2026-09-18'}],'risk_issue':[],'next_plan':[]}))

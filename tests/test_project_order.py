@@ -5,7 +5,7 @@ import os,tempfile
 with tempfile.TemporaryDirectory(prefix='project-order-') as tmp:
  os.environ['WIAREPORT_DATA_DIR']=tmp
  from backend import main as m
- from fastapi.testclient import TestClient
+ from tests.credential_support import TestClient, TEST_PASSWORD
  m.init_db();c=TestClient(m.app)
  def ok(r,status=200):
   assert r.status_code==status,(r.status_code,r.text)

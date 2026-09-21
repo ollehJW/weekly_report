@@ -18,3 +18,9 @@ backend/workspace/*
 /app.db
 presentation/
 /app.db.bak*
+*.db-wal
+*.db-shm
+*.log
+*.pid
+backups/
+*.fpr

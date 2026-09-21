@@ -10,7 +10,7 @@ from pathlib import Path
 with tempfile.TemporaryDirectory(prefix='wia-member-move-') as tmp:
  os.environ['WIAREPORT_DATA_DIR']=tmp
  from backend import main as m
- from fastapi.testclient import TestClient
+ from tests.credential_support import TestClient, TEST_PASSWORD
  m.init_db()
  c=TestClient(m.app)
  def ok(r,status=200):
@@ -26,7 +26,7 @@ with tempfile.TemporaryDirectory(prefix='wia-member-move-') as tmp:
  project=ok(c.post(base+'/team-projects',headers=h,json={'project_name':'Original','members':[{'user_id':uid,'role':'M'}]}),201)
  ok(c.post(base+'/events',headers=h,json={'title':'Original event','event_type':'team','start_date':'2026-09-14','end_date':'2026-09-18','member_ids':[uid]}),201)
  report=ok(c.post(base+'/reports',headers=h,json={'start_date':'2026-09-14','end_date':'2026-09-18'}),201)
- ok(c.post('/api/reports/'+report['report_id']+'/users/'+uid+'/authorize',headers=h,json={'password':m.INITIAL_PASSWORD}))
+ ok(c.post('/api/reports/'+report['report_id']+'/users/'+uid+'/authorize',headers=h,json={'password':TEST_PASSWORD}))
  tables=['project','project_members','milestones','epics','reports','report_entries','project_entry','team_events','team_event_members','project_progress','project_issue','project_plan']
  with m.get_conn() as conn:
   snapshot={table:[tuple(r) for r in conn.execute('SELECT * FROM '+table+' ORDER BY rowid')] for table in tables}
