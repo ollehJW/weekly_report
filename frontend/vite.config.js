@@ -7,6 +7,8 @@ import react from '@vitejs/plugin-react';
 const port = Number(process.env.FRONTEND_PORT || 9602);
 const target = process.env.BACKEND_ORIGIN || 'http://127.0.0.1:9601';
 
+const allowedHosts = ['axforwork.wia.co.kr'];
+
 const proxy = {
   '/api': {
     target,
@@ -16,6 +18,6 @@ const proxy = {
 
 export default defineConfig({
   plugins: [react()],
-  server: { host: '0.0.0.0', port, proxy },
-  preview: { host: '0.0.0.0', port, proxy },
+  server: { host: '0.0.0.0', port, proxy, allowedHosts },
+  preview: { host: '0.0.0.0', port, proxy, allowedHosts },
 });
