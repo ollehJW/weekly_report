@@ -40,12 +40,16 @@ class CredentialTests(unittest.TestCase):
     def member(self, team):
         return self.ok(self.client.post('/api/teams/'+team['team_id']+'/users', json={'name':'Audit member','role':'M'}),201)
 
-    def test_issuance_is_authorized_unique_and_not_public(self):
+    def test_initial_credential_is_fixed_authorized_and_not_public(self):
         denied = self.client.post('/api/teams',headers={'Authorization':''},json={'department':'x','login_id':'x'})
         self.assertEqual(denied.status_code,401)
         a,b=self.team(),self.team('team-b')
-        self.assertNotEqual(a['temporary_password'],b['temporary_password'])
-        self.assertGreaterEqual(len(a['temporary_password']),32)
+        self.assertEqual(a['temporary_password'], 'wia1234!')
+        self.assertEqual(b['temporary_password'], 'wia1234!')
+        with m.get_conn() as conn:
+            hashes = [row[0] for row in conn.execute("SELECT password_hash FROM teams WHERE team_id IN (?, ?)", (a['team_id'], b['team_id']))]
+        self.assertEqual(len(set(hashes)), 2)
+        self.assertTrue(all(value != 'wia1234!' and m.verify_password('wia1234!', value) for value in hashes))
         expiry=datetime.fromisoformat(a['password_expires_at'])
         self.assertGreater(expiry,datetime.now(timezone.utc)+timedelta(hours=23))
         response=self.client.get('/api/teams')
@@ -65,6 +69,7 @@ class CredentialTests(unittest.TestCase):
             self.assertEqual(conn.execute('SELECT COUNT(*) FROM login_sessions WHERE team_id=?',(a['team_id'],)).fetchone()[0],0)
         self.assertEqual(self.client.post('/api/auth/login',json={**payload,'new_password':a['temporary_password']}).status_code,422)
         self.assertEqual(self.client.post('/api/auth/login',json={**payload,'new_password':'short'}).status_code,422)
+        m.init_db()  # Initial credentials survive normal schema initialization.
         session=self.activate(a)
         self.assertFalse(session['must_change_password'])
         self.assertIsNone(session['password_expires_at'])
@@ -99,6 +104,7 @@ class CredentialTests(unittest.TestCase):
 
     def test_member_activation_changes_before_report_access(self):
         a=self.team();member=self.member(a)
+        self.assertEqual(member['temporary_password'], 'wia1234!')
         report=self.ok(self.client.post('/api/teams/'+a['team_id']+'/reports',json={'start_date':'2026-09-21','end_date':'2026-09-27'}),201)
         url='/api/reports/'+report['report_id']+'/users/'+member['user_id']+'/authorize'
         payload={'password':member['temporary_password']}

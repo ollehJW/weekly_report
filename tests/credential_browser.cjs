@@ -18,7 +18,7 @@ const { chromium } = require(process.env.WIAREPORT_PLAYWRIGHT_MODULE || 'playwri
   const input = dialog.getByLabel('발급된 임시 비밀번호');
   assert.equal(await input.getAttribute('type'), 'password');
   const temporary = await input.inputValue();
-  assert(temporary.length >= 32);
+  assert.equal(temporary, 'wia1234!');
   assert(!(await page.locator('body').textContent()).includes(temporary));
   const downloaded = page.waitForEvent('download');
   await dialog.getByRole('button', { name: '전달용 파일 다운로드' }).click();

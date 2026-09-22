@@ -1,20 +1,24 @@
 """Credential issuance and authorization for account lifecycle operations."""
 from datetime import datetime, timedelta, timezone
-import hashlib
 import secrets
 
 from fastapi import HTTPException
 
 TEMPORARY_PASSWORD_TTL_HOURS = 24
-RETIRED_PASSWORD_SHA256 = "695fc0b6af5ee73064dc13e733eb55173018ffa7dc915cd8d2cbec374b692d53"
+INITIAL_PASSWORD = "wia1234!"
 
 
 def utc_now():
     return datetime.now(timezone.utc)
 
 
-def is_retired_password(password):
-    return secrets.compare_digest(hashlib.sha256(password.encode()).hexdigest(), RETIRED_PASSWORD_SHA256)
+def is_initial_password(password):
+    return secrets.compare_digest(password.encode(), INITIAL_PASSWORD.encode())
+
+
+def new_initial_password():
+    """Business-required initial credential for newly created teams and members."""
+    return INITIAL_PASSWORD, (utc_now() + timedelta(hours=TEMPORARY_PASSWORD_TTL_HOURS)).isoformat()
 
 
 def new_temporary_password():
@@ -24,7 +28,7 @@ def new_temporary_password():
 def validate_new_password(password, current_password=None):
     if len(password) < 12 or len(password) > 200 or not password.strip():
         raise HTTPException(422, "새 비밀번호는 12자 이상 200자 이하로 입력하세요.")
-    if is_retired_password(password) or (current_password is not None and secrets.compare_digest(password.encode(), current_password.encode())):
+    if is_initial_password(password) or (current_password is not None and secrets.compare_digest(password.encode(), current_password.encode())):
         raise HTTPException(422, "기존 비밀번호와 다른 새 비밀번호를 입력하세요.")
 
 

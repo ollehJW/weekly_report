@@ -77,8 +77,6 @@ def hash_password(password: str, salt: str | None = None) -> str:
 
 
 def verify_password(password: str, stored_hash: str) -> bool:
-    if credential_security.is_retired_password(password):
-        return False
     try:
         algorithm, salt, digest = stored_hash.split("$", 2)
     except ValueError:
@@ -2141,7 +2139,7 @@ def create_team(payload: TeamIn, authorization: str | None = Header(default=None
         credential_security.require_manager(conn, authorization, admin_only=True)
         if conn.execute("SELECT team_id FROM teams WHERE login_id=?", (login_id,)).fetchone():
             raise HTTPException(409, "이미 사용 중인 ID입니다")
-        temporary_password, expires_at = credential_security.new_temporary_password()
+        temporary_password, expires_at = credential_security.new_initial_password()
         conn.execute(
             "INSERT INTO teams (team_id, department, login_id, password_hash, account_role, must_change_password, password_expires_at, created_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?)",
             (team_id, payload.department.strip(), login_id, hash_password(temporary_password), account_role, expires_at, now),
@@ -2520,7 +2518,7 @@ def create_team_user(team_id: str, payload: MemberIn, authorization: str | None 
     user_id = str(uuid.uuid4())
     with get_conn() as conn:
         credential_security.require_manager(conn, authorization, team_id=team_id)
-        temporary_password, expires_at = credential_security.new_temporary_password()
+        temporary_password, expires_at = credential_security.new_initial_password()
         ensure_team(conn, team_id)
         next_order = conn.execute(
             "SELECT COALESCE(MAX(sort_order) + 1, 0) AS next_order FROM users WHERE team_id = ?",

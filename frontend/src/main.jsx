@@ -3171,7 +3171,7 @@ function TeamManagementPage({ activeTeamTab, setActiveTeamTab, showTabs = true, 
       {activeTeamTab === 'members' ? (
         <section className="account-card">
           <div className="member-guide">
-            <strong>멤버마다 서로 다른 임시 비밀번호가 발급됩니다.</strong>
+            <strong>새 멤버 계정에는 공통 초기 비밀번호가 설정됩니다.</strong>
             <span>임시 비밀번호는 24시간 동안 유효하며, 처음 보고를 작성할 때 새 비밀번호를 설정합니다.</span>
           </div>
           <div className="member-form">
