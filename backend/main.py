@@ -2156,7 +2156,7 @@ def reset_team_password(team_id: str, authorization: str | None = Header(default
             raise HTTPException(409, "현재 로그인한 계정은 비밀번호 변경 기능을 이용하세요.")
         if not conn.execute("SELECT team_id FROM teams WHERE team_id=?", (team_id,)).fetchone():
             raise HTTPException(404, "Team not found")
-        temporary_password, expires_at = credential_security.new_temporary_password()
+        temporary_password, expires_at = credential_security.new_initial_password()
         conn.execute("UPDATE teams SET password_hash=?, must_change_password=1, password_expires_at=? WHERE team_id=?", (hash_password(temporary_password), expires_at, team_id))
         credential_security.close_team_sessions(conn, team_id)
         team = public_team(conn.execute("SELECT * FROM teams WHERE team_id=?", (team_id,)).fetchone())
@@ -2444,7 +2444,7 @@ def login(payload: LoginIn):
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute("SELECT * FROM teams WHERE login_id=?", (payload.login_id.strip(),)).fetchone()
         if not row or not verify_password(payload.password, row["password_hash"]):
-            raise HTTPException(401, "ID 또는 비밀번호가 올바르지 않습니다. 임시 비밀번호는 관리자에게 재발급을 요청하세요.")
+            raise HTTPException(401, "ID 또는 비밀번호가 올바르지 않습니다. 임시 비밀번호는 관리자에게 초기화를 요청하세요.")
         credential_security.check_temporary_password(row)
         if row['must_change_password']:
             if payload.new_password is None:
@@ -3109,7 +3109,7 @@ def authorize_report_user(report_id: str, user_id: str, payload: ReportEntryAuth
         report = ensure_report_user_entries(conn, report_id, user_id)
         user = conn.execute("SELECT * FROM users WHERE user_id=?", (user_id,)).fetchone()
         if not user or not verify_password(payload.password, user['password_hash']):
-            raise HTTPException(401, "비밀번호가 올바르지 않습니다. 임시 비밀번호는 관리자에게 재발급을 요청하세요.")
+            raise HTTPException(401, "비밀번호가 올바르지 않습니다. 임시 비밀번호는 관리자에게 초기화를 요청하세요.")
         credential_security.check_temporary_password(user)
         entry = conn.execute("SELECT status FROM report_entries WHERE report_id=? AND user_id=?", (report_id, user_id)).fetchone()
         if entry and entry['status'] == 'absent':
@@ -3817,7 +3817,7 @@ def reset_member_password(user_id: str, authorization: str | None = Header(defau
         if not row:
             raise HTTPException(404, "User not found")
         credential_security.require_manager(conn, authorization, team_id=row['team_id'])
-        temporary_password, expires_at = credential_security.new_temporary_password()
+        temporary_password, expires_at = credential_security.new_initial_password()
         conn.execute("UPDATE users SET password_hash=?, must_change_password=1, password_expires_at=? WHERE user_id=?", (hash_password(temporary_password), expires_at, user_id))
         member = public_user(conn.execute("SELECT * FROM users WHERE user_id=?", (user_id,)).fetchone())
         return {**member, "temporary_password": temporary_password}

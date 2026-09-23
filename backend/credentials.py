@@ -17,12 +17,8 @@ def is_initial_password(password):
 
 
 def new_initial_password():
-    """Business-required initial credential for newly created teams and members."""
+    """Business-required initial credential for account creation and reset."""
     return INITIAL_PASSWORD, (utc_now() + timedelta(hours=TEMPORARY_PASSWORD_TTL_HOURS)).isoformat()
-
-
-def new_temporary_password():
-    return secrets.token_urlsafe(24), (utc_now() + timedelta(hours=TEMPORARY_PASSWORD_TTL_HOURS)).isoformat()
 
 
 def validate_new_password(password, current_password=None):
@@ -41,7 +37,7 @@ def check_temporary_password(row):
     except (ValueError, TypeError):
         expired = True
     if expired:
-        raise HTTPException(401, "임시 비밀번호가 만료되었습니다. 관리자에게 재발급을 요청하세요.")
+        raise HTTPException(401, "임시 비밀번호가 만료되었습니다. 관리자에게 초기화를 요청하세요.")
 
 
 def init_schema(conn):

@@ -81,7 +81,8 @@ class CredentialTests(unittest.TestCase):
         response=self.client.put('/api/teams/'+a['team_id']+'/password/reset')
         reset=self.ok(response)
         self.assertEqual(response.headers['cache-control'],'no-store')
-        self.assertNotEqual(a['temporary_password'],reset['temporary_password'])
+        self.assertEqual(reset['temporary_password'], 'wia1234!')
+        self.assertEqual(self.client.post('/api/auth/login',json={'login_id':a['login_id'],'password':'wia1234!'}).status_code,428)
         self.assertEqual(self.client.post('/api/auth/login',json={'login_id':a['login_id'],'password':TEST_PASSWORD}).status_code,401)
         with m.get_conn() as conn:
             self.assertTrue(conn.execute('SELECT ended_at FROM login_sessions WHERE session_id=?',(session['session_id'],)).fetchone()[0])
@@ -100,7 +101,11 @@ class CredentialTests(unittest.TestCase):
         self.assertFalse(changed['must_change_password'])
         reset=self.ok(self.client.put(url+'/reset'))
         self.assertTrue(reset['must_change_password'])
-        self.assertNotEqual(member['temporary_password'],reset['temporary_password'])
+        self.assertEqual(reset['temporary_password'], 'wia1234!')
+        with m.get_conn() as conn:
+            row=conn.execute('SELECT password_hash FROM users WHERE user_id=?',(member['user_id'],)).fetchone()
+        self.assertTrue(m.verify_password('wia1234!',row['password_hash']))
+        self.assertFalse(m.verify_password(TEST_PASSWORD,row['password_hash']))
 
     def test_member_activation_changes_before_report_access(self):
         a=self.team();member=self.member(a)

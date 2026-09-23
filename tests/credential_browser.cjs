@@ -50,15 +50,19 @@ const {chromium} = require(process.env.WIAREPORT_PLAYWRIGHT_MODULE || '/home/jon
   const own=page.getByRole('dialog',{name:'비밀번호 변경'});await own.getByRole('button',{name:'취소',exact:true}).click();await own.waitFor({state:'hidden'});
   await page.getByRole('button',{name:'로그아웃',exact:true}).click();await login('browser-admin',adminPassword);
   await page.getByRole('button',{name:'계정 관리',exact:true}).click();
-  await page.locator('.account-row').filter({hasText:'browser-created'}).getByRole('button',{name:'임시 비밀번호 발급',exact:true}).click();
-  const issued=page.getByRole('dialog',{name:'임시 비밀번호 발급'});await issued.waitFor();
-  const secret=await issued.getByLabel('발급된 임시 비밀번호').inputValue();assert(secret.length>=32);assert.notEqual(secret,'wia1234!');
-  assert.equal(await issued.getByLabel('발급된 임시 비밀번호').getAttribute('type'),'password');
-  assert(!(await issued.textContent()).includes(secret));
-  const downloadEvent=page.waitForEvent('download');await issued.getByRole('button',{name:'전달용 파일 다운로드'}).click();
-  const download=await downloadEvent;const stream=await download.createReadStream();const chunks=[];for await(const chunk of stream)chunks.push(chunk);
-  assert(Buffer.concat(chunks).toString().includes(secret));await download.delete();
+  const resetResponse=page.waitForResponse(r=>r.url().endsWith('/password/reset')&&r.request().method()==='PUT');
+  await page.locator('.account-row').filter({hasText:'browser-created'}).getByRole('button',{name:'초기화',exact:true}).click();
+  assert.equal((await (await resetResponse).json()).temporary_password,'wia1234!');
+  assert.equal(await page.getByRole('dialog',{name:'임시 비밀번호 발급'}).count(),0);
+  await page.getByRole('button',{name:'로그아웃',exact:true}).click();
+  await login('browser-created',newPassword);await page.locator('.login-error').waitFor();
+  await login('browser-created','wia1234!');await dialog.waitFor();
+  assert.equal(await dialog.getByPlaceholder('현재 비밀번호',{exact:true}).inputValue(),'wia1234!');
+  await dialog.getByPlaceholder('새 비밀번호',{exact:true}).fill('Browser-reset-password!2026');
+  await dialog.getByPlaceholder('새 비밀번호 확인',{exact:true}).fill('Browser-reset-password!2026');
+  await dialog.getByRole('button',{name:'변경',exact:true}).click();await dialog.waitFor({state:'hidden'});
+  await page.getByRole('button',{name:'로그아웃',exact:true}).waitFor();
   assert.deepEqual(errors,[]);
-  console.log('PASS: creation UI/no issuance popup; initial-password modal and prefill; no premature session; validation/error retry; Enter completion; normal login; own-change cancel; random reissue/download preserved.');
+  console.log('PASS: creation UI/no issuance popup; initial-password modal and prefill; no premature session; validation/error retry; Enter completion; normal login; own-change cancel; reset restores initial password; old password rejected; initial change popup and activation verified.');
  } finally {await browser.close();}
 })().catch(e=>{console.error(e);process.exit(1)});

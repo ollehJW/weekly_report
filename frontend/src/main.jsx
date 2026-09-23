@@ -366,7 +366,6 @@ function TeamWorkspace() {
   const [loginDraft, setLoginDraft] = useState(emptyFormFields('login_id', 'password'));
   const [passwordDraft, setAccountDraft] = useState(emptyFormFields('current_password', 'new_password', 'confirm_password'));
   const [isUsageGuideOpen, setIsUsageGuideOpen] = useState(false);
-  const [issuedCredential, setIssuedCredential] = useState(null);
   const [isAccountUpdateOpen, setIsAccountUpdateOpen] = useState(false);
   const [loginNeedsChange, setLoginNeedsChange] = useState(false);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
@@ -376,15 +375,11 @@ function TeamWorkspace() {
     const expired = () => {
       localStorage.removeItem('wiareport_team');
       setCurrentTeam(null);
-      setIssuedCredential(null);
       setError('로그인이 만료되었습니다. 다시 로그인하세요.');
     };
     window.addEventListener('wiareport-session-expired', expired);
     return () => window.removeEventListener('wiareport-session-expired', expired);
   }, []);
-  function showIssuedCredential(result, label) {
-    setIssuedCredential({ value: result.temporary_password, expiresAt: result.password_expires_at, label });
-  }
 
 
   const selectedProject = projects.find((project) => project.id === selectedProjectId) || null;
@@ -595,7 +590,6 @@ function TeamWorkspace() {
       }).catch(() => {});
     }
     localStorage.removeItem('wiareport_team');
-    setIssuedCredential(null);
     setLoginNeedsChange(false);
     setCurrentTeam(null);
     setAccountDraft(emptyFormFields('current_password', 'new_password', 'confirm_password'));
@@ -664,12 +658,11 @@ function TeamWorkspace() {
     }
   }
 
-  async function issueTeamAccess(teamId) {
+  async function resetTeamAccess(teamId) {
     const team = teams.find((item) => item.team_id === teamId);
-    if (!window.confirm(`${team ? team.login_id : '해당'} 계정에 새 임시 비밀번호를 발급할까요? 기존 비밀번호와 로그인은 만료됩니다.`)) return;
+    if (!window.confirm(`${team ? team.login_id : '해당'} 계정의 비밀번호를 ${INITIAL_PASSWORD}로 초기화할까요? 기존 비밀번호와 로그인은 만료됩니다.`)) return;
     try {
-      const issued = await request(`/api/teams/${teamId}/password/reset`, { method: 'PUT' });
-      showIssuedCredential(issued, `${issued.department} (${issued.login_id})`);
+      await request(`/api/teams/${teamId}/password/reset`, { method: 'PUT' });
       await loadTeams();
       if (currentTeam?.team_id === teamId) {
         setCurrentTeam((prev) => (prev ? { ...prev, must_change_password: true } : prev));
@@ -856,11 +849,10 @@ function TeamWorkspace() {
     }
   }
 
-  async function issueMemberAccess(userId) {
-    if (!window.confirm('새 임시 비밀번호를 발급할까요? 기존 비밀번호는 만료됩니다.')) return;
+  async function resetMemberAccess(userId) {
+    if (!window.confirm(`비밀번호를 ${INITIAL_PASSWORD}로 초기화할까요? 기존 비밀번호는 만료됩니다.`)) return;
     try {
-      const issued = await request(`/api/users/${userId}/password/reset`, { method: 'PUT' });
-      showIssuedCredential(issued, issued.name);
+      await request(`/api/users/${userId}/password/reset`, { method: 'PUT' });
       setMemberPasswordDrafts((prev) => ({ ...prev, [userId]: '' }));
       await loadMembers(currentTeam.team_id);
     } catch (err) {
@@ -1425,7 +1417,7 @@ function TeamWorkspace() {
             onDeleteMember={deleteMember}
             onUpdateMemberRole={updateMemberRole}
             onSaveMemberAccess={saveMemberAccess}
-            onIssueMemberAccess={issueMemberAccess}
+            onResetMemberAccess={resetMemberAccess}
             onReorderProjects={reorderProjects}
             onReorderMembers={reorderMembers}
             draggingMemberId={draggingMemberId}
@@ -1442,7 +1434,7 @@ function TeamWorkspace() {
           />
         )}
         {isAdminAccount && activePage === 'accounts' && (
-          <AccountManagementPage teams={teams} currentTeamId={currentTeam?.team_id} teamDraft={teamDraft} setTeamDraft={setTeamDraft} onCreateTeam={createTeam} onIssueTeamAccess={issueTeamAccess} onDeleteTeam={deleteTeam} />
+          <AccountManagementPage teams={teams} currentTeamId={currentTeam?.team_id} teamDraft={teamDraft} setTeamDraft={setTeamDraft} onCreateTeam={createTeam} onResetTeamAccess={resetTeamAccess} onDeleteTeam={deleteTeam} />
         )}
       </section>
 
@@ -1456,7 +1448,6 @@ function TeamWorkspace() {
           error={error}
         />
       )}
-      {issuedCredential && <TemporaryCredentialDialog credential={issuedCredential} onClose={() => setIssuedCredential(null)} />}
       {isUsageGuideOpen && <UsageGuideModal onClose={() => setIsUsageGuideOpen(false)} />}
     </main>
   );
@@ -3162,7 +3153,7 @@ function LoginPage({ loginDraft, setLoginDraft, onLogin, teams, teamDraft, setTe
 }
 
 
-function TeamManagementPage({ activeTeamTab, setActiveTeamTab, showTabs = true, currentTeam, members, teamProjects, teamProjectDraft, setTeamProjectDraft, isProjectModalOpen, setIsProjectModalOpen, editingTeamProjectId, setEditingTeamProjectId, projectAssignmentDrafts, setProjectAssignmentDrafts, memberDraft, setMemberDraft, memberPasswordDrafts, setMemberPasswordDrafts, onCreateMember, onCreateTeamProject, onEditTeamProject, onSaveProjectMembers, onUpdateTeamProjectStatus, onDeleteTeamProject, onDeleteMember, onUpdateMemberRole, onSaveMemberAccess, onIssueMemberAccess, onReorderProjects, onReorderMembers, draggingMemberId, setDraggingMemberId }) {
+function TeamManagementPage({ activeTeamTab, setActiveTeamTab, showTabs = true, currentTeam, members, teamProjects, teamProjectDraft, setTeamProjectDraft, isProjectModalOpen, setIsProjectModalOpen, editingTeamProjectId, setEditingTeamProjectId, projectAssignmentDrafts, setProjectAssignmentDrafts, memberDraft, setMemberDraft, memberPasswordDrafts, setMemberPasswordDrafts, onCreateMember, onCreateTeamProject, onEditTeamProject, onSaveProjectMembers, onUpdateTeamProjectStatus, onDeleteTeamProject, onDeleteMember, onUpdateMemberRole, onSaveMemberAccess, onResetMemberAccess, onReorderProjects, onReorderMembers, draggingMemberId, setDraggingMemberId }) {
   const pageTitle = activeTeamTab === 'members' ? '멤버 관리' : '과제 관리';
   const pageDescription = activeTeamTab === 'members'
     ? currentTeam.department + ' 팀의 멤버와 비밀번호를 관리합니다'
@@ -3240,12 +3231,12 @@ function TeamManagementPage({ activeTeamTab, setActiveTeamTab, showTabs = true, 
                       <span className="password-state initial">비밀번호 설정 필요</span>
                       <input type="password" placeholder="새 비밀번호" value={memberPasswordDrafts[member.user_id] || ''} onChange={(e) => setMemberPasswordDrafts((prev) => ({ ...prev, [member.user_id]: e.target.value }))} onKeyDown={(e) => e.key === 'Enter' && onSaveMemberAccess(member.user_id)} />
                       <button className="mt-btn sm" type="button" onClick={() => onSaveMemberAccess(member.user_id)}>설정</button>
-                      <button className="mt-btn sm" type="button" onClick={() => onIssueMemberAccess(member.user_id)}>임시 비밀번호 재발급</button>
+                      <button className="mt-btn sm" type="button" onClick={() => onResetMemberAccess(member.user_id)}>초기화</button>
                     </div>
                   ) : (
                     <>
                       <span className="password-state">비밀번호 설정 완료</span>
-                      <button className="mt-btn sm" type="button" onClick={() => onIssueMemberAccess(member.user_id)}>초기화</button>
+                      <button className="mt-btn sm" type="button" onClick={() => onResetMemberAccess(member.user_id)}>초기화</button>
                     </>
                   )}
                 </div>
@@ -3706,7 +3697,7 @@ function AdminOverviewPage({ overview, loading, period, setPeriod, onRefresh }) 
 }
 
 
-function AccountManagementPage({ teams, currentTeamId, teamDraft, setTeamDraft, onCreateTeam, onIssueTeamAccess, onDeleteTeam }) {
+function AccountManagementPage({ teams, currentTeamId, teamDraft, setTeamDraft, onCreateTeam, onResetTeamAccess, onDeleteTeam }) {
   return (
     <>
       <div className="page-head">
@@ -3746,7 +3737,7 @@ function AccountManagementPage({ teams, currentTeamId, teamDraft, setTeamDraft, 
                 <code>{team.team_id}</code>
                 <span className={`password-state${team.must_change_password ? ' initial' : ''}`}>{team.must_change_password ? '초기 비밀번호' : '변경 완료'}</span>
                 <div className="account-row-actions">
-                  <button className="mt-btn sm" type="button" disabled={isSelf} title={isSelf ? "현재 계정은 비밀번호 변경을 이용하세요" : undefined} onClick={() => onIssueTeamAccess(team.team_id)}>임시 비밀번호 발급</button>
+                  <button className="mt-btn sm" type="button" disabled={isSelf} title={isSelf ? "현재 계정은 비밀번호 변경을 이용하세요" : undefined} onClick={() => onResetTeamAccess(team.team_id)}>초기화</button>
                   <button className="mt-btn danger sm" type="button" disabled={isProtected} title={isProtected ? protectedReason : undefined} onClick={() => onDeleteTeam(team.team_id)}><Trash2 size={13} />제거</button>
                 </div>
               </div>
@@ -4803,38 +4794,3 @@ function ProjectTimeline({
 }
 
 createRoot(document.getElementById('root')).render(<App />);
-
-
-function TemporaryCredentialDialog({ credential, onClose }) {
-  const [message, setMessage] = useState('');
-  async function copy() {
-    try {
-      await navigator.clipboard.writeText(credential.value);
-      setMessage('복사했습니다. 해당 사용자에게 안전하게 전달하세요.');
-    } catch {
-      setMessage('이 브라우저에서는 복사할 수 없습니다. 전달용 파일을 다운로드하세요.');
-    }
-  }
-  function download() {
-    const blob = new Blob([`대상: ${credential.label}\n임시 비밀번호: ${credential.value}\n만료: ${credential.expiresAt}\n첫 사용 시 새 비밀번호를 설정하세요. 전달 후 이 파일을 삭제하세요.\n`], { type: 'text/plain;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = 'temporary-credential.txt';
-    link.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-  }
-  return <div className="modal-backdrop" role="presentation">
-    <div className="password-modal" role="dialog" aria-modal="true" aria-labelledby="issued-credential-title">
-      <h2 id="issued-credential-title">임시 비밀번호 발급</h2>
-      <p>{credential.label}</p>
-      <p>24시간 이내에 해당 사용자에게 전달하세요. 첫 사용 시 새 비밀번호로 변경해야 합니다.</p>
-      <input type="password" readOnly aria-label="발급된 임시 비밀번호" value={credential.value} autoComplete="off" />
-      <p>이 창을 닫으면 다시 조회할 수 없습니다. 필요하면 새로 발급하세요.</p>
-      <button className="mt-btn" type="button" onClick={copy}>복사</button>
-      <button className="mt-btn" type="button" onClick={download}>전달용 파일 다운로드</button>
-      <button className="mt-btn primary" type="button" onClick={onClose}>닫기</button>
-      {message && <p role="status">{message}</p>}
-    </div>
-  </div>;
-}
