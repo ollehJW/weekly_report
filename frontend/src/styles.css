@@ -1361,7 +1361,7 @@ input:focus, textarea:focus, select:focus { border-color: var(--wia-blue); box-s
 .member-table-head,
 .member-row {
   display: grid;
-  grid-template-columns: minmax(110px, .9fr) 120px minmax(220px, 1.4fr) minmax(260px, 1.3fr) auto;
+  grid-template-columns: minmax(100px, .8fr) 100px minmax(280px, 1.8fr) 70px;
   gap: 10px;
   align-items: center;
   padding: 11px 16px;
@@ -4013,3 +4013,15 @@ header.part-context { display: flex; align-items: center; gap: 22px; margin: 0 0
 .weekly-order-row .weekly-project-item { flex: 1; min-width: 0; width: auto; }
 .weekly-order-row.is-order-dragging { opacity: .4; }
 .weekly-order-row.is-order-before { border-top: 2px solid #477db9; }
+
+/* Member status and actions have separate rows; identifiers stay internal. */
+.member-password-box { grid-template-columns: minmax(0, 1fr); min-width: 0; justify-items: start; }
+.member-password-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; width: 100%; min-width: 0; }
+.member-password-actions input { flex: 1 1 140px; width: auto; min-width: 0; }
+.member-password-actions .mt-btn.sm { flex: 0 0 auto; width: auto; min-width: 64px; min-height: 32px; white-space: nowrap; }
+.member-row > .mt-btn { width: 70px; justify-content: center; white-space: nowrap; }
+.member-name { overflow-wrap: anywhere; }
+@media (max-width: 600px) {
+  .member-password-actions input { flex-basis: 100%; width: 100%; }
+  .member-password-actions .mt-btn.sm { flex: 1 1 0; }
+}

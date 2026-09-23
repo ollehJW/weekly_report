@@ -3189,7 +3189,7 @@ function TeamManagementPage({ activeTeamTab, setActiveTeamTab, showTabs = true, 
             <button className="mt-btn primary" type="button" onClick={onCreateMember}><Plus size={15} />멤버 추가</button>
           </div>
           <div className="member-table">
-            <div className="member-table-head"><span>이름</span><span>직급</span><span>User ID</span><span>비밀번호 상태/관리</span><span></span></div>
+            <div className="member-table-head"><span>이름</span><span>직급</span><span>비밀번호 상태/관리</span><span>관리</span></div>
             {members.map((member) => (
               <div
                 className={`member-row${draggingMemberId === member.user_id ? ' dragging' : ''}`}
@@ -3224,21 +3224,15 @@ function TeamManagementPage({ activeTeamTab, setActiveTeamTab, showTabs = true, 
                   <option value="CM">책임매니저</option>
                   <option value="M">매니저</option>
                 </select>
-                <code>{member.user_id}</code>
                 <div className="member-password-box">
-                  {member.must_change_password ? (
-                    <div className="member-password-inline">
-                      <span className="password-state initial">비밀번호 설정 필요</span>
-                      <input type="password" placeholder="새 비밀번호" value={memberPasswordDrafts[member.user_id] || ''} onChange={(e) => setMemberPasswordDrafts((prev) => ({ ...prev, [member.user_id]: e.target.value }))} onKeyDown={(e) => e.key === 'Enter' && onSaveMemberAccess(member.user_id)} />
+                  <span className={`password-state${member.must_change_password ? ' initial' : ''}`}>{member.must_change_password ? '비밀번호 설정 필요' : '비밀번호 설정 완료'}</span>
+                  <div className="member-password-actions">
+                    {member.must_change_password && <>
+                      <input type="password" placeholder="새 비밀번호" aria-label={`${member.name} 새 비밀번호`} value={memberPasswordDrafts[member.user_id] || ''} onChange={(e) => setMemberPasswordDrafts((prev) => ({ ...prev, [member.user_id]: e.target.value }))} onKeyDown={(e) => e.key === 'Enter' && onSaveMemberAccess(member.user_id)} />
                       <button className="mt-btn sm" type="button" onClick={() => onSaveMemberAccess(member.user_id)}>설정</button>
-                      <button className="mt-btn sm" type="button" onClick={() => onResetMemberAccess(member.user_id)}>초기화</button>
-                    </div>
-                  ) : (
-                    <>
-                      <span className="password-state">비밀번호 설정 완료</span>
-                      <button className="mt-btn sm" type="button" onClick={() => onResetMemberAccess(member.user_id)}>초기화</button>
-                    </>
-                  )}
+                    </>}
+                    <button className="mt-btn sm" type="button" onClick={() => onResetMemberAccess(member.user_id)}>초기화</button>
+                  </div>
                 </div>
                 <button className="mt-btn danger sm" type="button" onClick={() => onDeleteMember(member.user_id)}><Trash2 size={13} />제거</button>
               </div>
