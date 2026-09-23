@@ -19,6 +19,7 @@ function reportImageSrc(value) {
 const DAY = 24 * 60 * 60 * 1000;
 const DOW = ['일', '월', '화', '수', '목', '금', '토'];
 const OTHER_WORK_PROJECT_NAME = '기타 업무 (교육/출장 등)';
+const INITIAL_PASSWORD = 'wia1234!';
 const WEEKDAY_OPTIONS = [
   { value: 0, label: "월요일" },
   { value: 1, label: "화요일" },
@@ -368,7 +369,7 @@ function TeamWorkspace() {
   const [issuedCredential, setIssuedCredential] = useState(null);
   const [isAccountUpdateOpen, setIsAccountUpdateOpen] = useState(false);
   const [loginNeedsChange, setLoginNeedsChange] = useState(false);
-  const [activationDraft, setActivationDraft] = useState(emptyFormFields('password', 'confirm'));
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [weeklyNeedsChange, setWeeklyNeedsChange] = useState(false);
   const [weeklyActivationDraft, setWeeklyActivationDraft] = useState(emptyFormFields('password', 'confirm'));
   useEffect(() => {
@@ -552,27 +553,36 @@ function TeamWorkspace() {
   }, [currentTeam?.team_id]);
 
   async function login() {
-    if (!loginDraft.login_id.trim() || !loginDraft.password) return;
-    if (loginNeedsChange && (activationDraft.password.length < 12 || activationDraft.password !== activationDraft.confirm)) {
-      setError('12자 이상의 새 비밀번호를 동일하게 두 번 입력하세요.');
+    if (isLoggingIn || !loginDraft.login_id.trim() || !loginDraft.password) return;
+    if (loginNeedsChange && passwordDraft.new_password.length < 12) {
+      setError('새 비밀번호는 12자 이상이어야 합니다.');
       return;
     }
+    if (loginNeedsChange && passwordDraft.new_password !== passwordDraft.confirm_password) {
+      setError('새 비밀번호 확인이 일치하지 않습니다');
+      return;
+    }
+    const payload = loginNeedsChange
+      ? { login_id: loginDraft.login_id.trim(), password: passwordDraft.current_password, new_password: passwordDraft.new_password }
+      : { login_id: loginDraft.login_id.trim(), password: loginDraft.password };
+    setIsLoggingIn(true);
+    setError('');
     try {
-      const team = await request('/api/auth/login', {
-        method: 'POST',
-        body: JSON.stringify({ login_id: loginDraft.login_id.trim(), password: loginDraft.password,
-          ...(loginNeedsChange ? { new_password: activationDraft.password } : {}) }),
-      });
+      const team = await request('/api/auth/login', { method: 'POST', body: JSON.stringify(payload) });
       localStorage.setItem('wiareport_team', JSON.stringify(team));
       setCurrentTeam(team);
       setLoginDraft(emptyFormFields('login_id', 'password'));
       setAccountDraft(emptyFormFields('current_password', 'new_password', 'confirm_password'));
       setLoginNeedsChange(false);
-      setActivationDraft(emptyFormFields('password', 'confirm'));
-      setError('');
     } catch (err) {
-      if (err.status === 428) setLoginNeedsChange(true);
-      setError(err.message);
+      if (err.status === 428) {
+        setAccountDraft({ current_password: payload.password, new_password: '', confirm_password: '' });
+        setLoginNeedsChange(true);
+      } else {
+        setError(err.message);
+      }
+    } finally {
+      setIsLoggingIn(false);
     }
   }
 
@@ -587,7 +597,6 @@ function TeamWorkspace() {
     localStorage.removeItem('wiareport_team');
     setIssuedCredential(null);
     setLoginNeedsChange(false);
-    setActivationDraft(emptyFormFields('password', 'confirm'));
     setCurrentTeam(null);
     setAccountDraft(emptyFormFields('current_password', 'new_password', 'confirm_password'));
   }
@@ -627,7 +636,7 @@ function TeamWorkspace() {
   async function createTeam() {
     if (!teamDraft.department.trim() || !teamDraft.login_id.trim()) return;
     try {
-      const issued = await request('/api/teams', {
+      await request('/api/teams', {
         method: 'POST',
         body: JSON.stringify({
           department: teamDraft.department.trim(),
@@ -635,7 +644,6 @@ function TeamWorkspace() {
           account_role: teamDraft.account_role || 'user',
         }),
       });
-      showIssuedCredential(issued, `${issued.department} (${issued.login_id})`);
       setTeamDraft({ department: '', login_id: '', account_role: 'user' });
       await loadTeams();
     } catch (err) {
@@ -691,11 +699,10 @@ function TeamWorkspace() {
   async function createMember() {
     if (!currentTeam?.team_id || !memberDraft.name.trim()) return;
     try {
-      const issued = await request(`/api/teams/${currentTeam.team_id}/users`, {
+      await request(`/api/teams/${currentTeam.team_id}/users`, {
         method: 'POST',
         body: JSON.stringify({ name: memberDraft.name.trim(), role: memberDraft.role }),
       });
-      showIssuedCredential(issued, issued.name);
       setMemberDraft({ name: '', role: 'M' });
       await loadMembers(currentTeam.team_id);
     } catch (err) {
@@ -1207,19 +1214,29 @@ function TeamWorkspace() {
 
   if (!currentTeam) {
     return (
-      <LoginPage
-        loginNeedsChange={loginNeedsChange}
-        activationDraft={activationDraft}
-        setActivationDraft={setActivationDraft}
-        loginDraft={loginDraft}
-        setLoginDraft={setLoginDraft}
-        onLogin={login}
-        teams={teams}
-        teamDraft={teamDraft}
-        setTeamDraft={setTeamDraft}
-        onCreateTeam={createTeam}
-        error={error}
-      />
+      <>
+        <LoginPage
+          loginDraft={loginDraft}
+          setLoginDraft={setLoginDraft}
+          onLogin={login}
+          teams={teams}
+          teamDraft={teamDraft}
+          setTeamDraft={setTeamDraft}
+          onCreateTeam={createTeam}
+          error={loginNeedsChange ? '' : error}
+          isLoggingIn={isLoggingIn}
+        />
+        {loginNeedsChange && (
+          <AccountUpdateDialog
+            passwordDraft={passwordDraft}
+            setAccountDraft={setAccountDraft}
+            onSubmitAccountUpdate={login}
+            required
+            error={error}
+            submitting={isLoggingIn}
+          />
+        )}
+      </>
     );
   }
 
@@ -1435,6 +1452,8 @@ function TeamWorkspace() {
           setAccountDraft={setAccountDraft}
           onSubmitAccountUpdate={submitAccountUpdate}
           onClose={() => setIsAccountUpdateOpen(false)}
+          required={Boolean(currentTeam.must_change_password)}
+          error={error}
         />
       )}
       {issuedCredential && <TemporaryCredentialDialog credential={issuedCredential} onClose={() => setIssuedCredential(null)} />}
@@ -3097,7 +3116,7 @@ function ProjectMemberPanel({ project, teamProject }) {
   );
 }
 
-function LoginPage({ loginNeedsChange, activationDraft, setActivationDraft, loginDraft, setLoginDraft, onLogin, teams, teamDraft, setTeamDraft, onCreateTeam, error }) {
+function LoginPage({ loginDraft, setLoginDraft, onLogin, teams, teamDraft, setTeamDraft, onCreateTeam, error, isLoggingIn }) {
   return (
     <main className="login-shell">
       <section className="login-panel">
@@ -3123,12 +3142,7 @@ function LoginPage({ loginNeedsChange, activationDraft, setActivationDraft, logi
             <span>비밀번호</span>
             <input type="password" value={loginDraft.password} onChange={(e) => setLoginDraft({ ...loginDraft, password: e.target.value })} onKeyDown={(e) => e.key === 'Enter' && onLogin()} />
           </label>
-          {loginNeedsChange && <>
-            <p>임시 비밀번호는 한 번만 사용할 수 있습니다. 새 비밀번호를 설정하세요.</p>
-            <label className="login-field"><span>새 비밀번호 (12자 이상)</span><input type="password" autoComplete="new-password" minLength={12} value={activationDraft.password} onChange={(e) => setActivationDraft({ ...activationDraft, password: e.target.value })} /></label>
-            <label className="login-field"><span>새 비밀번호 확인</span><input type="password" autoComplete="new-password" value={activationDraft.confirm} onChange={(e) => setActivationDraft({ ...activationDraft, confirm: e.target.value })} onKeyDown={(e) => e.key === 'Enter' && onLogin()} /></label>
-          </>}
-          <button className="primary-btn login-submit" type="button" onClick={onLogin}><KeyRound size={15} />로그인</button>
+          <button className="primary-btn login-submit" type="button" onClick={onLogin} disabled={isLoggingIn}><KeyRound size={15} />로그인</button>
 
           {teams.length === 0 && (
             <div className="first-team-box">
@@ -3171,7 +3185,7 @@ function TeamManagementPage({ activeTeamTab, setActiveTeamTab, showTabs = true, 
       {activeTeamTab === 'members' ? (
         <section className="account-card">
           <div className="member-guide">
-            <strong>새 멤버 계정에는 공통 초기 비밀번호가 설정됩니다.</strong>
+            <strong>초기 비밀번호: {INITIAL_PASSWORD}</strong>
             <span>임시 비밀번호는 24시간 동안 유효하며, 처음 보고를 작성할 때 새 비밀번호를 설정합니다.</span>
           </div>
           <div className="member-form">
@@ -3698,7 +3712,7 @@ function AccountManagementPage({ teams, currentTeamId, teamDraft, setTeamDraft, 
       <div className="page-head">
         <div>
           <h1>계정 관리</h1>
-          <p>계정 생성 후 일회용 임시 비밀번호를 전달하세요. 첫 로그인 시 새 비밀번호를 설정합니다.</p>
+          <p>팀 계정을 부여하면 초기 비밀번호는 {INITIAL_PASSWORD}로 설정됩니다</p>
         </div>
       </div>
 
@@ -3730,7 +3744,7 @@ function AccountManagementPage({ teams, currentTeamId, teamDraft, setTeamDraft, 
                 <span>{team.login_id}</span>
                 <span className={`account-role-tag${isAdminTeam ? ' admin' : ''}`}>{isAdminTeam ? '관리자' : '일반 사용자'}</span>
                 <code>{team.team_id}</code>
-                <span className={`password-state${team.must_change_password ? ' initial' : ''}`}>{team.must_change_password ? '비밀번호 설정 필요' : '변경 완료'}</span>
+                <span className={`password-state${team.must_change_password ? ' initial' : ''}`}>{team.must_change_password ? '초기 비밀번호' : '변경 완료'}</span>
                 <div className="account-row-actions">
                   <button className="mt-btn sm" type="button" disabled={isSelf} title={isSelf ? "현재 계정은 비밀번호 변경을 이용하세요" : undefined} onClick={() => onIssueTeamAccess(team.team_id)}>임시 비밀번호 발급</button>
                   <button className="mt-btn danger sm" type="button" disabled={isProtected} title={isProtected ? protectedReason : undefined} onClick={() => onDeleteTeam(team.team_id)}><Trash2 size={13} />제거</button>
@@ -3746,19 +3760,21 @@ function AccountManagementPage({ teams, currentTeamId, teamDraft, setTeamDraft, 
 }
 
 
-function AccountUpdateDialog({ passwordDraft, setAccountDraft, onSubmitAccountUpdate, onClose }) {
+function AccountUpdateDialog({ passwordDraft, setAccountDraft, onSubmitAccountUpdate, onClose, required = false, error = '', submitting = false }) {
   return (
     <div className="modal-backdrop" role="presentation">
       <div className="password-modal" role="dialog" aria-modal="true" aria-labelledby="password-change-title">
         <div>
           <h2 id="password-change-title">비밀번호 변경</h2>
-          <p>현재 비밀번호를 확인하고 12자 이상의 새 비밀번호로 변경하세요.</p>
+          <p>{required ? '초기 비밀번호를 사용 중입니다. 계속하려면 새 비밀번호로 변경하세요.' : '현재 비밀번호를 확인하고 12자 이상의 새 비밀번호로 변경하세요.'}</p>
         </div>
         <input type="password" placeholder="현재 비밀번호" value={passwordDraft.current_password} onChange={(e) => setAccountDraft({ ...passwordDraft, current_password: e.target.value })} />
         <input type="password" placeholder="새 비밀번호" value={passwordDraft.new_password} onChange={(e) => setAccountDraft({ ...passwordDraft, new_password: e.target.value })} />
         <input type="password" placeholder="새 비밀번호 확인" value={passwordDraft.confirm_password} onChange={(e) => setAccountDraft({ ...passwordDraft, confirm_password: e.target.value })} onKeyDown={(e) => e.key === 'Enter' && onSubmitAccountUpdate()} />
-        <button className="mt-btn primary" type="button" onClick={onSubmitAccountUpdate}>변경</button>
-        <button className="mt-btn" type="button" onClick={onClose}>취소</button>
+        <p>새 비밀번호는 12자 이상으로 입력하세요.</p>
+        {error && <div className="login-error" role="alert">{error}</div>}
+        <button className="mt-btn primary" type="button" onClick={onSubmitAccountUpdate} disabled={submitting}>{submitting ? '변경 중' : '변경'}</button>
+        {!required && onClose && <button className="mt-btn" type="button" onClick={onClose}>취소</button>}
       </div>
     </div>
   );
