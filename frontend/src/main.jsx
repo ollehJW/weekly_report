@@ -3226,15 +3226,15 @@ function TeamManagementPage({ activeTeamTab, setActiveTeamTab, showTabs = true, 
                 </select>
                 <div className="member-password-box">
                   <span className={`password-state${member.must_change_password ? ' initial' : ''}`}>{member.must_change_password ? '비밀번호 설정 필요' : '비밀번호 설정 완료'}</span>
-                  <div className="member-password-actions">
                     {member.must_change_password && <>
                       <input type="password" placeholder="새 비밀번호" aria-label={`${member.name} 새 비밀번호`} value={memberPasswordDrafts[member.user_id] || ''} onChange={(e) => setMemberPasswordDrafts((prev) => ({ ...prev, [member.user_id]: e.target.value }))} onKeyDown={(e) => e.key === 'Enter' && onSaveMemberAccess(member.user_id)} />
                       <button className="mt-btn sm" type="button" onClick={() => onSaveMemberAccess(member.user_id)}>설정</button>
                     </>}
-                    <button className="mt-btn sm" type="button" onClick={() => onResetMemberAccess(member.user_id)}>초기화</button>
-                  </div>
                 </div>
+                <div className="member-management-actions">
+                    <button className="mt-btn sm" type="button" onClick={() => onResetMemberAccess(member.user_id)}>초기화</button>
                 <button className="mt-btn danger sm" type="button" onClick={() => onDeleteMember(member.user_id)}><Trash2 size={13} />제거</button>
+                </div>
               </div>
             ))}
             {members.length === 0 && <div className="empty">등록된 멤버가 없습니다</div>}
