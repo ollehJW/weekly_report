@@ -3189,7 +3189,7 @@ function TeamManagementPage({ activeTeamTab, setActiveTeamTab, showTabs = true, 
             <button className="mt-btn primary" type="button" onClick={onCreateMember}><Plus size={15} />멤버 추가</button>
           </div>
           <div className="member-table">
-            <div className="member-table-head"><span>이름</span><span>직급</span><span>비밀번호 상태/관리</span><span>관리</span></div>
+            <div className="member-table-head"><span>이름</span><span>직급</span><span style={{ gridColumn: '3 / -1' }}>비밀번호 상태/관리</span></div>
             {members.map((member) => (
               <div
                 className={`member-row${draggingMemberId === member.user_id ? ' dragging' : ''}`}
