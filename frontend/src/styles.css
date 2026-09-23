@@ -4028,3 +4028,6 @@ header.part-context { display: flex; align-items: center; gap: 22px; margin: 0 0
   .member-password-box input { padding: 6px; font-size: 11px; }
   .member-password-box .mt-btn.sm { flex-basis: 44px; width: 44px; }
 }
+
+/* Native credential forms preserve the existing login layout. */
+.login-card > form { display: contents; }

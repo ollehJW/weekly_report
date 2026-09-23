@@ -1121,7 +1121,7 @@ def project_with_members(conn, project_row):
             "role": row["project_role"],
             "name": row["name"],
             "member_role": row["member_role"],
-            "must_change_password": bool(row["must_change_password"]),
+            "must_change_password": True if row["must_change_password"] else False,
         }
         for row in members
     ]
@@ -2145,7 +2145,7 @@ def create_team(payload: TeamIn, authorization: str | None = Header(default=None
             (team_id, payload.department.strip(), login_id, hash_password(temporary_password), account_role, expires_at, now),
         )
         team = public_team(conn.execute("SELECT * FROM teams WHERE team_id=?", (team_id,)).fetchone())
-        return {**team, "temporary_password": temporary_password}
+        return team
 
 
 @app.put("/api/teams/{team_id}/password/reset")
@@ -2160,7 +2160,7 @@ def reset_team_password(team_id: str, authorization: str | None = Header(default
         conn.execute("UPDATE teams SET password_hash=?, must_change_password=1, password_expires_at=? WHERE team_id=?", (hash_password(temporary_password), expires_at, team_id))
         credential_security.close_team_sessions(conn, team_id)
         team = public_team(conn.execute("SELECT * FROM teams WHERE team_id=?", (team_id,)).fetchone())
-        return {**team, "temporary_password": temporary_password}
+        return team
 
 
 def _period_cutoff(period: str) -> str | None:
@@ -2542,7 +2542,7 @@ def create_team_user(team_id: str, payload: MemberIn, authorization: str | None 
         conn.execute("UPDATE users SET part_id=? WHERE user_id=?", (part_support.selected_part(), user_id))
         conn.execute("UPDATE users SET password_expires_at=? WHERE user_id=?", (expires_at, user_id))
         row = conn.execute("SELECT * FROM users WHERE rowid = ?", (cursor.lastrowid,)).fetchone()
-        return {**public_user(row), "temporary_password": temporary_password}
+        return public_user(row)
 
 
 @app.put("/api/teams/{team_id}/users/order")
@@ -3004,6 +3004,17 @@ def complete_report(report_id: str):
 
 @app.delete("/api/reports/{report_id}", status_code=204)
 def delete_report(report_id: str):
+    # Only server-generated UUID directories may be removed, never request paths.
+    try:
+        canonical_id = str(uuid.UUID(report_id))
+    except (ValueError, TypeError, AttributeError):
+        raise HTTPException(status_code=404, detail="Report not found")
+    if canonical_id != report_id:
+        raise HTTPException(status_code=404, detail="Report not found")
+    workspace_root = WORKSPACE_PATH.resolve()
+    report_directory = workspace_root / canonical_id
+    if report_directory.is_symlink() or report_directory.resolve().parent != workspace_root:
+        raise HTTPException(status_code=409, detail="Invalid report workspace")
     with get_conn() as conn:
         report = conn.execute("SELECT report_id FROM reports WHERE report_id = ?", (report_id,)).fetchone()
         if not report:
@@ -3017,7 +3028,7 @@ def delete_report(report_id: str):
         )
         conn.execute("DELETE FROM report_entries WHERE report_id = ?", (report_id,))
         conn.execute("DELETE FROM reports WHERE report_id = ?", (report_id,))
-    shutil.rmtree(WORKSPACE_PATH / report_id, ignore_errors=True)
+    shutil.rmtree(report_directory, ignore_errors=True)
 
 
 
@@ -3820,7 +3831,7 @@ def reset_member_password(user_id: str, authorization: str | None = Header(defau
         temporary_password, expires_at = credential_security.new_initial_password()
         conn.execute("UPDATE users SET password_hash=?, must_change_password=1, password_expires_at=? WHERE user_id=?", (hash_password(temporary_password), expires_at, user_id))
         member = public_user(conn.execute("SELECT * FROM users WHERE user_id=?", (user_id,)).fetchone())
-        return {**member, "temporary_password": temporary_password}
+        return member
 
 
 @app.middleware("http")
