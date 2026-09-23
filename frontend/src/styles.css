@@ -1078,7 +1078,11 @@ input:focus, textarea:focus, select:focus { border-color: #4f46e5; box-shadow: 0
   background: rgba(23, 24, 28, .42);
 }
 
+/* The initial-login dialog is rendered outside .app-shell. */
 .password-modal {
+  --surface: var(--panel, #ffffff);
+  --border: var(--line, #e2e7f0);
+  --ink-faint: var(--muted, #7d8797);
   display: grid;
   gap: 10px;
   width: min(420px, 100%);
