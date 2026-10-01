@@ -149,14 +149,6 @@ def init_db():
             conn.execute("ALTER TABLE teams ADD COLUMN report_schedule_time TEXT NOT NULL DEFAULT '17:00'")
         if not has_column(conn, "teams", "report_schedule_interval_days"):
             conn.execute("ALTER TABLE teams ADD COLUMN report_schedule_interval_days INTEGER NOT NULL DEFAULT 7")
-        conn.execute("""
-            UPDATE teams
-            SET report_schedule_enabled = 1,
-                report_schedule_weekday = 4,
-                report_schedule_time = '17:00',
-                report_schedule_interval_days = 7
-            WHERE login_id = 'dx_lab' OR department = 'DX추진랩'
-            """)
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS login_sessions (
@@ -512,6 +504,19 @@ def init_db():
                 conn.execute("UPDATE project_entry SET sort_order=? WHERE entry_id=? AND project_id=?", (index, row["entry_id"], row["project_id"]))
                 positions[row["entry_id"]] = index + 1
         part_support.init_parts(conn)
+        # Keep consumed schedule occurrences after a report is edited or deleted.
+        # part_key is non-null so SQLite enforces uniqueness for the team-wide scope too.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS report_schedule_runs (
+                team_id TEXT NOT NULL REFERENCES teams(team_id) ON DELETE CASCADE,
+                part_key TEXT NOT NULL DEFAULT '',
+                start_date TEXT NOT NULL,
+                end_date TEXT NOT NULL,
+                report_id TEXT NOT NULL,
+                recorded_at TEXT NOT NULL,
+                PRIMARY KEY (team_id, part_key, start_date)
+            )
+        """)
         backfill_project_tracking(conn)
 
     with get_conn() as conn:
@@ -983,6 +988,11 @@ class ProjectMembersIn(BaseModel):
 class ReportIn(BaseModel):
     start_date: date
     end_date: date
+
+
+class ReportPeriodIn(ReportIn):
+    expected_start_date: date
+    expected_end_date: date
 
 
 class ReportScheduleIn(BaseModel):
@@ -1936,11 +1946,22 @@ def create_weekly_report(conn, team_id: str, start_date: date, end_date: date, s
     return row, True
 
 
+def remember_report_period(conn, report):
+    conn.execute(
+        """INSERT OR IGNORE INTO report_schedule_runs
+           (team_id, part_key, start_date, end_date, report_id, recorded_at)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (report["team_id"], report["part_id"] or "", report["start_date"], report["end_date"],
+         report["report_id"], datetime.utcnow().isoformat()),
+    )
+
+
 def create_due_weekly_reports(now_kst=None):
     now_kst = now_kst or datetime.now(KST)
     created_reports = []
     created_periods = {}
     with get_conn() as conn:
+        conn.execute("BEGIN IMMEDIATE")
         teams = conn.execute("SELECT * FROM teams ORDER BY created_at ASC").fetchall()
         schedule_scopes = [(team, None) for team in teams]
         for team in teams:
@@ -1951,7 +1972,14 @@ def create_due_weekly_reports(now_kst=None):
             if not period:
                 continue
             start_date, end_date = period
+            consumed = conn.execute(
+                "SELECT 1 FROM report_schedule_runs WHERE team_id=? AND part_key=? AND start_date=?",
+                (team["team_id"], part_id or "", str(start_date)),
+            ).fetchone()
+            if consumed:
+                continue
             row, created = create_weekly_report(conn, team["team_id"], start_date, end_date, skip_existing=True, part_id=part_id)
+            remember_report_period(conn, row)
             if created:
                 created_reports.append(row["report_id"])
                 key = f"{start_date}..{end_date}"
@@ -2946,6 +2974,33 @@ def create_report(team_id: str, payload: ReportIn):
         return report_with_entries(conn, row)
 
 
+@app.put("/api/reports/{report_id}/period")
+def update_report_period(report_id: str, payload: ReportPeriodIn, authorization: str | None = Header(default=None)):
+    ensure_range(payload.start_date, payload.end_date)
+    with get_conn() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        report = conn.execute("SELECT * FROM reports WHERE report_id=? AND part_visible(team_id, part_id)", (report_id,)).fetchone()
+        if not report:
+            raise HTTPException(404, "Report not found")
+        credential_security.require_manager(conn, authorization, team_id=report["team_id"])
+        if (report["start_date"], report["end_date"]) != (str(payload.expected_start_date), str(payload.expected_end_date)):
+            raise HTTPException(409, "보고 기간이 변경되었습니다. 새로고침한 뒤 다시 수정해 주세요.")
+        if (report["start_date"], report["end_date"]) == (str(payload.start_date), str(payload.end_date)):
+            return report_with_entries(conn, report)
+        duplicate = conn.execute(
+            "SELECT 1 FROM reports WHERE team_id=? AND part_id IS ? AND report_id!=? AND start_date=? AND end_date=?",
+            (report["team_id"], report["part_id"], report_id, str(payload.start_date), str(payload.end_date)),
+        ).fetchone()
+        if duplicate:
+            raise HTTPException(409, "같은 기간의 주간보고가 이미 있습니다.")
+        # Covers existing reports created before schedule tracking was introduced.
+        remember_report_period(conn, report)
+        conn.execute("UPDATE reports SET start_date=?, end_date=? WHERE report_id=?",
+                     (str(payload.start_date), str(payload.end_date), report_id))
+        row = conn.execute("SELECT * FROM reports WHERE report_id=?", (report_id,)).fetchone()
+        return report_with_entries(conn, row)
+
+
 @app.get("/api/teams/{team_id}/report-schedule")
 def get_report_schedule(team_id: str):
     with get_conn() as conn:
@@ -3016,9 +3071,11 @@ def delete_report(report_id: str):
     if report_directory.is_symlink() or report_directory.resolve().parent != workspace_root:
         raise HTTPException(status_code=409, detail="Invalid report workspace")
     with get_conn() as conn:
-        report = conn.execute("SELECT report_id FROM reports WHERE report_id = ?", (report_id,)).fetchone()
+        conn.execute("BEGIN IMMEDIATE")
+        report = conn.execute("SELECT * FROM reports WHERE report_id = ?", (report_id,)).fetchone()
         if not report:
             raise HTTPException(status_code=404, detail="Report not found")
+        remember_report_period(conn, report)
         conn.execute(
             """
             DELETE FROM project_entry

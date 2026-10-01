@@ -1042,6 +1042,17 @@ function TeamWorkspace() {
     }
   }
 
+  async function updateWeeklyReportPeriod(report, dates) {
+    const updated = await request(`/api/reports/${report.report_id}/period`, {
+      method: 'PUT',
+      body: JSON.stringify({ ...dates, expected_start_date: report.start_date, expected_end_date: report.end_date }),
+    });
+    setWeeklyReports((prev) => prev.map((item) => item.report_id === updated.report_id ? updated : item)
+      .sort((a, b) => b.start_date.localeCompare(a.start_date) || b.end_date.localeCompare(a.end_date)));
+    setCompletedWeeklyReports((prev) => prev.map((item) => item.report_id === updated.report_id ? { ...item, start_date: updated.start_date, end_date: updated.end_date } : item)
+      .sort((a, b) => b.end_date.localeCompare(a.end_date) || b.start_date.localeCompare(a.start_date)));
+  }
+
   async function deleteWeeklyReport(reportId) {
     if (!reportId) return;
     try {
@@ -1366,6 +1377,7 @@ function TeamWorkspace() {
             onCreateWeeklyReportPeriod={createWeeklyReportPeriod}
             weeklyWarningMessage={weeklyWarningMessage}
             setWeeklyWarningMessage={setWeeklyWarningMessage}
+            onUpdateWeeklyReportPeriod={updateWeeklyReportPeriod}
             onDeleteWeeklyReport={deleteWeeklyReport}
             onCompleteWeeklyReport={completeWeeklyReport}
             onToggleWeeklyAbsence={toggleWeeklyAbsence}
@@ -2106,6 +2118,7 @@ function WeeklyReportPage({
   onCreateWeeklyReportPeriod,
   weeklyWarningMessage,
   setWeeklyWarningMessage,
+  onUpdateWeeklyReportPeriod,
   onDeleteWeeklyReport,
   onCompleteWeeklyReport,
   onToggleWeeklyAbsence,
@@ -2136,6 +2149,25 @@ function WeeklyReportPage({
   const [weeklySelectionDraft, setWeeklySelectionDraft] = useState([]);
   const [detailEditor, setDetailEditor] = useState(null);
   const [confluenceEditor, setConfluenceEditor] = useState(null);
+  const [periodEditor, setPeriodEditor] = useState(null);
+  const [periodBusy, setPeriodBusy] = useState(false);
+  const [periodError, setPeriodError] = useState('');
+  function openPeriodEditor(report) {
+    setPeriodError('');
+    setPeriodEditor({ report, start_date: report.start_date, end_date: report.end_date });
+  }
+  async function saveReportPeriod(event) {
+    event.preventDefault();
+    if (!periodEditor || periodBusy) return;
+    if (!periodEditor.start_date || !periodEditor.end_date) { setPeriodError('시작일과 종료일을 입력해 주세요.'); return; }
+    if (periodEditor.start_date > periodEditor.end_date) { setPeriodError('종료일은 시작일과 같거나 이후여야 합니다.'); return; }
+    setPeriodBusy(true); setPeriodError('');
+    try {
+      await onUpdateWeeklyReportPeriod(periodEditor.report, { start_date: periodEditor.start_date, end_date: periodEditor.end_date });
+      setPeriodEditor(null);
+    } catch (err) { setPeriodError(err.message || '보고 기간을 저장하지 못했습니다.'); }
+    finally { setPeriodBusy(false); }
+  }
   const [deleteConfirmReport, setDeleteConfirmReport] = useState(null);
   const [isDeletingReport, setIsDeletingReport] = useState(false);
   const [archiveSelection, setArchiveSelection] = useState('');
@@ -2393,6 +2425,7 @@ function WeeklyReportPage({
                   <p>{weeklyCompletionText(reportMembers)}</p>
                 </div>
                 <div className="weekly-report-head-actions">
+                  <button className="weekly-period-btn" type="button" onClick={() => openPeriodEditor(weeklyReport)}><CalendarRange size={14} />기간 수정</button>
                   <button className="weekly-complete-btn" type="button" disabled={!canCompleteReport} title={canCompleteReport ? '보고를 완료합니다' : '모든 멤버가 작성 완료 또는 부재 상태여야 활성화됩니다'} onClick={() => onCompleteWeeklyReport(weeklyReport.report_id)}>완료</button>
                   <button className="weekly-delete-btn" type="button" onClick={() => setDeleteConfirmReport(weeklyReport)}>삭제</button>
                 </div>
@@ -2430,7 +2463,10 @@ function WeeklyReportPage({
       <section className="weekly-archive" aria-labelledby="weekly-archive-title">
         <div className="weekly-archive-head">
           <h2 id="weekly-archive-title">완료된 주간보고</h2>
+          <div className="weekly-archive-actions">
+          <button className="mt-btn" type="button" disabled={!archiveSelectionValid || archiveBusy} onClick={() => openPeriodEditor(completedWeeklyReports.find((report) => report.report_id === archiveSelection))}>기간 수정</button>
           <button className="mt-btn" type="button" disabled={!archiveSelectionValid || archiveBusy} onClick={reopenArchiveSelection}>{archiveBusy ? '여는 중…' : '다시 열기'}</button>
+          </div>
         </div>
         {completedWeeklyReports.length ? <select className="weekly-archive-list" size={Math.min(5, Math.max(2, completedWeeklyReports.length))} aria-label="다시 열 주간보고 선택"
           value={archiveSelectionValid ? archiveSelection : ''} disabled={archiveBusy} onChange={(e) => setArchiveSelection(e.target.value)}>
@@ -2438,6 +2474,22 @@ function WeeklyReportPage({
         </select> : <p className="weekly-archive-empty">완료된 주간보고가 없습니다.</p>}
         {archiveMessage && <p className="weekly-archive-message" role="status">{archiveMessage}</p>}
       </section>
+
+      {periodEditor && (
+        <div className="modal-backdrop" role="presentation">
+          <form className="weekly-report-modal compact-modal weekly-period-modal" role="dialog" aria-modal="true" aria-labelledby="weekly-period-title" onSubmit={saveReportPeriod} noValidate>
+            <div className="project-modal-head"><div><h2 id="weekly-period-title">주간보고 기간 수정</h2><p>작성 내용과 완료 상태는 그대로 유지됩니다.</p></div>
+              <button className="icon-button" type="button" disabled={periodBusy} onClick={() => setPeriodEditor(null)} aria-label="기간 수정 닫기"><X size={18} /></button>
+            </div>
+            <div className="weekly-period-fields">
+              <label>시작일<input type="date" value={periodEditor.start_date} disabled={periodBusy} onChange={(e) => setPeriodEditor((prev) => ({ ...prev, start_date: e.target.value }))} autoFocus required /></label>
+              <label>종료일<input type="date" value={periodEditor.end_date} disabled={periodBusy} onChange={(e) => setPeriodEditor((prev) => ({ ...prev, end_date: e.target.value }))} required /></label>
+            </div>
+            {periodError && <p className="error compact" role="alert">{periodError}</p>}
+            <div className="project-modal-actions"><button className="mt-btn" type="button" disabled={periodBusy} onClick={() => setPeriodEditor(null)}>취소</button><button className="mt-btn primary" type="submit" disabled={periodBusy}>{periodBusy ? '저장 중…' : '저장'}</button></div>
+          </form>
+        </div>
+      )}
 
       {deleteConfirmReport && (
         <div className="modal-backdrop" role="presentation">
@@ -2452,6 +2504,7 @@ function WeeklyReportPage({
                 <li>상세 작성 내용과 첨부 이미지</li>
                 <li>연결된 Confluence 링크</li>
               </ul>
+              <p>삭제한 회차는 자동으로 다시 생성되지 않습니다. 필요하면 새 보고 주간을 직접 개설할 수 있습니다.</p>
               <strong>삭제 후에는 복구할 수 없습니다.</strong>
             </div>
             <div className="project-modal-actions">
