@@ -6,6 +6,7 @@ import { emptyFormFields } from './formFields.mjs';
 import PartManagement from './PartManagement.jsx';
 import { useProjectOrder } from './useProjectOrder.js';
 import WeeklyProjectOrderList from './WeeklyProjectOrderList.jsx';
+import { buildTimelineAxis } from './timelineAxis.mjs';
 
 // 기본값은 같은 출처(''). vite 가 /api 를 백엔드로 프록시한다(vite.config.js).
 // 백엔드를 다른 주소로 직접 호출해야 하면 VITE_API_BASE 로 절대주소를 넣는다.
@@ -4360,23 +4361,50 @@ function ProjectTimeline({
   }
 
   const timelineScrollRef = useRef(null);
+  const [timelineScale, setTimelineScale] = useState('day');
+  const [timeFilter, setTimeFilter] = useState(null);
+  const [timeFilterDraft, setTimeFilterDraft] = useState(null);
+  const [timeFilterError, setTimeFilterError] = useState(null);
 
-  const range = useMemo(() => {
+  const fullRange = useMemo(() => {
     const dates = milestones.flatMap((milestone) => [milestone.start_date, milestone.end_date]);
     if (dates.length === 0) return { start: milestoneDraft.start_date, end: milestoneDraft.end_date };
     return { start: dates.reduce((a, b) => (a < b ? a : b)), end: dates.reduce((a, b) => (a > b ? a : b)) };
   }, [milestones, milestoneDraft.start_date, milestoneDraft.end_date]);
 
-  const days = useMemo(() => businessDaysBetween(range.start, range.end), [range.start, range.end]);
-  const colCount = Math.max(1, days.length);
-  const dayIndex = useMemo(() => {
-    const map = new Map();
-    days.forEach((day, i) => map.set(isoOf(day), i));
-    return map;
-  }, [days]);
-  const dateGridTemplate = 'repeat(' + colCount + ', minmax(64px, 1fr))';
+  const range = timeFilter?.projectId === project?.id ? timeFilter : fullRange;
+  const filterDraft = timeFilterDraft?.projectId === project?.id ? timeFilterDraft : range;
+  const filterError = timeFilterError?.projectId === project?.id ? timeFilterError.message : '';
+  function changeTimeFilter(key, value) {
+    setTimeFilterDraft({ ...filterDraft, projectId: project?.id, [key]: value });
+    setTimeFilterError(null);
+  }
+  function applyTimeFilter(event) {
+    event.preventDefault();
+    const { start, end } = filterDraft;
+    if (!start || !end || !/^\d{4}-\d{2}-\d{2}$/.test(start) || !/^\d{4}-\d{2}-\d{2}$/.test(end)) {
+      setTimeFilterError({ projectId: project?.id, message: '시작일과 종료일을 입력해 주세요.' });
+      return;
+    }
+    if (start > end) {
+      setTimeFilterError({ projectId: project?.id, message: '종료일은 시작일과 같거나 이후여야 합니다.' });
+      return;
+    }
+    setTimeFilter({ projectId: project?.id, start, end });
+    setTimeFilterError(null);
+  }
+  function resetTimeFilter() {
+    setTimeFilter(null);
+    setTimeFilterDraft(null);
+    setTimeFilterError(null);
+  }
+
+  const axis = useMemo(() => buildTimelineAxis(range.start, range.end, timelineScale), [range.start, range.end, timelineScale]);
+  const colCount = axis.cells.length;
+  const dateGridTemplate = `repeat(${colCount}, minmax(0, 1fr))`;
+  const calendarWidth = `max(100%, ${axis.groups.length * 64}px)`;
   const today = kstTodayIso();
-  const todayIndex = dayIndex.has(today) ? dayIndex.get(today) : -1;
+  const todayIndex = axis.todayIndex(today);
   function isDoneWork(epic) {
     const status = normalizeStatus(epic.status);
     return status === 'done' || status === 'done_delayed';
@@ -4417,28 +4445,15 @@ function ProjectTimeline({
 
   useEffect(() => {
     const scroller = timelineScrollRef.current;
-    if (!scroller || todayIndex < 0 || colCount < 1) return;
-    const dayWidth = Math.max(64, scroller.scrollWidth / colCount);
+    if (!scroller || colCount < 1) return;
+    if (todayIndex < 0) { scroller.scrollLeft = 0; return; }
+    const dayWidth = scroller.firstElementChild.getBoundingClientRect().width / colCount;
     const todayLeft = todayIndex * dayWidth;
     const targetLeft = todayLeft - (scroller.clientWidth - dayWidth) / 2;
     scroller.scrollLeft = Math.max(0, Math.min(targetLeft, scroller.scrollWidth - scroller.clientWidth));
-  }, [project?.id, todayIndex, colCount, dateGridTemplate]);
+  }, [project?.id, todayIndex, colCount, dateGridTemplate, timelineScale, range.start, range.end]);
 
-  function dayCellClass(day, baseClass, highlightToday = false) {
-    const classes = [baseClass];
-    if (day.getDay() === 1) classes.push('weekend-adjacent');
-    if (highlightToday && isoOf(day) === today) classes.push('today');
-    return classes.join(' ');
-  }
-
-  function spanFor(startDate, endDate) {
-    const itemDays = businessDaysBetween(startDate, endDate);
-    const first = itemDays[0] ? isoOf(itemDays[0]) : startDate;
-    const last = itemDays[itemDays.length - 1] ? isoOf(itemDays[itemDays.length - 1]) : endDate;
-    const startCol = dayIndex.has(first) ? dayIndex.get(first) : 0;
-    const endCol = dayIndex.has(last) ? dayIndex.get(last) : colCount - 1;
-    return { startCol, colSpan: Math.max(1, endCol - startCol + 1) };
-  }
+  const spanFor = axis.spanFor;
 
   function startAddEpic(milestone) {
     setCollapsedMilestones((prev) => { const next = new Set(prev); next.delete(milestone.id); return next; });
@@ -4644,6 +4659,25 @@ function ProjectTimeline({
         </section>
       )}
 
+      <div className="timeline-scale-toolbar">
+        <form className="timeline-time-filter" onSubmit={applyTimeFilter} noValidate aria-label="타임라인 기간 필터">
+          <span className="timeline-filter-label">기간</span>
+          <label><span>시작일</span><input type="date" aria-label="타임라인 시작일" value={filterDraft.start} onChange={(e) => changeTimeFilter('start', e.target.value)} required /></label>
+          <span className="timeline-date-separator" aria-hidden="true">–</span>
+          <label><span>종료일</span><input type="date" aria-label="타임라인 종료일" value={filterDraft.end} onChange={(e) => changeTimeFilter('end', e.target.value)} required /></label>
+          <button className="timeline-filter-apply" type="submit">적용</button>
+          <button className="timeline-filter-reset" type="button" onClick={resetTimeFilter}>전체 기간</button>
+        </form>
+        <div className="timeline-scale-controls">
+        <span>타임라인 기준</span>
+        <div className="timeline-scale-switch" role="group" aria-label="타임라인 가로축 기준">
+          {[['day', '일간'], ['week', '주간'], ['month', '월간']].map(([value, label]) => (
+            <button type="button" key={value} aria-pressed={timelineScale === value} onClick={() => setTimelineScale(value)}>{label}</button>
+          ))}
+        </div>
+        </div>
+      </div>
+      {filterError && <p className="timeline-filter-error" role="alert">{filterError}</p>}
       <div className="work-order-status" role="status" aria-live="polite">{orderSaving ? '워크 순서 저장 중…' : orderMessage || '워크 왼쪽 손잡이를 드래그해 순서를 바꿀 수 있습니다.'}</div>
       <div className="mt-split-wrap">
         <div className="mt-axis-col">
@@ -4667,14 +4701,16 @@ function ProjectTimeline({
         </div>
 
         <div className="mt-calendar-scroll" ref={timelineScrollRef}>
-          <div className="mt-calendar-grid" style={{ gridTemplateColumns: dateGridTemplate }}>
+          <div className={`mt-calendar-grid timeline-scale-${timelineScale}`} style={{ gridTemplateColumns: dateGridTemplate, width: calendarWidth }}>
             <div className="mt-calendar-bg-layer" aria-hidden="true">
-              {days.map((day) => <div key={`bg-${isoOf(day)}`} className={dayCellClass(day, 'mt-calendar-bg-cell')} />)}
+              {axis.cells.map((cell) => <div key={`bg-${cell.key}`} className={`mt-calendar-bg-cell${cell.boundary ? ' period-boundary' : ''}`} />)}
             </div>
-            {days.map((day) => (
-              <div key={isoOf(day)} className={dayCellClass(day, 'mt-daycell', true)}>
-                <div className="num">{String(day.getDate()).padStart(2, '0')}</div>
-                <div className="dow">{DOW[day.getDay()]}</div>
+            {axis.groups.map((group) => (
+              <div key={group.key} title={group.hint} className={`mt-daycell mt-period-cell${todayIndex >= group.startCol && todayIndex < group.startCol + group.count ? ' today' : ''}`} style={{ gridColumn: `${group.startCol + 1} / span ${group.count}` }}>
+                <div className="mt-period-title">{group.label}</div>
+                <div className="mt-period-subcells" style={{ gridTemplateColumns: `repeat(${group.count}, minmax(0, 1fr))` }}>
+                  {axis.cells.slice(group.startCol, group.startCol + group.count).map((cell, index) => <span key={cell.key} className={todayIndex === group.startCol + index ? 'is-today' : ''}>{cell.label}</span>)}
+                </div>
               </div>
             ))}
 
@@ -4683,20 +4719,20 @@ function ProjectTimeline({
               return (
                 <React.Fragment key={`calendar-${milestone.id}`}>
                   <div className="mt-track milestone-track" style={{ gridColumn: `1 / span ${colCount}`, gridTemplateColumns: dateGridTemplate }}>
-                    <div className="milestone-bar" style={{ gridColumn: `${milestoneSpan.startCol + 1} / span ${milestoneSpan.colSpan}` }}>
+                    {milestoneSpan && <div className="milestone-bar" title={`${milestone.title} · ${milestone.start_date} ~ ${milestone.end_date}`} style={{ gridColumn: `${milestoneSpan.startCol + 1} / span ${milestoneSpan.colSpan}` }}>
                       <AudioWaveform size={14} className="icon" />
                       <span className="label">{milestone.title}</span>
                       <span className="count">{milestone.epics.length} works</span>
-                    </div>
+                    </div>}
                   </div>
 
                   {!collapsedMilestones.has(milestone.id) && milestone.epics.map((epic, index) => {
                     const epicSpan = spanFor(epic.start_date, epic.end_date);
                     return (
                       <div className="mt-track" key={`calendar-${epic.id}`} style={{ gridColumn: `1 / span ${colCount}`, gridTemplateColumns: dateGridTemplate }}>
-                        <div className="mt-bar" style={{ gridColumn: `${epicSpan.startCol + 1} / span ${epicSpan.colSpan}`, background: epic.color || accentFor(index).bar }}>
+                        {epicSpan && <div className="mt-bar" title={`${epic.title} · ${epic.start_date} ~ ${epic.end_date}`} style={{ gridColumn: `${epicSpan.startCol + 1} / span ${epicSpan.colSpan}`, background: epic.color || accentFor(index).bar }}>
                           <span className="label">{epic.title}</span>
-                        </div>
+                        </div>}
                       </div>
                     );
                   })}

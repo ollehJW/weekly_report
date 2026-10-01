@@ -4031,3 +4031,51 @@ header.part-context { display: flex; align-items: center; gap: 22px; margin: 0 0
 
 /* Native credential forms preserve the existing login layout. */
 .login-card > form { display: contents; }
+
+/* Equal-width timeline periods, with smaller calendar subdivisions. */
+.timeline-scale-toolbar { display: flex; align-items: center; justify-content: flex-end; gap: 12px; padding: 12px 18px 4px; }
+.timeline-scale-toolbar > span { font-size: 12px; color: var(--ink-faint); }
+.timeline-scale-switch { display: inline-flex; padding: 3px; gap: 2px; border: 1px solid var(--border); border-radius: 9px; background: #f3f5f8; }
+.timeline-scale-switch button { border: 0; border-radius: 6px; padding: 6px 14px; font: inherit; font-size: 12px; color: #64748b; background: transparent; cursor: pointer; }
+.timeline-scale-switch button[aria-pressed="true"] { background: white; color: #334155; font-weight: 750; box-shadow: 0 1px 4px #0f172a16; }
+.timeline-scale-switch button:focus-visible { outline: 2px solid #6366f1; outline-offset: 2px; }
+.mt-calendar-grid { width: max-content; min-width: 100%; }
+.mt-calendar-grid > .mt-period-cell { padding: 0; min-width: 0; }
+.mt-period-title { height: 30px; display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 750; white-space: nowrap; }
+.timeline-scale-day .mt-period-title { font-size: 13px; font-family: "IBM Plex Mono", monospace; }
+.mt-period-subcells { display: grid; height: 24px; border-top: 1px solid var(--border-soft); }
+.mt-period-subcells > span { display: flex; align-items: center; justify-content: center; min-width: 0; font-size: 9px; color: #64748b; border-left: 1px solid var(--border-soft); white-space: nowrap; }
+.mt-period-subcells > span:first-child { border-left: 0; }
+.timeline-scale-month .mt-period-subcells > span { font-size: 7px; letter-spacing: -.5px; }
+.mt-period-subcells > span.is-today { background: #ffedb8; color: #8a5b00; font-weight: 800; }
+.mt-calendar-bg-cell.period-boundary { border-left-color: #cbd5e1; }
+.timeline-scale-week .mt-bar, .timeline-scale-month .mt-bar,
+.timeline-scale-week .milestone-bar, .timeline-scale-month .milestone-bar { margin-left: 1px; margin-right: 1px; padding-left: 2px; padding-right: 2px; overflow: hidden; }
+
+/* Date-range controls share the toolbar with the timeline scale. */
+.timeline-scale-toolbar { justify-content: space-between; flex-wrap: wrap; gap: 12px 20px; }
+.timeline-scale-controls { display: flex; align-items: center; gap: 12px; margin-left: auto; }
+.timeline-scale-controls > span, .timeline-filter-label { color: var(--ink-faint); font-size: 12px; white-space: nowrap; }
+.timeline-time-filter { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.timeline-time-filter label { display: flex; align-items: center; gap: 6px; border: 1px solid var(--border); border-radius: 7px; background: #fff; padding: 5px 8px; }
+.timeline-time-filter label > span { color: #64748b; font-size: 10px; white-space: nowrap; }
+.timeline-time-filter input { border: 0; background: transparent; width: 114px; min-width: 0; padding: 0; color: #334155; font: inherit; font-size: 12px; }
+.timeline-time-filter label:focus-within { outline: 2px solid #6366f1; outline-offset: 1px; }
+.timeline-date-separator { color: #94a3b8; }
+.timeline-time-filter button { padding: 6px 10px; min-height: 32px; border: 1px solid var(--border); border-radius: 7px; font: inherit; font-size: 12px; cursor: pointer; white-space: nowrap; }
+.timeline-filter-apply { color: #fff; background: #334155; }
+.timeline-filter-reset { color: #64748b; background: #fff; }
+.timeline-filter-error { margin: 8px 18px; color: #b42318; font-size: 12px; }
+@media (max-width: 600px) {
+  .timeline-time-filter { gap: 6px; }
+  .timeline-filter-label { flex-basis: 100%; }
+  .timeline-time-filter label { padding: 5px; gap: 4px; }
+  .timeline-time-filter label > span { font-size: 9px; }
+  .timeline-time-filter input { width: 104px; font-size: 11px; }
+  .timeline-date-separator { display: none; }
+}
+.mt-period-cell { container-type: inline-size; }
+@container (min-width: 100px) {
+  .mt-period-title { font-size: 12px; }
+  .mt-period-subcells > span, .timeline-scale-month .mt-period-subcells > span { font-size: 10px; letter-spacing: normal; }
+}
