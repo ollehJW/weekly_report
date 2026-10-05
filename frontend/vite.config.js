@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import path from "node:path";
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
@@ -7,7 +9,7 @@ import react from '@vitejs/plugin-react';
 const port = Number(process.env.FRONTEND_PORT || 9602);
 const target = process.env.BACKEND_ORIGIN || 'http://127.0.0.1:9601';
 
-const allowedHosts = ['axforwork.wia.co.kr'];
+const allowedHosts = ['axforwork.wia.co.kr', 'dev-axforwork.wia.co.kr'];
 
 const proxy = {
   '/api': {
@@ -16,8 +18,28 @@ const proxy = {
   },
 };
 
-export default defineConfig({
+function transportSecurity() {
+  const keyFile = process.env.WIAREPORT_TLS_KEY_FILE || path.resolve(__dirname, 'certs/dev-key.pem');
+  const certFile = process.env.WIAREPORT_TLS_CERT_FILE || path.resolve(__dirname, 'certs/dev-cert.pem');
+  if (!fs.existsSync(keyFile) || !fs.existsSync(certFile)) {
+    throw new Error('WiaReport requires TLS certificate and key files. Configure WIAREPORT_TLS_CERT_FILE and WIAREPORT_TLS_KEY_FILE.');
+  }
+  return {
+    key: fs.readFileSync(keyFile), cert: fs.readFileSync(certFile),
+    minVersion: 'TLSv1.2', maxVersion: 'TLSv1.3', honorCipherOrder: true,
+    ciphers: [
+      'TLS_AES_256_GCM_SHA384', 'TLS_CHACHA20_POLY1305_SHA256', 'TLS_AES_128_GCM_SHA256',
+      'ECDHE-RSA-AES256-GCM-SHA384', 'ECDHE-RSA-CHACHA20-POLY1305', 'ECDHE-RSA-AES128-GCM-SHA256',
+    ].join(':'),
+  };
+}
+
+export default defineConfig(({ command }) => {
+  // Missing TLS material must never silently enable plaintext HTTP.
+  const https = command === 'serve' ? transportSecurity() : undefined;
+  return {
   plugins: [react()],
-  server: { host: '0.0.0.0', port, proxy, allowedHosts },
-  preview: { host: '0.0.0.0', port, proxy, allowedHosts },
+  server: { host: '0.0.0.0', port, proxy, allowedHosts, https },
+  preview: { host: '0.0.0.0', port, proxy, allowedHosts, https },
+  };
 });

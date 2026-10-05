@@ -3,7 +3,7 @@ const {chromium} = require(process.env.WIAREPORT_PLAYWRIGHT_MODULE || '/home/jon
 (async()=>{
  const browser=await chromium.launch({headless:true,args:['--no-sandbox']});
  try {
-  const page=await browser.newPage(),errors=[];page.on('pageerror',e=>errors.push(e.message));
+  const page=await browser.newPage({ignoreHTTPSErrors: process.env.WIAREPORT_TEST_TLS_LOOPBACK === '1' && new URL(process.env.WIAREPORT_TEST_URL).hostname === '127.0.0.1'}),errors=[];page.on('pageerror',e=>errors.push(e.message));
   page.on('dialog',d=>d.accept());
   const url=process.env.WIAREPORT_TEST_URL || 'http://127.0.0.1:18103';
   const login=async(id,password)=>{

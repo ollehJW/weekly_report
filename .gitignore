@@ -24,3 +24,6 @@ presentation/
 *.pid
 backups/
 *.fpr
+
+# TLS private material is provisioned outside Git.
+frontend/certs/
