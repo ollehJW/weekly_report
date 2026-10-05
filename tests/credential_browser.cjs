@@ -74,6 +74,22 @@ const {chromium} = require(process.env.WIAREPORT_PLAYWRIGHT_MODULE || '/home/jon
   await page.getByRole('button',{name:'로그아웃',exact:true}).waitFor();
   assert.equal(await page.evaluate(()=>JSON.parse(localStorage.getItem('wiareport_team')).must_change_password),false);
   const regular=await page.evaluate(()=>JSON.parse(localStorage.getItem('wiareport_team')));
+  await page.evaluate(() => {
+    const saved=JSON.parse(localStorage.getItem('wiareport_team'));
+    localStorage.setItem('wiareport_team',JSON.stringify({...saved,account_role:'admin',login_id:'admin',team_id:'browser-admin'}));
+  });
+  await page.reload();
+  await page.getByRole('button',{name:'멤버 관리',exact:true}).waitFor();
+  assert.equal(await page.getByRole('button',{name:'계정 관리',exact:true}).count(),0);
+  assert.equal(await page.getByRole('button',{name:'운영 현황',exact:true}).count(),0);
+  const restored=await page.evaluate(()=>JSON.parse(localStorage.getItem('wiareport_team')));
+  assert.equal(restored.account_role,'user');
+  assert.equal(restored.team_id,regular.team_id);
+  assert.equal(restored.login_id,regular.login_id);
+  assert.equal((await page.request.get(url+'/api/teams/browser-admin/users',{
+    headers:{Authorization:'Bearer '+regular.session_id,'X-Wia-Team':'browser-admin'}})).status(),403);
+  console.log('PASS: forged localStorage role/login/team restored from server; admin UI hidden; cross-team API denied');
+
   assert.equal((await page.request.get(url+'/api/admin/overview?period=7',{headers:{Authorization:'Bearer '+regular.session_id}})).status(),403);
   assert.equal((await page.request.delete(url+'/api/teams/browser-admin',{headers:{Authorization:'Bearer '+regular.session_id}})).status(),403);
   assert.equal((await page.request.get(url+'/api/teams',{headers:{Authorization:'Bearer '+regular.session_id}})).status(),403);

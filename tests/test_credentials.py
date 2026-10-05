@@ -156,6 +156,79 @@ class CredentialTests(unittest.TestCase):
             with m.get_conn() as conn:
                 self.assertIsNone(conn.execute('SELECT * FROM teams WHERE team_id=?', (b['team_id'],)).fetchone())
 
+    def test_identity_is_resolved_from_session_not_client_profile(self):
+        a = self.team()
+        session = self.activate(a)
+        headers = {'Authorization': 'Bearer ' + session['session_id']}
+        me = self.ok(self.client.get('/api/auth/me?account_role=admin&team_id=audit-admin', headers=headers))
+        self.assertEqual(me['team_id'], a['team_id'])
+        self.assertEqual(me['account_role'], 'user')
+        self.assertNotIn('password_hash', me)
+        self.assertEqual(self.client.get('/api/auth/me', headers={'Authorization': 'Bearer forged'}).status_code, 401)
+        for path in ('/api/auth/heartbeat', '/api/auth/logout'):
+            self.assertEqual(self.client.post(path, headers=headers, json={'session_id': self.admin['session_id']}).status_code, 403)
+        self.ok(self.client.get('/api/admin/overview'))
+
+    def test_business_apis_enforce_session_and_team_ownership(self):
+        a, b = self.team(), self.team('team-b')
+        own = self.activate(a)
+        member = self.member(b)
+        project = self.ok(self.client.post('/api/teams/'+b['team_id']+'/team-projects',
+            json={'project_name':'Private project', 'members':[{'user_id':member['user_id'],'role':'M'}]}),201)
+        report = self.ok(self.client.post('/api/teams/'+b['team_id']+'/reports',
+            json={'start_date':'2026-10-01','end_date':'2026-10-07'}),201)
+        milestone = self.ok(self.client.post('/api/projects/'+project['project_id']+'/milestones',
+            json={'title':'Private milestone','start_date':'2026-10-01','end_date':'2026-10-07'}),201)
+        headers = {'Authorization':'Bearer '+own['session_id']}
+        paths = ['/api/teams/'+b['team_id']+'/'+suffix for suffix in
+            ('users','events','parts','parts/members','team-projects','report-schedule','reports/active-list','timeline-projects')]
+        paths += ['/api/projects/'+project['project_id']+'/milestones',
+                  '/api/milestones/'+milestone['id'],
+                  '/api/reports/'+report['report_id']+'/users/'+member['user_id']+'/html-report',
+                  '/api/report-images/'+report['report_id']+'/test.png']
+        for path in paths:
+            self.assertEqual(self.client.get(path,headers={'Authorization':''}).status_code,401,path)
+            self.assertEqual(self.client.get(path,headers=headers).status_code,403,path)
+            self.assertEqual(self.client.get(path,headers={**headers,'X-Wia-Team':b['team_id']}).status_code,403,path)
+        self.assertEqual(self.client.delete('/api/users/'+member['user_id'],headers=headers).status_code,403)
+        self.assertEqual(self.client.put('/api/teams/'+b['team_id']+'/parts/settings',headers=headers,json={'enabled':True}).status_code,403)
+        self.assertEqual(self.ok(self.client.get('/api/milestones',headers=headers)),[])
+        self.ok(self.client.get('/api/teams/'+a['team_id']+'/users',headers=headers))
+        with m.get_conn() as conn:
+            self.assertIsNotNone(conn.execute('SELECT * FROM users WHERE user_id=?',(member['user_id'],)).fetchone())
+            self.assertFalse(conn.execute('SELECT parts_enabled FROM teams WHERE team_id=?',(b['team_id'],)).fetchone()[0])
+
+    def test_authenticated_images_preserve_own_team_access(self):
+        from unittest.mock import patch
+        a = self.team()
+        session = self.activate(a)
+        report = self.ok(self.client.post('/api/teams/'+a['team_id']+'/reports',
+            json={'start_date':'2026-10-01','end_date':'2026-10-07'}),201)
+        root = Path(self.tmp.name)/'images'
+        image = root/report['report_id']/'project'/'entry'/'sample.png'
+        image.parent.mkdir(parents=True)
+        image.write_bytes(b'\x89PNG\r\n\x1a\n')
+        path='/api/report-images/'+image.relative_to(root).as_posix()
+        with patch.object(m,'WORKSPACE_PATH',root):
+            self.assertEqual(self.client.get(path,headers={'Authorization':''}).status_code,401)
+            response=self.client.get(path,headers={'Authorization':'Bearer '+session['session_id']})
+            self.assertEqual(response.status_code,200)
+            self.assertEqual(response.content,image.read_bytes())
+            self.assertIsNone(m.workspace_image_path(report['report_id']+'/../other/sample.png'))
+            foreign=self.team('image-other')
+            other=self.ok(self.client.post('/api/teams/'+foreign['team_id']+'/reports',
+                json={'start_date':'2026-10-01','end_date':'2026-10-07'}),201)
+            other_image=root/other['report_id']/'sample.png'
+            other_image.parent.mkdir(parents=True)
+            other_image.write_bytes(image.read_bytes())
+            token=m.part_support.scope.set((a['team_id'],None,False))
+            try:
+                self.assertEqual(m.normalize_report_images([other_image.relative_to(root).as_posix()]),[])
+                self.assertEqual(m.normalize_report_images([image.relative_to(root).as_posix()]),[image.relative_to(root).as_posix()])
+            finally:
+                m.part_support.scope.reset(token)
+
+
     def test_team_activation_requires_change_and_consumes_temp(self):
         a=self.team();payload={'login_id':a['login_id'],'password':m.credential_security.INITIAL_PASSWORD}
         self.assertEqual(self.client.post('/api/auth/login',json=payload).status_code,428)

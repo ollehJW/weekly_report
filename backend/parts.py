@@ -83,8 +83,25 @@ def install(app, get_conn, public_team):
         try:
             if len(segments) >= 2 and segments[0] == "api":
                 with get_conn() as conn:
+                    actor = getattr(request.state, "actor", None)
+                    # Client team/role hints never establish the authenticated identity.
+                    if actor and actor['account_role'] != 'admin':
+                        hinted = request.headers.get('x-wia-team')
+                        if hinted and hinted != actor['team_id']:
+                            return JSONResponse({"detail": "다른 팀에 접근할 권한이 없습니다."}, status_code=403)
+                        owner = None
+                        if segments[1] == 'teams' and len(segments) >= 3:
+                            owner = segments[2]
+                        elif len(segments) >= 3:
+                            target = resource(conn, 'reports' if segments[1] == 'report-images' else segments[1], segments[2])
+                            if target:
+                                owner = target['team_id']
+                            elif segments[1] == 'report-images':
+                                return JSONResponse({"detail": "이미지를 찾을 수 없습니다."}, status_code=404)
+                        if owner and owner != actor['team_id']:
+                            return JSONResponse({"detail": "다른 팀에 접근할 권한이 없습니다."}, status_code=403)
                     row = None
-                    team_id = request.headers.get("x-wia-team") if segments[1] == "milestones" and len(segments) == 2 else None
+                    team_id = (actor['team_id'] if actor and actor['account_role'] != 'admin' else request.headers.get("x-wia-team")) if segments[1] == "milestones" and len(segments) == 2 else None
                     if segments[1] == "teams" and len(segments) >= 4 and segments[3] in (
                         "users", "events", "team-projects", "timeline-projects", "reports", "report-schedule"
                     ):

@@ -14,7 +14,7 @@ import sqlite3
 import uuid
 from zoneinfo import ZoneInfo
 
-from fastapi import FastAPI, HTTPException, Header
+from fastapi import FastAPI, HTTPException, Header, Request
 from fastapi.responses import FileResponse, JSONResponse
 from starlette.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
@@ -1231,11 +1231,13 @@ IMAGE_DATA_PREFIXES = {
 
 def workspace_image_path(image_id):
     image_id = str(image_id or "").strip()
-    if not image_id or image_id.startswith("data:"):
+    if not image_id or image_id.startswith("data:") or any(part in ('', '.', '..') for part in image_id.split('/')):
         return None
     root = WORKSPACE_PATH.resolve()
     candidate = (root / image_id).resolve()
     if candidate == root or root not in candidate.parents:
+        return None
+    if candidate.relative_to(root).parts[0] != image_id.split('/')[0]:
         return None
     return candidate
 
@@ -1249,7 +1251,10 @@ def normalize_report_images(values):
             continue
         path = workspace_image_path(image)
         if path and path.is_file():
-            images.append(image)
+            with get_conn() as conn:
+                report = conn.execute("SELECT team_id,part_id FROM reports WHERE report_id=?", (image.split('/')[0],)).fetchone()
+            if report and part_support.visible(report['team_id'], report['part_id']):
+                images.append(image)
     return images[:8]
 
 
@@ -2494,8 +2499,15 @@ def login(payload: LoginIn):
         return {**public_team(row), "session_id": session_id}
 
 
+@app.get("/api/auth/me")
+def current_identity(request: Request):
+    return {**request.state.actor, "session_id": request.headers['authorization'][7:].strip()}
+
+
 @app.post("/api/auth/heartbeat")
-def session_heartbeat(payload: SessionIn):
+def session_heartbeat(payload: SessionIn, request: Request):
+    if payload.session_id != request.headers["authorization"][7:].strip():
+        raise HTTPException(403, "다른 사용자의 세션은 변경할 수 없습니다.")
     now = datetime.utcnow().isoformat()
     with get_conn() as conn:
         cursor = conn.execute(
@@ -2506,7 +2518,9 @@ def session_heartbeat(payload: SessionIn):
 
 
 @app.post("/api/auth/logout")
-def logout(payload: SessionIn):
+def logout(payload: SessionIn, request: Request):
+    if payload.session_id != request.headers["authorization"][7:].strip():
+        raise HTTPException(403, "다른 사용자의 세션은 변경할 수 없습니다.")
     now = datetime.utcnow().isoformat()
     with get_conn() as conn:
         conn.execute(
@@ -3898,18 +3912,21 @@ def reset_member_password(user_id: str, authorization: str | None = Header(defau
         return member
 
 
-def require_admin_session(authorization):
+def require_request_session(authorization, admin_only=False):
     """Resolve the current session and role from server-side records on every request."""
     with get_conn() as conn:
-        credential_security.require_manager(conn, authorization, admin_only=True)
+        return public_team(credential_security.require_manager(conn, authorization, admin_only=admin_only))
 
 
 @app.middleware("http")
 async def credential_no_store(request, call_next):
-    # Guard the entire admin namespace, including future routes and slash variants.
-    if request.url.path == '/api/admin' or request.url.path.startswith('/api/admin/'):
+    # Only login and liveness are public; all business APIs resolve server identity.
+    path = request.url.path.rstrip('/')
+    if path.startswith('/api/') and path not in ('/api/auth/login', '/api/health'):
         try:
-            await run_in_threadpool(require_admin_session, request.headers.get('authorization'))
+            request.state.actor = await run_in_threadpool(
+                require_request_session, request.headers.get('authorization'),
+                path == '/api/admin' or path.startswith('/api/admin/'))
         except HTTPException as exc:
             response = JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
             response.headers['Cache-Control'] = 'no-store'

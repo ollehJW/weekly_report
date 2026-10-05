@@ -11,6 +11,30 @@ import { buildTimelineAxis } from './timelineAxis.mjs';
 // 기본값은 같은 출처(''). vite 가 /api 를 백엔드로 프록시한다(vite.config.js).
 // 백엔드를 다른 주소로 직접 호출해야 하면 VITE_API_BASE 로 절대주소를 넣는다.
 const API_BASE = import.meta.env.VITE_API_BASE ?? '';
+// Only server responses populate this identity. Stored profile fields are never trusted.
+let verifiedTeam = null;
+function storedSession() {
+  try { return JSON.parse(localStorage.getItem('wiareport_team') || 'null')?.session_id || ''; }
+  catch { return ''; }
+}
+
+
+function AuthenticatedImage({ src, alt, ...props }) {
+  const protectedImage = String(src || '').startsWith(API_BASE + '/api/report-images/');
+  const [loaded, setLoaded] = useState(null);
+  useEffect(() => {
+    if (!protectedImage) return;
+    let active = true, objectUrl;
+    const controller = new AbortController();
+    setLoaded(null);
+    fetch(src, { headers: { Authorization: `Bearer ${verifiedTeam?.session_id || ''}` }, signal: controller.signal })
+      .then((response) => { if (!response.ok) throw new Error('이미지를 불러올 수 없습니다.'); return response.blob(); })
+      .then((blob) => { if (active) { objectUrl = URL.createObjectURL(blob); setLoaded({ src, objectUrl }); } })
+      .catch(() => {});
+    return () => { active = false; controller.abort(); if (objectUrl) URL.revokeObjectURL(objectUrl); };
+  }, [src, protectedImage]);
+  return <img {...props} src={protectedImage ? (loaded?.src === src ? loaded.objectUrl : undefined) : src} alt={alt} />;
+}
 
 function reportImageSrc(value) {
   const image = String(value || "");
@@ -234,8 +258,9 @@ function accentFor(index) {
 async function request(path, options = {}) {
   let partHeaders = {};
   try {
-    const team = JSON.parse(localStorage.getItem('wiareport_team') || 'null');
-    if (team?.session_id) partHeaders.Authorization = `Bearer ${team.session_id}`;
+    const team = verifiedTeam;
+    const sessionId = team?.session_id || storedSession();
+    if (sessionId) partHeaders.Authorization = `Bearer ${sessionId}`;
     if (team?.team_id && !path.startsWith('/api/auth/')) {
       partHeaders = { ...partHeaders, 'X-Wia-Team': team.team_id, 'X-Wia-Part': localStorage.getItem('wiareport_part_' + team.team_id) || '' };
     }
@@ -278,16 +303,19 @@ function TeamWorkspace() {
   const [teams, setTeams] = useState([]);
   const [members, setMembers] = useState([]);
   const [teamProjects, setTeamProjects] = useState([]);
-  const [currentTeam, setCurrentTeam] = useState(() => {
-    const stored = localStorage.getItem('wiareport_team');
-    if (!stored) return null;
-    try {
-      const parsed = JSON.parse(stored);
-      return parsed?.team_id ? parsed : null;
-    } catch {
-      return null;
-    }
-  });
+  const [currentTeam, setCurrentTeam] = useState(null);
+  const [sessionReady, setSessionReady] = useState(false);
+  useEffect(() => {
+    let active = true;
+    verifiedTeam = null;
+    if (!storedSession()) { setSessionReady(true); return; }
+    request('/api/auth/me').then((team) => {
+      if (active) { verifiedTeam = team; setCurrentTeam(team); }
+    }).catch(() => {
+      if (active) { verifiedTeam = null; localStorage.removeItem('wiareport_team'); }
+    }).finally(() => { if (active) setSessionReady(true); });
+    return () => { active = false; };
+  }, []);
   const [partsConfig, setPartsConfig] = useState({ enabled: false, parts: [] });
   const selectedPartId = currentTeam?.team_id ? localStorage.getItem('wiareport_part_' + currentTeam.team_id) || '' : '';
   const selectedPart = partsConfig.enabled ? partsConfig.parts.find((part) => part.part_id === selectedPartId) : null;
@@ -371,6 +399,7 @@ function TeamWorkspace() {
   const [weeklyNeedsChange, setWeeklyNeedsChange] = useState(false);
   useEffect(() => {
     const expired = () => {
+      verifiedTeam = null;
       localStorage.removeItem('wiareport_team');
       setCurrentTeam(null);
       setError('로그인이 만료되었습니다. 다시 로그인하세요.');
@@ -383,7 +412,7 @@ function TeamWorkspace() {
   const selectedProject = projects.find((project) => project.id === selectedProjectId) || null;
   const weeklyReport = weeklyReports[0] || null;
   const selectedTeamProject = teamProjects.find((project) => project.project_id === selectedProjectId) || null;
-  const isAdminAccount = currentTeam?.account_role === 'admin' || currentTeam?.login_id === 'admin';
+  const isAdminAccount = currentTeam?.account_role === 'admin';
 
   // Keep the server-side session warm so 접속 중 reflects real presence.
   useEffect(() => {
@@ -543,9 +572,11 @@ function TeamWorkspace() {
   }, [selectedProjectId]);
 
   useEffect(() => {
+    if (!sessionReady) return;
+    verifiedTeam = currentTeam;
     if (currentTeam) localStorage.setItem('wiareport_team', JSON.stringify(currentTeam));
     else localStorage.removeItem('wiareport_team');
-  }, [currentTeam]);
+  }, [currentTeam, sessionReady]);
 
   useEffect(() => {
     if (!currentTeam?.team_id) return;
@@ -579,6 +610,7 @@ function TeamWorkspace() {
     setError('');
     try {
       const team = await request('/api/auth/login', { method: 'POST', body: JSON.stringify(payload) });
+      verifiedTeam = team;
       localStorage.setItem('wiareport_team', JSON.stringify(team));
       setCurrentTeam(team);
       setLoginDraft(emptyFormFields('login_id'));
@@ -603,6 +635,7 @@ function TeamWorkspace() {
         body: JSON.stringify({ session_id: sessionId }),
       }).catch(() => {});
     }
+    verifiedTeam = null;
     localStorage.removeItem('wiareport_team');
     setLoginNeedsChange(false);
     setCurrentTeam(null);
@@ -1235,6 +1268,7 @@ function TeamWorkspace() {
     setWeeklyDateCheckOn(false);
   }
 
+  if (!sessionReady) return <div className="empty">로그인 정보를 확인하고 있습니다.</div>;
   if (!currentTeam) {
     return (
       <>
@@ -2981,7 +3015,7 @@ function WeeklyReportPage({
               {detailEditor.images.length > 0 ? (
                 <div className="weekly-image-grid">
                   {detailEditor.images.map((image, index) => (
-                    <figure key={"detail-image-" + index}><img src={reportImageSrc(image)} alt={"첨부 이미지 " + (index + 1)} /><button type="button" onClick={() => setDetailEditor((prev) => ({ ...prev, images: prev.images.filter((_, imageIndex) => imageIndex !== index) }))} aria-label="이미지 삭제"><X size={13} /></button></figure>
+                    <figure key={"detail-image-" + index}><AuthenticatedImage src={reportImageSrc(image)} alt={"첨부 이미지 " + (index + 1)} /><button type="button" onClick={() => setDetailEditor((prev) => ({ ...prev, images: prev.images.filter((_, imageIndex) => imageIndex !== index) }))} aria-label="이미지 삭제"><X size={13} /></button></figure>
                   ))}
                 </div>
               ) : <div className="weekly-image-empty">첨부된 사진이 없습니다.</div>}
@@ -3903,7 +3937,7 @@ function ProjectProgressHistory({ project }) {
                         <div className="progress-history-images">
                           {item.images.map((image, imageIndex) => (
                             <button type="button" key={item.history_id + "-image-" + imageIndex} onClick={() => setHistoryImagePreview({ src: reportImageSrc(image), alt: item.log + " 첨부 이미지 " + (imageIndex + 1) })}>
-                              <img src={reportImageSrc(image)} alt={item.log + " 첨부 이미지 " + (imageIndex + 1)} />
+                              <AuthenticatedImage src={reportImageSrc(image)} alt={item.log + " 첨부 이미지 " + (imageIndex + 1)} />
                             </button>
                           ))}
                         </div>
@@ -3928,7 +3962,7 @@ function ProjectProgressHistory({ project }) {
         <div className="modal-backdrop progress-history-image-backdrop" role="presentation" onClick={(event) => { if (event.target === event.currentTarget) setHistoryImagePreview(null); }}>
           <div className="progress-history-image-modal" role="dialog" aria-modal="true" aria-label="Progress History 첨부 이미지 확대">
             <button type="button" onClick={() => setHistoryImagePreview(null)} aria-label="확대 이미지 닫기"><X size={18} /></button>
-            <img src={historyImagePreview.src} alt={historyImagePreview.alt} />
+            <AuthenticatedImage src={historyImagePreview.src} alt={historyImagePreview.alt} />
           </div>
         </div>
       )}
@@ -4183,7 +4217,7 @@ function importanceClass(value) {
                       <div className="progress-history-images">
                         {item.images.map((image, imageIndex) => (
                           <button type="button" key={item.issue_id + "-image-" + imageIndex} onClick={() => setIssueImagePreview({ src: reportImageSrc(image), alt: item.issue + " 첨부 이미지 " + (imageIndex + 1) })}>
-                            <img src={reportImageSrc(image)} alt={item.issue + " 첨부 이미지 " + (imageIndex + 1)} />
+                            <AuthenticatedImage src={reportImageSrc(image)} alt={item.issue + " 첨부 이미지 " + (imageIndex + 1)} />
                           </button>
                         ))}
                       </div>
@@ -4318,7 +4352,7 @@ function importanceClass(value) {
         <div className="modal-backdrop progress-history-image-backdrop" role="presentation" onClick={(event) => { if (event.target === event.currentTarget) setIssueImagePreview(null); }}>
           <div className="progress-history-image-modal" role="dialog" aria-modal="true" aria-label="Issue & Risk 첨부 이미지 확대">
             <button type="button" onClick={() => setIssueImagePreview(null)} aria-label="확대 이미지 닫기"><X size={18} /></button>
-            <img src={issueImagePreview.src} alt={issueImagePreview.alt} />
+            <AuthenticatedImage src={issueImagePreview.src} alt={issueImagePreview.alt} />
           </div>
         </div>
       )}
