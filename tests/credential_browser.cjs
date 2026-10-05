@@ -12,7 +12,15 @@ const {chromium} = require(process.env.WIAREPORT_PLAYWRIGHT_MODULE || '/home/jon
    await page.getByRole('button',{name:'로그인',exact:true}).click();
   };
   const adminPassword='Browser-admin-test!2026',newPassword='Browser-new-password!2026';
-  await page.goto(url);await login('browser-admin',adminPassword);
+  const directoryCalls=[];
+  page.on('request',r=>{if(new URL(r.url()).pathname==='/api/teams' && r.method()==='GET')directoryCalls.push(r);});
+  await page.goto(url);await page.getByRole('button',{name:'로그인',exact:true}).waitFor();
+  await page.waitForTimeout(400);
+  assert.equal(directoryCalls.length,0,'Login page must not request the team directory');
+  assert.equal(await page.getByText('첫 팀 계정 생성',{exact:true}).count(),0);
+  assert.equal((await page.request.get(url+'/api/teams')).status(),401);
+  await login('browser-admin',adminPassword);
+
   await page.getByRole('button',{name:'계정 관리',exact:true}).click();
   await page.getByText('팀 계정은 지정된 초기 비밀번호로 생성되며, 최초 로그인 시 변경해야 합니다',{exact:true}).waitFor();
   await page.getByPlaceholder('소속',{exact:true}).fill('브라우저 검증');
@@ -21,6 +29,10 @@ const {chromium} = require(process.env.WIAREPORT_PLAYWRIGHT_MODULE || '/home/jon
   await page.getByRole('button',{name:'계정 부여',exact:true}).click();
   const team=await (await created).json();assert.equal('temporary_password' in team,false);
   await page.locator('.account-row').filter({hasText:'browser-created'}).waitFor();
+  assert(directoryCalls.length>0,'Admin must load the team directory after login');
+  await page.reload();
+  await page.locator('.account-row').filter({hasText:'browser-created'}).waitFor();
+
   assert.equal(await page.getByRole('dialog',{name:'임시 비밀번호 발급'}).count(),0);
   await page.getByRole('button',{name:'로그아웃',exact:true}).click();
   await login('browser-created','wrong-password');
@@ -44,6 +56,9 @@ const {chromium} = require(process.env.WIAREPORT_PLAYWRIGHT_MODULE || '/home/jon
   await dialog.getByPlaceholder('새 비밀번호 확인',{exact:true}).press('Enter');await dialog.waitFor({state:'hidden'});
   await page.getByRole('button',{name:'로그아웃',exact:true}).waitFor();
   assert.equal(await page.evaluate(()=>JSON.parse(localStorage.getItem('wiareport_team')).must_change_password),false);
+  const regular=await page.evaluate(()=>JSON.parse(localStorage.getItem('wiareport_team')));
+  assert.equal((await page.request.get(url+'/api/teams',{headers:{Authorization:'Bearer '+regular.session_id}})).status(),403);
+
   await page.getByRole('button',{name:'로그아웃',exact:true}).click();await login('browser-created','wia1234!');
   await page.locator('.login-error').waitFor();assert.equal(await page.getByRole('dialog',{name:'비밀번호 변경'}).count(),0);
   await login('browser-created',newPassword);await page.getByRole('button',{name:'비밀번호 변경',exact:true}).click();

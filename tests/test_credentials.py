@@ -62,6 +62,33 @@ class CredentialTests(unittest.TestCase):
         denied=self.client.post('/api/teams',headers={'Authorization':'Bearer '+session['session_id']},json={'department':'x','login_id':'x'})
         self.assertEqual(denied.status_code,403)
 
+    def test_team_directory_requires_active_admin_session(self):
+        a = self.team()
+        session = self.activate(a)
+        for path in ('/api/teams', '/api/teams/', '/api/teams?probe=1'):
+            response = self.client.get(path, headers={'Authorization': ''}, follow_redirects=False)
+            self.assertEqual(response.status_code, 401)
+        for header in ('', 'Bearer invalid-session', 'Basic invalid', 'Bearer ' + a['team_id']):
+            response = self.client.get('/api/teams', headers={'Authorization': header})
+            self.assertEqual(response.status_code, 401)
+            self.assertEqual(response.headers['cache-control'], 'no-store')
+            self.assertNotIn(a['team_id'], response.text)
+            self.assertNotIn(a['login_id'], response.text)
+        response = self.client.get('/api/teams', headers={'Authorization': 'Bearer ' + session['session_id']})
+        self.assertEqual(response.status_code, 403)
+        rows = self.ok(self.client.get('/api/teams'))
+        self.assertTrue(any(row['team_id'] == a['team_id'] for row in rows))
+        fields = {'team_id', 'department', 'login_id', 'account_role', 'must_change_password', 'created_at'}
+        self.assertTrue(all(set(row) == fields for row in rows))
+        self.ok(self.client.post('/api/auth/logout', json={'session_id': self.admin['session_id']}))
+        self.assertEqual(self.client.get('/api/teams').status_code, 401)
+
+    def test_expired_admin_cannot_read_team_directory(self):
+        with m.get_conn() as conn:
+            conn.execute("UPDATE login_sessions SET login_at=? WHERE session_id=?",
+                         ((datetime.now(timezone.utc)-timedelta(hours=25)).isoformat(), self.admin['session_id']))
+        self.assertEqual(self.client.get('/api/teams').status_code, 401)
+
     def test_team_activation_requires_change_and_consumes_temp(self):
         a=self.team();payload={'login_id':a['login_id'],'password':m.credential_security.INITIAL_PASSWORD}
         self.assertEqual(self.client.post('/api/auth/login',json=payload).status_code,428)

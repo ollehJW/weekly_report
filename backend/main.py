@@ -2146,15 +2146,18 @@ def health():
 
 
 @app.get("/api/teams")
-def list_teams():
+@app.get("/api/teams/", include_in_schema=False)
+def list_teams(authorization: str | None = Header(default=None)):
     with get_conn() as conn:
+        credential_security.require_manager(conn, authorization, admin_only=True)
         rows = conn.execute(
             """
-            SELECT * FROM teams
+            SELECT team_id, department, login_id, account_role, must_change_password, created_at
+            FROM teams
             ORDER BY created_at DESC, department, login_id
             """
         ).fetchall()
-        return [public_team(row) for row in rows]
+        return [{**dict(row), "must_change_password": bool(row["must_change_password"])} for row in rows]
 
 
 @app.post("/api/teams", status_code=201)

@@ -444,6 +444,10 @@ function TeamWorkspace() {
   }
 
   async function loadTeams() {
+    if (!currentTeam?.session_id || !isAdminAccount) {
+      setTeams([]);
+      return;
+    }
     const list = await request('/api/teams');
     setTeams(list);
   }
@@ -510,7 +514,6 @@ function TeamWorkspace() {
     const id = await loadProjects(projectId, currentTeam?.team_id);
     await Promise.all([
       loadMilestones(id),
-      loadTeams(),
       currentTeam?.team_id ? loadMembers(currentTeam.team_id) : Promise.resolve(),
       currentTeam?.team_id ? loadTeamProjects(currentTeam.team_id) : Promise.resolve(),
       currentTeam?.team_id ? loadWeeklyReport(currentTeam.team_id) : Promise.resolve(),
@@ -523,6 +526,16 @@ function TeamWorkspace() {
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
   }, []);
+
+  useEffect(() => {
+    let active = true;
+    setTeams([]);
+    if (currentTeam?.session_id && isAdminAccount) {
+      request('/api/teams').then((list) => { if (active) setTeams(list); })
+        .catch((err) => { if (active) setError(err.message); });
+    }
+    return () => { active = false; };
+  }, [currentTeam?.session_id, isAdminAccount]);
 
   useEffect(() => {
     if (!selectedProjectId) return;
@@ -1230,10 +1243,6 @@ function TeamWorkspace() {
           loginDraft={loginDraft}
           setLoginDraft={setLoginDraft}
           onLogin={login}
-          teams={teams}
-          teamDraft={teamDraft}
-          setTeamDraft={setTeamDraft}
-          onCreateTeam={createTeam}
           error={loginNeedsChange ? '' : error}
           isLoggingIn={isLoggingIn}
         />
@@ -3157,7 +3166,7 @@ function ProjectMemberPanel({ project, teamProject }) {
   );
 }
 
-function LoginPage({ loginFormRef, loginDraft, setLoginDraft, onLogin, teams, teamDraft, setTeamDraft, onCreateTeam, error, isLoggingIn }) {
+function LoginPage({ loginFormRef, loginDraft, setLoginDraft, onLogin, error, isLoggingIn }) {
   return (
     <main className="login-shell">
       <section className="login-panel">
@@ -3187,17 +3196,7 @@ function LoginPage({ loginFormRef, loginDraft, setLoginDraft, onLogin, teams, te
           <button className="primary-btn login-submit" type="submit" disabled={isLoggingIn}><KeyRound size={15} />로그인</button>
           </form>
 
-          {teams.length === 0 && (
-            <div className="first-team-box">
-              <div>
-                <b>첫 팀 계정 생성</b>
-                <p>등록된 팀 계정이 없습니다. 초기 접속용 팀 계정을 먼저 부여하세요.</p>
-              </div>
-              <input placeholder="소속" value={teamDraft.department} onChange={(e) => setTeamDraft({ ...teamDraft, department: e.target.value })} />
-              <input placeholder="ID" value={teamDraft.login_id} onChange={(e) => setTeamDraft({ ...teamDraft, login_id: e.target.value })} onKeyDown={(e) => e.key === 'Enter' && onCreateTeam()} />
-              <button className="line-btn" type="button" onClick={onCreateTeam}>계정 부여</button>
-            </div>
-          )}
+          <p className="login-help">계정 발급은 관리자에게 문의하세요.</p>
         </div>
       </section>
     </main>
