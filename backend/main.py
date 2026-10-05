@@ -15,7 +15,8 @@ import uuid
 from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, HTTPException, Header
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
+from starlette.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from string import Template
@@ -2452,8 +2453,11 @@ def admin_overview(period: str = "7"):
 
 
 @app.delete("/api/teams/{team_id}", status_code=204)
-def delete_team(team_id: str):
+def delete_team(team_id: str, authorization: str | None = Header(default=None)):
     with get_conn() as conn:
+        actor = credential_security.require_manager(conn, authorization, admin_only=True)
+        if actor["team_id"] == team_id:
+            raise HTTPException(409, "현재 로그인한 계정은 제거할 수 없습니다.")
         row = conn.execute("SELECT * FROM teams WHERE team_id = ?", (team_id,)).fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Team not found")
@@ -3894,8 +3898,22 @@ def reset_member_password(user_id: str, authorization: str | None = Header(defau
         return member
 
 
+def require_admin_session(authorization):
+    """Resolve the current session and role from server-side records on every request."""
+    with get_conn() as conn:
+        credential_security.require_manager(conn, authorization, admin_only=True)
+
+
 @app.middleware("http")
 async def credential_no_store(request, call_next):
+    # Guard the entire admin namespace, including future routes and slash variants.
+    if request.url.path == '/api/admin' or request.url.path.startswith('/api/admin/'):
+        try:
+            await run_in_threadpool(require_admin_session, request.headers.get('authorization'))
+        except HTTPException as exc:
+            response = JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+            response.headers['Cache-Control'] = 'no-store'
+            return response
     response = await call_next(request)
     if request.url.path.startswith('/api/'):
         response.headers['Cache-Control'] = 'no-store'

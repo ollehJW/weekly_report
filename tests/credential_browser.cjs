@@ -19,10 +19,27 @@ const {chromium} = require(process.env.WIAREPORT_PLAYWRIGHT_MODULE || '/home/jon
   assert.equal(directoryCalls.length,0,'Login page must not request the team directory');
   assert.equal(await page.getByText('첫 팀 계정 생성',{exact:true}).count(),0);
   assert.equal((await page.request.get(url+'/api/teams')).status(),401);
+  assert.equal((await page.request.get(url+'/api/admin/overview?period=7')).status(),401);
   await login('browser-admin',adminPassword);
+  const overviewResponse=page.waitForResponse(r=>r.url().includes('/api/admin/overview?'));
+  await page.getByRole('button',{name:'운영 현황',exact:true}).click();
+  const overview=await overviewResponse;
+  assert.equal(overview.status(),200);
+  assert('summary' in await overview.json());
 
   await page.getByRole('button',{name:'계정 관리',exact:true}).click();
   await page.getByText('팀 계정은 지정된 초기 비밀번호로 생성되며, 최초 로그인 시 변경해야 합니다',{exact:true}).waitFor();
+  const adminSession=await page.evaluate(()=>JSON.parse(localStorage.getItem('wiareport_team')));
+  const removableResponse=await page.request.post(url+'/api/teams', {
+    headers:{Authorization:'Bearer '+adminSession.session_id},
+    data:{department:'QA removal',login_id:'browser-removable'}});
+  assert.equal(removableResponse.status(),201);
+  const removable=await removableResponse.json();
+  await page.reload();
+  const removed=page.waitForResponse(r=>r.url().endsWith('/api/teams/'+removable.team_id)&&r.request().method()==='DELETE');
+  await page.locator('.account-row').filter({hasText:'browser-removable'}).getByRole('button',{name:'제거',exact:true}).click();
+  assert.equal((await removed).status(),204);
+  await page.locator('.account-row').filter({hasText:'browser-removable'}).waitFor({state:'detached'});
   await page.getByPlaceholder('소속',{exact:true}).fill('브라우저 검증');
   await page.getByPlaceholder('ID',{exact:true}).fill('browser-created');
   const created=page.waitForResponse(r=>r.url().endsWith('/api/teams')&&r.request().method()==='POST');
@@ -57,6 +74,8 @@ const {chromium} = require(process.env.WIAREPORT_PLAYWRIGHT_MODULE || '/home/jon
   await page.getByRole('button',{name:'로그아웃',exact:true}).waitFor();
   assert.equal(await page.evaluate(()=>JSON.parse(localStorage.getItem('wiareport_team')).must_change_password),false);
   const regular=await page.evaluate(()=>JSON.parse(localStorage.getItem('wiareport_team')));
+  assert.equal((await page.request.get(url+'/api/admin/overview?period=7',{headers:{Authorization:'Bearer '+regular.session_id}})).status(),403);
+  assert.equal((await page.request.delete(url+'/api/teams/browser-admin',{headers:{Authorization:'Bearer '+regular.session_id}})).status(),403);
   assert.equal((await page.request.get(url+'/api/teams',{headers:{Authorization:'Bearer '+regular.session_id}})).status(),403);
 
   await page.getByRole('button',{name:'로그아웃',exact:true}).click();await login('browser-created','wia1234!');

@@ -89,6 +89,73 @@ class CredentialTests(unittest.TestCase):
                          ((datetime.now(timezone.utc)-timedelta(hours=25)).isoformat(), self.admin['session_id']))
         self.assertEqual(self.client.get('/api/teams').status_code, 401)
 
+    def test_admin_namespace_requires_active_admin_for_every_request(self):
+        team = self.team()
+        session = self.activate(team)
+        for path in ('/api/admin/overview?period=7', '/api/admin/overview?period=all',
+                     '/api/admin/overview/', '/api/admin', '/api/admin/future-route'):
+            for token, expected in (('', 401), ('Bearer invalid', 401),
+                                    ('Bearer ' + session['session_id'], 403)):
+                response = self.client.get(path, headers={'Authorization': token}, follow_redirects=False)
+                self.assertEqual(response.status_code, expected, path)
+                self.assertEqual(response.headers['cache-control'], 'no-store')
+                self.assertNotIn('team_members', response.text)
+                self.assertNotIn(team['team_id'], response.text)
+        for method in ('POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'):
+            response = self.client.request(method, '/api/admin/future-route',
+                headers={'Authorization': 'Bearer ' + session['session_id']})
+            self.assertEqual(response.status_code, 403, method)
+        # Client-supplied role hints cannot elevate the server-side account role.
+        response = self.client.get('/api/admin/overview?period=7&account_role=admin',
+            headers={'Authorization': 'Bearer ' + session['session_id'], 'X-Role': 'admin'})
+        self.assertEqual(response.status_code, 403)
+        for period in ('7', '30', 'all'):
+            data = self.ok(self.client.get('/api/admin/overview?period=' + period))
+            self.assertEqual(data['period'], period)
+            self.assertEqual(data['summary']['total_accounts'], 2)
+            self.assertIn('account_logins', data)
+        with m.get_conn() as conn:
+            conn.execute("UPDATE teams SET account_role='user' WHERE team_id='audit-admin'")
+        self.assertEqual(self.client.get('/api/admin/overview').status_code, 403)
+
+    def test_admin_namespace_rejects_expired_revoked_and_pending_sessions(self):
+        with m.get_conn() as conn:
+            conn.execute("UPDATE login_sessions SET login_at=? WHERE session_id=?",
+                ((datetime.now(timezone.utc)-timedelta(hours=25)).isoformat(), self.admin['session_id']))
+        self.assertEqual(self.client.get('/api/admin/overview').status_code, 401)
+        with m.get_conn() as conn:
+            conn.execute("UPDATE login_sessions SET login_at=?, ended_at='revoked' WHERE session_id=?",
+                (datetime.utcnow().isoformat(), self.admin['session_id']))
+        self.assertEqual(self.client.get('/api/admin/overview').status_code, 401)
+        with m.get_conn() as conn:
+            conn.execute("UPDATE login_sessions SET ended_at='' WHERE session_id=?", (self.admin['session_id'],))
+            conn.execute("UPDATE teams SET must_change_password=1 WHERE team_id='audit-admin'")
+        self.assertEqual(self.client.get('/api/admin/overview').status_code, 403)
+
+    def test_admin_account_operations_reject_non_admin_without_mutations(self):
+        from unittest.mock import patch
+        a, b = self.team(), self.team('team-b')
+        session = self.activate(a)
+        operations = [('GET', '/api/teams', None),
+            ('POST', '/api/teams', {'department': 'Audit', 'login_id': 'blocked-admin', 'account_role': 'admin'}),
+            ('PUT', '/api/teams/' + b['team_id'] + '/password/reset', None),
+            ('DELETE', '/api/teams/' + b['team_id'], None)]
+        with m.get_conn() as conn:
+            before = [tuple(row) for row in conn.execute('SELECT * FROM teams ORDER BY team_id')]
+        with patch.object(m.shutil, 'rmtree') as remove:
+            for method, path, payload in operations:
+                for token, expected in (('', 401), ('Bearer invalid', 401),
+                                        ('Bearer ' + session['session_id'], 403)):
+                    response = self.client.request(method, path, json=payload, headers={'Authorization': token})
+                    self.assertEqual(response.status_code, expected, (method, path))
+            remove.assert_not_called()
+            with m.get_conn() as conn:
+                self.assertEqual(before, [tuple(row) for row in conn.execute('SELECT * FROM teams ORDER BY team_id')])
+            self.assertEqual(self.client.delete('/api/teams/' + b['team_id']).status_code, 204)
+            self.assertEqual(self.client.delete('/api/teams/audit-admin').status_code, 409)
+            with m.get_conn() as conn:
+                self.assertIsNone(conn.execute('SELECT * FROM teams WHERE team_id=?', (b['team_id'],)).fetchone())
+
     def test_team_activation_requires_change_and_consumes_temp(self):
         a=self.team();payload={'login_id':a['login_id'],'password':m.credential_security.INITIAL_PASSWORD}
         self.assertEqual(self.client.post('/api/auth/login',json=payload).status_code,428)
