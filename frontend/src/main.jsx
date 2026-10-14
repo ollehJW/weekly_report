@@ -2179,11 +2179,13 @@ function WeeklyReportPage({
             <section className="weekly-report-section" key={weeklyReport.report_id}>
               <div className="weekly-report-head">
                 <div>
-                  <h2>{weeklyReport.start_date} ~ {weeklyReport.end_date}</h2>
+                  <div className="weekly-period-heading">
+                    <h2>{weeklyReport.start_date} ~ {weeklyReport.end_date}</h2>
+                    <button className="weekly-period-btn" type="button" aria-label={`${weeklyReport.start_date} ~ ${weeklyReport.end_date} 기간 수정`} onClick={() => openPeriodEditor(weeklyReport)}><Pencil size={13} aria-hidden="true" />기간 수정</button>
+                  </div>
                   <p>{weeklyCompletionText(reportMembers)}</p>
                 </div>
                 <div className="weekly-report-head-actions">
-                  <button className="weekly-period-btn" type="button" onClick={() => openPeriodEditor(weeklyReport)}><CalendarRange size={14} />기간 수정</button>
                   <button className="weekly-complete-btn" type="button" disabled={!canCompleteReport} title={canCompleteReport ? '보고를 완료합니다' : '모든 멤버가 작성 완료 또는 부재 상태여야 활성화됩니다'} onClick={() => onCompleteWeeklyReport(weeklyReport.report_id)}>완료</button>
                   <button className="weekly-delete-btn" type="button" onClick={() => setDeleteConfirmReport(weeklyReport)}>삭제</button>
                 </div>

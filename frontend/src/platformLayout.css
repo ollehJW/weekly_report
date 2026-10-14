@@ -54,3 +54,10 @@
 .report-portal-shell :is(.side-tab,.report-platform-return,.report-breadcrumb a,.report-all-projects input):focus-visible { outline:2px solid #83b4ff; outline-offset:3px; }
 
 .report-portal-shell .part-management,.report-portal-shell .report-project-management { display:flex; flex-direction:column; gap:18px; min-width:0; }
+
+/* Keep period editing beside the date it changes. */
+.report-portal-shell .weekly-period-heading { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:5px; }
+.report-portal-shell .weekly-period-heading h2 { margin:0; line-height:1.5; }
+.report-portal-shell .weekly-period-heading .weekly-period-btn { min-height:28px; padding:4px 7px; gap:5px; border:1px solid transparent; border-radius:6px; background:transparent; color:#697b94; font-size:12px; font-weight:500; line-height:18px; white-space:nowrap; transition:background .15s,color .15s; }
+.report-portal-shell .weekly-period-heading .weekly-period-btn:hover { background:#e8eef8; color:#245cb0; }
+.report-portal-shell .weekly-period-heading .weekly-period-btn:focus-visible { outline:2px solid #83b4ff; outline-offset:2px; }
