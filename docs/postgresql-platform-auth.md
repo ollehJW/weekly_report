@@ -41,3 +41,9 @@ WIAREPORT_DB_CONFIG=/data/wiareport/test-config.yaml WIAREPORT_DATA_DIR=/tmp/wia
 The suite refuses the live schema. It verifies actual platform-cookie resolution, legacy-token rejection, team isolation, project filtering, CRUD, report ownership, report export, part moves and CSRF. Temporary platform session tokens are removed by teardown. Earlier SQLite/team-password fixtures describe the retired authentication model and are superseded by this PostgreSQL integration suite.
 
 Rollback before accepting PostgreSQL writes: stop the new backend, restore the backed-up source/build and original runtime command using the preserved SQLite file. After new PostgreSQL writes, never switch back to the older SQLite snapshot without reconciling new data.
+
+## Requested cleanup and platform layout (2026-10-14)
+
+After migration, the 46 unmapped historical member records were removed at the user's request. Their 245 report-entry records, four project-entry records, one progress record and assignment links were archived first in `/data/wiareport/backups/unmapped-members-20261014.json` (private). Project records, event records, report periods and attachment files were retained. This is a post-migration cleanup; use the current PostgreSQL data when moving the service again.
+
+The desktop shell now follows WiaMeet: a 224px sidebar, top breadcrumb, upper-right platform return link and consistent white page headings. The Task Status controls occupy a separate single-row toolbar, verified at 1100, 1280, 1440 and 1920px widths.

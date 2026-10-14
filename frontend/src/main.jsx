@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { Plus, Trash2, AudioWaveform, User, ChevronRight, Pencil, Save, X, KeyRound, LogOut, Users, ClipboardList, GripVertical, HelpCircle, Check, FileText, Link2, ImagePlus, AlertTriangle, History, ExternalLink, CalendarClock, Clock, CalendarRange, Zap, Wifi } from 'lucide-react';
+import { LayoutDashboard, FolderKanban, Library, ChartNoAxesCombined, ArrowLeft, Plus, Trash2, AudioWaveform, User, ChevronRight, Pencil, Save, X, KeyRound, LogOut, Users, ClipboardList, GripVertical, HelpCircle, Check, FileText, Link2, ImagePlus, AlertTriangle, History, ExternalLink, CalendarClock, Clock, CalendarRange, Zap, Wifi } from 'lucide-react';
 import './styles.css';
+import './platformLayout.css';
 import Introduction from './Introduction.jsx';
 import { emptyFormFields } from './formFields.mjs';
 import PartManagement from './PartManagement.jsx';
@@ -1024,10 +1025,10 @@ function TeamWorkspace() {
   if (!currentTeam) return <div className="empty" role="status">{error || '통합 로그인으로 이동하고 있습니다.'}<button type="button" onClick={() => platformLogin()}>통합 로그인</button></div>;
 
   return (
-    <main className="app-shell">
+    <main className="app-shell report-portal-shell">
       <aside className="sidebar">
         <div className="brand">
-          <AudioWaveform size={22} />
+          <ChartNoAxesCombined size={26} />
           <div>
             <h1>WiaReport</h1>
           </div>
@@ -1035,14 +1036,14 @@ function TeamWorkspace() {
 
         <nav className="side-nav" aria-label="주요 메뉴">
           {!isAdminAccount && <>
-          <button className={`side-tab${activePage === 'team-status' ? ' active' : ''}`} type="button" onClick={() => setActivePage('team-status')}>팀 현황</button>
-          <button className={`side-tab${activePage === 'tasks' ? ' active' : ''}`} type="button" onClick={() => setActivePage('tasks')}>과제 현황</button>
-          <button className={`side-tab${activePage === 'weekly-report' ? ' active' : ''}`} type="button" onClick={() => setActivePage('weekly-report')}>주간 보고 작성</button>
-          <button className={`side-tab${activePage === 'weekly-lounge' ? ' active' : ''}`} type="button" onClick={() => setActivePage('weekly-lounge')}>주간 보고 라운지</button>
-          <button className={'side-tab' + (activePage === 'project-management' ? ' active' : '')} type="button" onClick={() => setActivePage('project-management')}>과제 관리</button>
-          <button className={'side-tab' + (activePage === 'part-management' ? ' active' : '')} type="button" onClick={() => setActivePage('part-management')}>파트 관리</button>
+          <button className={`side-tab${activePage === 'team-status' ? ' active' : ''}`} type="button" onClick={() => setActivePage('team-status')} aria-current={activePage === 'team-status' ? 'page' : undefined}><LayoutDashboard size={17} aria-hidden="true"/><span>팀 현황</span></button>
+          <button className={`side-tab${activePage === 'tasks' ? ' active' : ''}`} type="button" onClick={() => setActivePage('tasks')} aria-current={activePage === 'tasks' ? 'page' : undefined}><FolderKanban size={17} aria-hidden="true"/><span>과제 현황</span></button>
+          <button className={`side-tab${activePage === 'weekly-report' ? ' active' : ''}`} type="button" onClick={() => setActivePage('weekly-report')} aria-current={activePage === 'weekly-report' ? 'page' : undefined}><Pencil size={17} aria-hidden="true"/><span>주간 보고 작성</span></button>
+          <button className={`side-tab${activePage === 'weekly-lounge' ? ' active' : ''}`} type="button" onClick={() => setActivePage('weekly-lounge')} aria-current={activePage === 'weekly-lounge' ? 'page' : undefined}><Library size={17} aria-hidden="true"/><span>주간 보고 라운지</span></button>
+          <button className={'side-tab' + (activePage === 'project-management' ? ' active' : '')} type="button" onClick={() => setActivePage('project-management')} aria-current={activePage === 'project-management' ? 'page' : undefined}><ClipboardList size={17} aria-hidden="true"/><span>과제 관리</span></button>
+          <button className={'side-tab' + (activePage === 'part-management' ? ' active' : '')} type="button" onClick={() => setActivePage('part-management')} aria-current={activePage === 'part-management' ? 'page' : undefined}><Users size={17} aria-hidden="true"/><span>파트 관리</span></button>
           </>}
-          {isAdminAccount && <button className={`side-tab${activePage === 'admin-overview' ? ' active' : ''}`} type="button" onClick={() => setActivePage('admin-overview')}>운영 현황</button>}
+          {isAdminAccount && <button className={`side-tab${activePage === 'admin-overview' ? ' active' : ''}`} type="button" onClick={() => setActivePage('admin-overview')} aria-current={activePage === 'admin-overview' ? 'page' : undefined}><ChartNoAxesCombined size={17} aria-hidden="true"/><span>운영 현황</span></button>}
         </nav>
 
         {!isAdminAccount && partsConfig.enabled && <label className="side-part-select">
@@ -1065,14 +1066,19 @@ function TeamWorkspace() {
         <div className="side-user">
           <div className="avatar">{currentTeam.department.slice(0, 1)}</div>
           <div className="side-user-info">
-            <b>{currentTeam.department}</b>
-            <span>{currentTeam.full_name}</span>
+            <b>{currentTeam.full_name}</b>
+            <span>{currentTeam.department}</span>
           </div>
-          <a className="side-logout" href={PLATFORM_ORIGIN} title="AX for Works로 돌아가기"><ExternalLink size={16}/></a>
+
           <button className="side-logout" type="button" onClick={logout} aria-label="로그아웃"><LogOut size={16} /></button>
         </div>
       </aside>
 
+      <div className="report-main">
+        <header className="report-topbar">
+          <nav className="report-breadcrumb" aria-label="현재 위치"><a href={PLATFORM_ORIGIN + '/'}>AX for Works</a><ChevronRight size={13}/><a href={SERVICE_PREFIX + '/'}>WiaReport</a><ChevronRight size={13}/><strong aria-current="page">{{'team-status':'팀 현황',tasks:'과제 현황','weekly-report':'주간 보고 작성','weekly-lounge':'주간 보고 라운지','project-management':'과제 관리','part-management':'파트 관리','admin-overview':'운영 현황'}[activePage]}</strong></nav>
+          <a className="report-platform-return" href={PLATFORM_ORIGIN + '/'}><ArrowLeft size={15}/>AX for Works로 돌아가기</a>
+        </header>
       <section className="workspace">
         {error && <div className="error">{error}</div>}
         {!isAdminAccount && partsConfig.enabled && activePage !== 'part-management' && <header className="part-context"><div className="part-context-icon"><Users size={30} aria-hidden="true" /></div><div className="part-context-copy"><span className="part-context-eyebrow">{currentTeam.department} · 현재 파트</span><h1>{selectedPart?.name || '미지정'}</h1><p>멤버 · 과제 · 일정 · 주간보고</p></div></header>}
@@ -1088,14 +1094,12 @@ function TeamWorkspace() {
         )}
         {!isAdminAccount && activePage === 'tasks' && (
           <>
-            <div className="page-head">
-              <div>
-                <h1>과제 현황</h1>
-              </div>
+            <div className="report-task-heading">
+              <div className="page-head"><div><span className="report-eyebrow">PROJECT OVERVIEW</span><h1>과제 현황</h1><p>내가 참여한 과제의 진행 상황을 확인하고, 팀의 업무 흐름을 함께 살펴보세요.</p></div></div>
               <div className="project-toolbar" aria-label="과제 선택">
-                <label style={{display:'flex',alignItems:'center',gap:8,fontSize:14,whiteSpace:'nowrap'}}><input type="checkbox" checked={showAllProjects} onChange={e => setShowAllProjects(e.target.checked)} style={{width:16,height:16}}/>전체 과제 보기</label>
+                <label className="report-all-projects"><input type="checkbox" checked={showAllProjects} onChange={e => setShowAllProjects(e.target.checked)} style={{width:16,height:16}}/>전체 과제 보기</label>
                 <div className="project-toolbar-meta">
-                  <span>진행중 과제</span>
+                  <span>{showAllProjects ? '전체 과제' : '참여 과제'}</span>
                   <b>{projects.length}개</b>
                 </div>
                 <select id="project-select" className="project-select" value={selectedProjectId || ''} onChange={(e) => setSelectedProjectId(e.target.value || null)} aria-label="과제 선택">
@@ -1216,6 +1220,7 @@ function TeamWorkspace() {
 
       </section>
 
+      </div>
       {isUsageGuideOpen && <UsageGuideModal onClose={() => setIsUsageGuideOpen(false)} />}
     </main>
   );
@@ -1333,17 +1338,11 @@ function TeamStatusPage({ currentTeam, members, projects, teamProjects, weeklyRe
     <>
       <section className="team-status-hero" aria-label="팀 현황 환영 메시지">
         <div className="team-status-copy">
-          <span>WiaReport Team Workspace</span>
-          <h1>{currentTeam.department} 팀, WiaReport에 오신 것을 환영합니다.</h1>
-          <p>이곳에서 팀의 과제 흐름, 주간 보고 진행 상태, 구성원 기준 정보를 한 곳에서 확인합니다.</p>
+          <span className="report-eyebrow">WELCOME TO WIAREPORT</span>
+          <h1>{currentTeam.full_name}님, 환영합니다.</h1>
+          <p>팀의 과제와 일정을 한눈에 확인하고, 이번 주의 기록과 다음 계획을 함께 이어가세요.</p>
         </div>
-        <div className="team-status-identity">
-          <div className="team-status-avatar">{currentTeam.department.slice(0, 1)}</div>
-          <div>
-            <strong>{currentTeam.department}</strong>
-            <span>{currentTeam.full_name}</span>
-          </div>
-        </div>
+
       </section>
 
       <section className="team-status-grid" aria-label="팀 현황 요약">
@@ -2162,7 +2161,7 @@ function WeeklyReportPage({
     <>
       <div className="page-head">
         <div>
-          <h1>주간 보고 작성</h1>
+          <span className="report-eyebrow">WEEKLY REPORT</span><h1>주간 보고 작성</h1><p>한 주의 진행 업무와 이슈, 다음 계획을 내 보고에 정리하세요.</p>
         </div>
         <div className="weekly-page-actions">
           <button className="weekly-schedule-btn" type="button" onClick={() => setIsWeeklyScheduleModalOpen(true)}><CalendarClock size={16} />개설 스케쥴링</button>
@@ -2797,7 +2796,7 @@ function WeeklyReportLoungePage({ currentTeam }) {
     <>
       <div className="page-head">
         <div>
-          <h1>주간 보고 라운지</h1>
+          <span className="report-eyebrow">REPORT LOUNGE</span><h1>주간 보고 라운지</h1><p>팀이 쌓아 온 주간보고를 살펴보고, 지난 기록에서 다음 업무의 방향을 찾아보세요.</p>
         </div>
       </div>
       <section className="weekly-lounge-layout">
@@ -2889,7 +2888,7 @@ function ProjectMemberPanel({ project, teamProject }) {
 }
 
 function TeamManagementPage(props) {
-  return <section><div className="page-head"><div><h1>과제 관리</h1><p>{props.currentTeam.department} 팀의 과제와 참여 멤버를 관리합니다.</p></div></div><ProjectManagementBoard {...props}/></section>;
+  return <section className="report-project-management"><div className="page-head"><div><span className="report-eyebrow">PROJECT MANAGEMENT</span><h1>과제 관리</h1><p>{props.currentTeam.department} 팀의 과제와 참여 멤버를 관리합니다.</p></div></div><ProjectManagementBoard {...props}/></section>;
 }
 
 function ProjectManagementBoard({ onReorderProjects, members, teamProjects, teamProjectDraft, setTeamProjectDraft, isProjectModalOpen, setIsProjectModalOpen, editingTeamProjectId, setEditingTeamProjectId, onCreateTeamProject, onEditTeamProject, onUpdateTeamProjectStatus, onDeleteTeamProject }) {
@@ -3120,7 +3119,7 @@ function AdminOverviewPage({ overview, loading, period, setPeriod, onRefresh }) 
     <>
       <div className="page-head">
         <div>
-          <h1>운영 현황</h1>
+          <span className="report-eyebrow">SERVICE OVERVIEW</span><h1>운영 현황</h1>
           <p>
             팀별 업무와 서비스 활동 현황을 집계합니다
             {overview && ` · ${formatUtcStamp(overview.generated_at)} 기준`}

@@ -180,7 +180,7 @@ function PartAssignmentBoard({ teamId, request, onMembersChanged, config, onTogg
     </section>;
   }
   return <section className="part-management">
-    <div className="page-head"><h1>파트 관리</h1></div>
+    <div className="page-head"><div><span className="report-eyebrow">TEAM &amp; PARTS</span><h1>파트 관리</h1><p>우리 팀의 멤버와 과제를 파트로 나누고, 함께 일하는 구조를 정리하세요.</p></div></div>
     <div className="parts-setting">
       <div className="parts-setting-icon"><Users size={22} /></div>
       <div className="parts-setting-copy"><h2>팀이 여러 파트로 나뉘어 있나요?</h2><p>파트를 사용하면 멤버, 과제, 일정과 주간보고를 파트별로 관리할 수 있습니다.</p></div>

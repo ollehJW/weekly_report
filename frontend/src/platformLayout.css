@@ -1,0 +1,56 @@
+/* Desktop AX workspace shell, shared visual proportions with WiaMeet. */
+.report-portal-shell { --sidebar:224px; grid-template-columns:224px minmax(0,1fr); min-width:1100px; background:#f5f7fb; }
+.report-portal-shell > .sidebar { position:sticky; top:0; height:100vh; padding:32px 17px 18px; overflow-y:auto; background:linear-gradient(180deg,#0b2d8e,#062372); color:#edf3ff; }
+.report-portal-shell .brand { gap:10px; padding:0 10px 39px; min-height:auto; }
+.report-portal-shell .brand h1 { font-size:25px; font-weight:700; letter-spacing:-.7px; }
+.report-portal-shell .side-nav { gap:7px; }
+.report-portal-shell .side-tab { min-height:46px; gap:11px; padding:13px; border-radius:7px; color:#edf3ff; font-size:14px; font-weight:500; line-height:1.5; }
+.report-portal-shell .side-tab svg { flex-shrink:0; }
+.report-portal-shell .side-tab.active { background:#ffffff2b; font-weight:600; }
+.report-portal-shell .side-tab:hover { background:#ffffff14; }
+.report-portal-shell .side-tab.active:hover { background:#ffffff2b; }
+.report-portal-shell .side-help { margin-top:auto; margin-bottom:12px; color:#d3e0f7; }
+.report-portal-shell .side-user { margin-top:0; padding:19px 9px 0; gap:10px; border-top:1px solid #ffffff26; border-radius:0; background:transparent; }
+.report-portal-shell .avatar { width:32px; height:32px; border-radius:8px; background:#ffffff15; border:0; color:#fff; font-size:14px; font-weight:600; }
+.report-portal-shell .side-user-info b { font-size:13px; font-weight:600; line-height:1.5; }
+.report-portal-shell .side-user-info span,.report-portal-shell .side-logout { color:#d3e0f7; font-size:12px; }
+.report-main { min-width:0; }
+.report-topbar { height:67px; display:flex; align-items:center; justify-content:space-between; gap:20px; padding:0 39px; background:#fff; border-bottom:1px solid #e2e8f0; }
+.report-breadcrumb { display:flex; align-items:center; gap:15px; min-width:0; color:#465a73; font-size:13px; }
+.report-breadcrumb a { white-space:nowrap; color:inherit; text-decoration:none; }
+.report-breadcrumb a:hover { color:#23579d; text-decoration:underline; }
+.report-breadcrumb svg { flex-shrink:0; }
+.report-breadcrumb strong { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#344d6b; font-size:13px; font-weight:500; }
+.report-platform-return { display:inline-flex; align-items:center; gap:7px; flex-shrink:0; padding:8px 12px; border:1px solid #dce5ef; border-radius:4px; color:#58718f; background:#fff; font-size:12px; font-weight:500; text-decoration:none; white-space:nowrap; }
+.report-platform-return:hover { color:#00287a; background:#f3f7fc; border-color:#b9cde6; }
+.report-portal-shell .workspace { width:100%; max-width:1600px; margin:0 auto; padding:32px 39px 52px; gap:20px; }
+.report-portal-shell .page-head,.report-portal-shell .team-status-hero { display:flex; align-items:center; justify-content:space-between; gap:20px 28px; flex-wrap:wrap; min-height:146px; padding:28px 32px; border:1px solid #e2e8f0; border-radius:12px; background:#fff; color:#24364c; box-shadow:0 4px 16px #18325505; overflow:visible; }
+.report-portal-shell .page-head::after,.report-portal-shell .team-status-hero::after,.report-portal-shell .team-status-hero::before { display:none; }
+.report-portal-shell .page-head h1,.report-portal-shell .team-status-copy h1 { margin:0 0 10px; color:#22364f; font-size:28px; font-weight:700; line-height:1.35; letter-spacing:-.6px; }
+.report-portal-shell .page-head p,.report-portal-shell .team-status-copy p { margin:0; color:#52647b; font-size:13px; font-weight:400; line-height:1.8; }
+.report-portal-shell .report-eyebrow,.report-portal-shell .team-status-copy > .report-eyebrow { display:block; margin:0 0 9px; color:#315c91; font-size:11px; font-weight:700; line-height:1.5; letter-spacing:1.3px; }
+.report-portal-shell .weekly-page-actions,.report-portal-shell .ov-toolbar { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+.report-portal-shell .weekly-schedule-btn { color:#315c91; border:1px solid #dce5ef; background:#f5f8fc; }
+.report-portal-shell .weekly-open-btn { color:#fff; background:#28569d; border:1px solid #28569d; }
+.report-portal-shell .ov-period { background:#f5f8fc; border:1px solid #dce5ef; }
+.report-portal-shell .ov-period-btn { color:#52647b; }
+.report-portal-shell .ov-period-btn.active { color:#fff; background:#28569d; }
+.report-portal-shell .ov-refresh { color:#315c91; border-color:#dce5ef; background:#f5f8fc; }
+.report-task-heading { display:grid; gap:18px; }
+.report-portal-shell .project-toolbar { display:grid; grid-template-columns:max-content max-content minmax(220px,1fr); align-items:center; gap:20px; width:100%; min-width:0; padding:16px 20px; background:#fff; border:1px solid #e2e8f0; border-radius:10px; box-shadow:0 3px 12px #18325504; }
+.report-all-projects { display:inline-flex; align-items:center; gap:9px; white-space:nowrap; color:#344d6b; font-size:13px; font-weight:500; cursor:pointer; }
+.report-all-projects input { flex-shrink:0; margin:0; accent-color:#28569d; cursor:pointer; }
+.report-portal-shell .project-toolbar-meta { display:flex; align-items:center; gap:8px; min-width:0; padding-left:20px; border-left:1px solid #e2e8f0; white-space:nowrap; }
+.report-portal-shell .project-toolbar-meta span { color:#687c94; font-size:12px; font-weight:500; }
+.report-portal-shell .project-toolbar-meta b { padding:3px 8px; border-radius:6px; background:#edf3fb; color:#28569d; font-size:12px; font-weight:650; }
+.report-portal-shell .project-toolbar .project-select { width:100%; min-width:0; height:42px; border:1px solid #dbe4ef; border-radius:7px; padding:0 36px 0 14px; background-color:#f8fafd; color:#243c5a; font-size:13px; font-weight:500; text-overflow:ellipsis; }
+.report-portal-shell .project-toolbar .project-select:focus { outline:2px solid #83b4ff; outline-offset:2px; box-shadow:none; border-color:#83b4ff; }
+.report-portal-shell .part-context { min-height:0; padding:14px 20px; border-radius:10px; background:#edf3fb; border:1px solid #dce6f3; box-shadow:none; }
+.report-portal-shell .part-context-icon { width:36px; height:36px; }
+.report-portal-shell .part-context h1 { font-size:18px; }
+.report-portal-shell .part-context p { display:none; }
+.report-portal-shell .part-context::after { display:none; }
+.report-portal-shell .team-status-metric,.report-portal-shell .weekly-report-section,.report-portal-shell .project-member-panel { border-radius:10px; border-color:#e2e8f0; }
+.report-portal-shell :is(.side-tab,.report-platform-return,.report-breadcrumb a,.report-all-projects input):focus-visible { outline:2px solid #83b4ff; outline-offset:3px; }
+
+.report-portal-shell .part-management,.report-portal-shell .report-project-management { display:flex; flex-direction:column; gap:18px; min-width:0; }
