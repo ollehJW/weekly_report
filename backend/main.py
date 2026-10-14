@@ -10,7 +10,7 @@ import json
 import os
 import secrets
 import shutil
-import sqlite3
+import psycopg
 import uuid
 from zoneinfo import ZoneInfo
 
@@ -21,18 +21,17 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from string import Template
 from backend import parts as part_support
-from backend import credentials as credential_security
+from backend import platform_auth
+from backend.database import get_conn, actor, configuration
 
 
 BACKEND_DIR = Path(__file__).resolve().parent
 ROOT_DIR = BACKEND_DIR.parent
 
-# WIAREPORT_DATA_DIR 를 지정하면 app.db 와 workspace 가 그 밑으로 모인다. 미설정 시
-# 소스 트리 안의 기존 경로를 그대로 쓰므로 개발 환경은 설정 없이 동작한다.
+# WIAREPORT_DATA_DIR stores persistent report attachments. Database settings live in config.yaml.
 _DATA_DIR_ENV = os.getenv("WIAREPORT_DATA_DIR", "").strip()
 DATA_ROOT = Path(_DATA_DIR_ENV).expanduser() if _DATA_DIR_ENV else None
 
-DB_PATH = (DATA_ROOT / "app.db") if DATA_ROOT else ROOT_DIR / "app.db"
 WEEKLY_REPORT_TEMPLATE_PATH = BACKEND_DIR / "templates" / "weekly_report_static.html"
 PROJECT_REPORT_TEMPLATE_PATH = BACKEND_DIR / "templates" / "project_report_static.html"
 WORKSPACE_PATH = (DATA_ROOT / "workspace") if DATA_ROOT else BACKEND_DIR / "workspace"
@@ -49,42 +48,8 @@ WEEKLY_REPORT_SCHEDULE_WEEKDAY = DEFAULT_REPORT_SCHEDULE_WEEKDAY
 WEEKLY_REPORT_SCHEDULE_HOUR = 17
 
 
-def get_conn():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    conn.create_function("part_visible", 2, part_support.visible)
-    conn.execute("PRAGMA foreign_keys = ON")
-    return conn
-
-
 def row_to_dict(row):
     return dict(row) if row else None
-
-
-def has_column(conn, table, column):
-    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
-    return any(row["name"] == column for row in rows)
-
-
-def has_table(conn, table):
-    row = conn.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)).fetchone()
-    return row is not None
-
-
-def hash_password(password: str, salt: str | None = None) -> str:
-    salt = salt or secrets.token_hex(16)
-    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 120_000)
-    return f"pbkdf2_sha256${salt}${digest.hex()}"
-
-
-def verify_password(password: str, stored_hash: str) -> bool:
-    try:
-        algorithm, salt, digest = stored_hash.split("$", 2)
-    except ValueError:
-        return False
-    if algorithm != "pbkdf2_sha256":
-        return False
-    return secrets.compare_digest(hash_password(password, salt), stored_hash)
 
 
 def public_team(row):
@@ -112,417 +77,8 @@ def public_user(row):
 
 def init_db():
     with get_conn() as conn:
-        if has_table(conn, "milestones") and not has_column(conn, "milestones", "milestone_id"):
-            conn.execute("DROP TABLE IF EXISTS epics")
-            conn.execute("DROP TABLE IF EXISTS milestones")
-        if has_table(conn, "epics") and not has_column(conn, "epics", "epic_id"):
-            conn.execute("DROP TABLE IF EXISTS epics")
-        conn.execute("DROP TABLE IF EXISTS projects")
-
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS teams (
-                team_id TEXT PRIMARY KEY,
-                department TEXT NOT NULL,
-                login_id TEXT NOT NULL UNIQUE,
-                password_hash TEXT NOT NULL,
-                account_role TEXT NOT NULL DEFAULT 'user',
-                must_change_password INTEGER NOT NULL DEFAULT 1,
-                report_schedule_enabled INTEGER NOT NULL DEFAULT 1,
-                report_schedule_weekday INTEGER NOT NULL DEFAULT 4,
-                report_schedule_time TEXT NOT NULL DEFAULT '17:00',
-                report_schedule_interval_days INTEGER NOT NULL DEFAULT 7,
-                created_at TEXT NOT NULL
-            )
-            """
-        )
-        if not has_column(conn, "teams", "account_role"):
-            conn.execute("ALTER TABLE teams ADD COLUMN account_role TEXT NOT NULL DEFAULT 'user'")
-            conn.execute("UPDATE teams SET account_role = 'admin' WHERE login_id = ?", (ADMIN_LOGIN_ID,))
-        conn.execute(
-            "UPDATE teams SET account_role = 'admin' WHERE login_id = ?", (ADMIN_LOGIN_ID,)
-        )
-        if not has_column(conn, "teams", "report_schedule_enabled"):
-            conn.execute("ALTER TABLE teams ADD COLUMN report_schedule_enabled INTEGER NOT NULL DEFAULT 1")
-        if not has_column(conn, "teams", "report_schedule_weekday"):
-            conn.execute("ALTER TABLE teams ADD COLUMN report_schedule_weekday INTEGER NOT NULL DEFAULT 4")
-        if not has_column(conn, "teams", "report_schedule_time"):
-            conn.execute("ALTER TABLE teams ADD COLUMN report_schedule_time TEXT NOT NULL DEFAULT '17:00'")
-        if not has_column(conn, "teams", "report_schedule_interval_days"):
-            conn.execute("ALTER TABLE teams ADD COLUMN report_schedule_interval_days INTEGER NOT NULL DEFAULT 7")
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS login_sessions (
-                session_id TEXT PRIMARY KEY,
-                team_id TEXT NOT NULL,
-                login_at TEXT NOT NULL,
-                last_seen_at TEXT NOT NULL,
-                ended_at TEXT NOT NULL DEFAULT '',
-                FOREIGN KEY (team_id) REFERENCES teams(team_id) ON DELETE CASCADE
-            )
-            """
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_login_sessions_team ON login_sessions (team_id, login_at)"
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_login_sessions_active ON login_sessions (ended_at, last_seen_at)"
-        )
-        conn.execute("DROP TABLE IF EXISTS user_db")
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS users (
-                user_id TEXT PRIMARY KEY,
-                team_id TEXT NOT NULL,
-                name TEXT NOT NULL,
-                role TEXT NOT NULL,
-                password_hash TEXT NOT NULL,
-                must_change_password INTEGER NOT NULL DEFAULT 1,
-                sort_order INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL,
-                FOREIGN KEY (team_id) REFERENCES teams(team_id) ON DELETE CASCADE
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS project (
-                project_id TEXT PRIMARY KEY,
-                team_id TEXT NOT NULL,
-                project_name TEXT NOT NULL,
-                status TEXT NOT NULL DEFAULT 'in_progress',
-                created_at TEXT NOT NULL,
-                FOREIGN KEY (team_id) REFERENCES teams(team_id) ON DELETE CASCADE
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS milestones (
-                milestone_id TEXT PRIMARY KEY,
-                project_id TEXT NOT NULL,
-                title TEXT NOT NULL,
-                start_date TEXT NOT NULL,
-                end_date TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                FOREIGN KEY (project_id) REFERENCES project(project_id) ON DELETE CASCADE
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS epics (
-                epic_id TEXT PRIMARY KEY,
-                milestone_id TEXT NOT NULL,
-                title TEXT NOT NULL,
-                owner TEXT NOT NULL DEFAULT '',
-                status TEXT NOT NULL DEFAULT 'planned',
-                color TEXT NOT NULL DEFAULT '#0ea5b7',
-                start_date TEXT NOT NULL,
-                end_date TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                FOREIGN KEY (milestone_id) REFERENCES milestones(milestone_id) ON DELETE CASCADE
-            )
-            """
-        )
-        if not has_column(conn, "epics", "sort_order"):
-            conn.execute("ALTER TABLE epics ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0")
-            rows = conn.execute(
-                "SELECT epic_id, milestone_id FROM epics ORDER BY start_date, created_at, rowid"
-            ).fetchall()
-            positions = {}
-            for row in rows:
-                position = positions.get(row["milestone_id"], 0)
-                conn.execute("UPDATE epics SET sort_order = ? WHERE epic_id = ?", (position, row["epic_id"]))
-                positions[row["milestone_id"]] = position + 1
-
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS project_members (
-                project_id TEXT NOT NULL,
-                user_id TEXT NOT NULL,
-                role TEXT NOT NULL CHECK(role IN ('L', 'M')),
-                PRIMARY KEY (project_id, user_id),
-                FOREIGN KEY (project_id) REFERENCES project(project_id) ON DELETE CASCADE,
-                FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
-            )
-            """
-        )
-        team_event_member_links = []
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS team_events (
-                event_id TEXT PRIMARY KEY,
-                team_id TEXT NOT NULL,
-                title TEXT NOT NULL,
-                event_type TEXT NOT NULL DEFAULT 'team',
-                start_date TEXT NOT NULL,
-                end_date TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                FOREIGN KEY (team_id) REFERENCES teams(team_id) ON DELETE CASCADE
-            )
-            """
-        )
-        if has_column(conn, "team_events", "description"):
-            if has_table(conn, "team_event_members"):
-                team_event_member_links = conn.execute(
-                    "SELECT event_id, user_id FROM team_event_members"
-                ).fetchall()
-                conn.execute("DROP TABLE IF EXISTS team_event_members")
-            conn.execute("ALTER TABLE team_events RENAME TO team_events_legacy")
-            conn.execute(
-                """
-                CREATE TABLE team_events (
-                    event_id TEXT PRIMARY KEY,
-                    team_id TEXT NOT NULL,
-                    title TEXT NOT NULL,
-                    event_type TEXT NOT NULL DEFAULT 'team',
-                    start_date TEXT NOT NULL,
-                    end_date TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    FOREIGN KEY (team_id) REFERENCES teams(team_id) ON DELETE CASCADE
-                )
-                """
-            )
-            conn.execute(
-                """
-                INSERT INTO team_events (event_id, team_id, title, event_type, start_date, end_date, created_at)
-                SELECT event_id, team_id, title,
-                       CASE event_type WHEN 'personal' THEN 'vacation' ELSE event_type END,
-                       start_date, end_date, created_at
-                FROM team_events_legacy
-                """
-            )
-            conn.execute("DROP TABLE team_events_legacy")
-        if not has_column(conn, "team_events", "event_type"):
-            conn.execute("ALTER TABLE team_events ADD COLUMN event_type TEXT NOT NULL DEFAULT 'team'")
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS team_event_members (
-                event_id TEXT NOT NULL,
-                user_id TEXT NOT NULL,
-                PRIMARY KEY (event_id, user_id),
-                FOREIGN KEY (event_id) REFERENCES team_events(event_id) ON DELETE CASCADE,
-                FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
-            )
-            """
-        )
-        for link in team_event_member_links:
-            conn.execute(
-                "INSERT OR IGNORE INTO team_event_members (event_id, user_id) VALUES (?, ?)",
-                (link["event_id"], link["user_id"]),
-            )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS reports (
-                report_id TEXT PRIMARY KEY,
-                team_id TEXT NOT NULL,
-                start_date TEXT NOT NULL,
-                end_date TEXT NOT NULL,
-                status TEXT NOT NULL DEFAULT 'in_progress',
-                created_at TEXT NOT NULL,
-                FOREIGN KEY (team_id) REFERENCES teams(team_id) ON DELETE CASCADE
-            )
-            """
-        )
-        if not has_column(conn, "reports", "completed_at"):
-            conn.execute("ALTER TABLE reports ADD COLUMN completed_at TEXT")
-
-        if has_table(conn, "report_entries") and has_column(conn, "report_entries", "project_id"):
-            conn.execute("ALTER TABLE report_entries RENAME TO report_entries_legacy")
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS report_entries (
-                entry_id TEXT PRIMARY KEY,
-                report_id TEXT NOT NULL,
-                user_id TEXT NOT NULL,
-                status TEXT NOT NULL DEFAULT 'pending',
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL DEFAULT '',
-                UNIQUE(report_id, user_id),
-                FOREIGN KEY (report_id) REFERENCES reports(report_id) ON DELETE CASCADE,
-                FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS project_entry (
-                entry_id TEXT NOT NULL,
-                project_id TEXT NOT NULL,
-                is_excluded INTEGER NOT NULL DEFAULT 0,
-                progress_log TEXT NOT NULL DEFAULT '[]',
-                risk_issue TEXT NOT NULL DEFAULT '[]',
-                next_plan TEXT NOT NULL DEFAULT '[]',
-                updated_at TEXT NOT NULL DEFAULT '',
-                PRIMARY KEY (entry_id, project_id),
-                FOREIGN KEY (entry_id) REFERENCES report_entries(entry_id) ON DELETE CASCADE,
-                FOREIGN KEY (project_id) REFERENCES project(project_id) ON DELETE CASCADE
-            )
-            """
-        )
-
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS project_issue (
-                issue_id TEXT PRIMARY KEY,
-                project_id TEXT NOT NULL,
-                entry_id TEXT NOT NULL,
-                issue_index INTEGER NOT NULL,
-                status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open', 'resolved')),
-                issue TEXT NOT NULL DEFAULT '',
-                importance TEXT NOT NULL DEFAULT '중',
-                detail TEXT NOT NULL DEFAULT '',
-                images TEXT NOT NULL DEFAULT '[]',
-                confluence_url TEXT NOT NULL DEFAULT '',
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL DEFAULT '',
-                resolved_at TEXT NOT NULL DEFAULT '',
-                resolution_progress_ids TEXT NOT NULL DEFAULT '[]',
-                resolution_comment TEXT NOT NULL DEFAULT '',
-                UNIQUE(entry_id, project_id, issue_index),
-                FOREIGN KEY (entry_id) REFERENCES report_entries(entry_id) ON DELETE CASCADE,
-                FOREIGN KEY (project_id) REFERENCES project(project_id) ON DELETE CASCADE
-            )
-            """
-        )
-        if not has_column(conn, "project_issue", "resolution_progress_ids"):
-            conn.execute("ALTER TABLE project_issue ADD COLUMN resolution_progress_ids TEXT NOT NULL DEFAULT '[]'")
-        if not has_column(conn, "project_issue", "resolution_comment"):
-            conn.execute("ALTER TABLE project_issue ADD COLUMN resolution_comment TEXT NOT NULL DEFAULT ''")
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS project_progress (
-                progress_id TEXT PRIMARY KEY,
-                project_id TEXT NOT NULL,
-                entry_id TEXT NOT NULL,
-                progress_index INTEGER NOT NULL,
-                log TEXT NOT NULL DEFAULT '',
-                status TEXT NOT NULL DEFAULT 'done' CHECK(status IN ('done', 'in_progress')),
-                date TEXT NOT NULL DEFAULT '',
-                detail TEXT NOT NULL DEFAULT '',
-                images TEXT NOT NULL DEFAULT '[]',
-                confluence_url TEXT NOT NULL DEFAULT '',
-                is_history_hidden INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL DEFAULT '',
-                UNIQUE(entry_id, project_id, progress_index),
-                FOREIGN KEY (entry_id) REFERENCES report_entries(entry_id) ON DELETE CASCADE,
-                FOREIGN KEY (project_id) REFERENCES project(project_id) ON DELETE CASCADE
-            )
-            """
-        )
-        if not has_column(conn, "project_progress", "is_history_hidden"):
-            conn.execute("ALTER TABLE project_progress ADD COLUMN is_history_hidden INTEGER NOT NULL DEFAULT 0")
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS project_plan (
-                plan_id TEXT PRIMARY KEY,
-                project_id TEXT NOT NULL,
-                entry_id TEXT NOT NULL,
-                plan_index INTEGER NOT NULL,
-                plan TEXT NOT NULL DEFAULT '',
-                due TEXT NOT NULL DEFAULT '',
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL DEFAULT '',
-                UNIQUE(entry_id, project_id, plan_index),
-                FOREIGN KEY (entry_id) REFERENCES report_entries(entry_id) ON DELETE CASCADE,
-                FOREIGN KEY (project_id) REFERENCES project(project_id) ON DELETE CASCADE
-            )
-            """
-        )
-        if has_table(conn, "report_entries_legacy"):
-            legacy_rows = conn.execute(
-                """
-                SELECT * FROM report_entries_legacy
-                ORDER BY report_id, user_id, created_at
-                """
-            ).fetchall()
-            entry_ids = {}
-            for legacy in legacy_rows:
-                key = (legacy["report_id"], legacy["user_id"])
-                if key not in entry_ids:
-                    entry_id = str(uuid.uuid4())
-                    statuses = [row["status"] for row in legacy_rows if row["report_id"] == key[0] and row["user_id"] == key[1]]
-                    if statuses and all(status == "absent" for status in statuses):
-                        status = "absent"
-                    elif statuses and all(status in ("done", "excluded") for status in statuses):
-                        status = "done"
-                    elif any(status == "done" for status in statuses):
-                        status = "progress"
-                    else:
-                        status = "pending"
-                    conn.execute(
-                        """
-                        INSERT OR IGNORE INTO report_entries (entry_id, report_id, user_id, status, created_at, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?)
-                        """,
-                        (entry_id, key[0], key[1], status, legacy["created_at"], legacy["updated_at"] or legacy["created_at"]),
-                    )
-                    entry_ids[key] = entry_id
-                if legacy["project_id"]:
-                    conn.execute(
-                        """
-                        INSERT OR REPLACE INTO project_entry (entry_id, project_id, is_excluded, progress_log, risk_issue, next_plan, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            entry_ids[key],
-                            legacy["project_id"],
-                            1 if legacy["status"] == "excluded" else 0,
-                            legacy["progress_log"],
-                            legacy["risk_issue"],
-                            legacy["next_plan"],
-                            legacy["updated_at"] or legacy["created_at"],
-                        ),
-                    )
-            conn.execute("DROP TABLE report_entries_legacy")
-
-        if not has_column(conn, "project", "status"):
-            conn.execute("ALTER TABLE project ADD COLUMN status TEXT NOT NULL DEFAULT 'in_progress'")
-        if not has_column(conn, "project", "completed_at"):
-            conn.execute("ALTER TABLE project ADD COLUMN completed_at TEXT")
-
-        if not has_column(conn, "users", "sort_order"):
-            conn.execute("ALTER TABLE users ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0")
-            team_rows = conn.execute("SELECT team_id FROM teams").fetchall()
-            for team_row in team_rows:
-                user_rows = conn.execute(
-                    "SELECT user_id FROM users WHERE team_id = ? ORDER BY created_at ASC, name",
-                    (team_row["team_id"],),
-                ).fetchall()
-                for index, user_row in enumerate(user_rows):
-                    conn.execute(
-                        "UPDATE users SET sort_order = ? WHERE user_id = ?",
-                        (index, user_row["user_id"]),
-                    )
-        if not has_column(conn, "project_entry", "sort_order"):
-            conn.execute("ALTER TABLE project_entry ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0")
-            positions = {}
-            rows = conn.execute("SELECT pe.entry_id,pe.project_id FROM project_entry pe JOIN project p ON p.project_id=pe.project_id ORDER BY CASE WHEN p.project_name=? THEN 1 ELSE 0 END,p.created_at DESC,p.project_name,p.project_id", (OTHER_WORK_PROJECT_NAME,)).fetchall()
-            for row in rows:
-                index = positions.get(row["entry_id"], 0)
-                conn.execute("UPDATE project_entry SET sort_order=? WHERE entry_id=? AND project_id=?", (index, row["entry_id"], row["project_id"]))
-                positions[row["entry_id"]] = index + 1
-        part_support.init_parts(conn)
-        # Keep consumed schedule occurrences after a report is edited or deleted.
-        # part_key is non-null so SQLite enforces uniqueness for the team-wide scope too.
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS report_schedule_runs (
-                team_id TEXT NOT NULL REFERENCES teams(team_id) ON DELETE CASCADE,
-                part_key TEXT NOT NULL DEFAULT '',
-                start_date TEXT NOT NULL,
-                end_date TEXT NOT NULL,
-                report_id TEXT NOT NULL,
-                recorded_at TEXT NOT NULL,
-                PRIMARY KEY (team_id, part_key, start_date)
-            )
-        """)
-        backfill_project_tracking(conn)
-
-    with get_conn() as conn:
-        credential_security.init_schema(conn)
-
+        if not conn.execute("SELECT to_regclass(?) AS name", (configuration()["database"].get("schema","wiareport")+".report_entries",)).fetchone()['name']:
+            raise RuntimeError('Initialize WiaReport PostgreSQL schema before starting the service')
 
 
 def normalize_project_issue_item(item):
@@ -603,11 +159,10 @@ def sync_project_issues_for_entry(conn, entry_id, project_id, risk_issue, now=No
     )
 
 
-
 def normalize_project_progress_item(item):
     if isinstance(item, str):
         log = item.strip()
-        status = "done"
+        status = 'done'
         date_value = ""
         detail = ""
         images = []
@@ -842,7 +397,7 @@ def seconds_until_next_weekly_report_schedule(now_kst=None):
     now_kst = now_kst or datetime.now(KST)
     try:
         with get_conn() as conn:
-            teams = conn.execute("SELECT * FROM teams ORDER BY created_at ASC").fetchall()
+            teams = conn.execute("SELECT * FROM teams WHERE platform_team_id IS NOT NULL ORDER BY created_at ASC").fetchall()
             configs = list(teams) + list(conn.execute("SELECT p.* FROM parts p JOIN teams t ON t.team_id=p.team_id WHERE t.parts_enabled=1"))
             seconds = [seconds_until_next_report_schedule_for_team(team, now_kst) for team in configs]
             seconds = [value for value in seconds if value is not None]
@@ -923,48 +478,9 @@ class EpicIn(BaseModel):
     end_date: date
 
 
-class TeamIn(BaseModel):
-    department: str = Field(min_length=1, max_length=80)
-    login_id: str = Field(min_length=1, max_length=80)
-    account_role: str = Field(default="user", pattern="^(admin|user)$")
-
-
-class LoginIn(BaseModel):
-    login_id: str = Field(min_length=1, max_length=80)
-    password: str = Field(min_length=1, max_length=200)
-    new_password: str | None = Field(default=None, min_length=12, max_length=200)
-
-
-class SessionIn(BaseModel):
-    session_id: str = Field(min_length=1, max_length=80)
-
-
-class PasswordChangeIn(BaseModel):
-    team_id: str = Field(min_length=1)
-    current_password: str = Field(min_length=1, max_length=200)
-    new_password: str = Field(min_length=1, max_length=200)
-
-
-class MemberIn(BaseModel):
-    name: str = Field(min_length=1, max_length=80)
-    role: str = Field(pattern="^(L|CM|M)$")
-
-
-class MemberPasswordIn(BaseModel):
-    password: str = Field(min_length=1, max_length=200)
-
-
-class MemberRoleIn(BaseModel):
-    role: str = Field(pattern="^(L|CM|M)$")
-
-
 class ProjectOrderIn(BaseModel):
     project_ids: list[str]
     expected_ids: list[str]
-
-
-class MemberOrderIn(BaseModel):
-    user_ids: list[str] = Field(default_factory=list)
 
 
 class ProjectMemberIn(BaseModel):
@@ -1003,14 +519,9 @@ class ReportScheduleIn(BaseModel):
     interval_days: int = Field(ge=1, le=31)
 
 
-class ReportEntryAuthIn(BaseModel):
-    password: str = Field(min_length=1, max_length=200)
-    new_password: str | None = Field(default=None, min_length=12, max_length=200)
-
-
 class ProgressLogIn(BaseModel):
     log: str = ""
-    status: str = "done"
+    status: str = 'done'
     date: str = ""
     detail: str = ""
     images: list[str] = Field(default_factory=list)
@@ -1117,9 +628,9 @@ def project_with_members(conn, project_row):
     members = conn.execute(
         """
         SELECT pm.project_id, pm.user_id, pm.role AS project_role,
-               u.name, u.role AS member_role, u.must_change_password
+               u.name, u.role AS member_role, FALSE AS must_change_password
         FROM project_members pm
-        JOIN users u ON u.user_id = pm.user_id
+        JOIN members u ON u.user_id = pm.user_id
         WHERE pm.project_id = ?
         ORDER BY CASE pm.role WHEN 'L' THEN 0 ELSE 1 END, u.name
         """,
@@ -1145,7 +656,7 @@ def team_event_with_members(conn, event_row):
         """
         SELECT u.*
         FROM team_event_members tem
-        JOIN users u ON u.user_id = tem.user_id
+        JOIN members u ON u.user_id = tem.user_id
         WHERE tem.event_id = ?
         ORDER BY u.sort_order ASC, u.created_at ASC, u.name
         """,
@@ -1167,14 +678,14 @@ def public_weekly_project(row):
 
 def ensure_other_work_project(conn, team_id: str, user_id: str):
     now = datetime.utcnow().isoformat()
-    user = conn.execute("SELECT part_id FROM users WHERE user_id=? AND team_id=?", (user_id, team_id)).fetchone()
+    user = conn.execute("SELECT part_id FROM members WHERE user_id=? AND team_id=?", (user_id, team_id)).fetchone()
     if not user:
         raise HTTPException(404, "User not found")
     part_id = user["part_id"]
     project = conn.execute(
         """
         SELECT * FROM project
-        WHERE team_id = ? AND project_name = ? AND part_id IS ?
+        WHERE team_id = ? AND project_name = ? AND part_id IS NOT DISTINCT FROM ?
         LIMIT 1
         """,
         (team_id, OTHER_WORK_PROJECT_NAME, part_id),
@@ -1194,8 +705,8 @@ def ensure_other_work_project(conn, team_id: str, user_id: str):
         )
     conn.execute(
         """
-        INSERT OR IGNORE INTO project_members (project_id, user_id, role)
-        VALUES (?, ?, 'M')
+        INSERT INTO project_members (project_id, user_id, role)
+        VALUES (?, ?, 'M') ON CONFLICT DO NOTHING
         """,
         (project_id, user_id),
     )
@@ -1408,7 +919,7 @@ def report_date_sort_value(value):
 
 
 def report_progress_sort_value(row):
-    return (0 if row["status"] == "done" else 1, report_date_sort_value(row["date"]))
+    return (0 if row["status"] == 'done' else 1, report_date_sort_value(row["date"]))
 
 
 def render_report_block(title, body_html, class_name="block"):
@@ -1736,7 +1247,7 @@ def collect_project_report_items(members):
                 due = str(item.get("due") or "").strip()
             if plan or due:
                 plan_rows.append({"plan": plan, "due": due, "source": source})
-    progress_rows.sort(key=lambda row: (0 if row["status"] == "done" else 1, report_date_sort_value(row["date"]), row["source"], row["log"]))
+    progress_rows.sort(key=lambda row: (0 if row["status"] == 'done' else 1, report_date_sort_value(row["date"]), row["source"], row["log"]))
     risk_rows.sort(key=lambda row: (report_importance_sort_value(row["importance"]), row["source"], row["issue"]))
     plan_rows.sort(key=lambda row: (report_date_sort_value(row["due"]), row["source"], row["plan"]))
     return progress_rows, risk_rows, plan_rows
@@ -1836,7 +1347,7 @@ def recompute_report_entry_status(conn, entry_id: str):
     rows = conn.execute("SELECT * FROM project_entry WHERE entry_id = ?", (entry_id,)).fetchall()
     statuses = [project_entry_status(row) for row in rows]
     if statuses and all(status in ("done", "excluded") for status in statuses):
-        next_status = "done"
+        next_status = 'done'
     elif any(status in ("done", "excluded") for status in statuses):
         next_status = "progress"
     else:
@@ -1851,12 +1362,12 @@ def report_with_entries(conn, report_row):
     members = conn.execute(
         """
         SELECT u.user_id, u.name, u.role, re.entry_id, COALESCE(re.status, 'pending') AS report_status
-        FROM users u
+        FROM members u
         LEFT JOIN report_entries re ON re.user_id = u.user_id AND re.report_id = ?
-        WHERE u.team_id = ? AND u.role != 'L' AND (u.part_id IS ? OR re.entry_id IS NOT NULL OR (? IS NULL AND (SELECT parts_enabled FROM teams WHERE team_id=u.team_id)=0))
+        WHERE u.team_id = ? AND ((u.is_active=1 AND ? = 'in_progress') OR re.entry_id IS NOT NULL) AND (u.part_id IS NOT DISTINCT FROM ? OR re.entry_id IS NOT NULL OR (CAST(? AS TEXT) IS NULL AND (SELECT parts_enabled FROM teams WHERE team_id=u.team_id)=0))
         ORDER BY u.sort_order ASC, u.created_at ASC, u.name
         """,
-        (report_row["report_id"], report_row["team_id"], report_row["part_id"], report_row["part_id"]),
+        (report_row["report_id"], report_row["team_id"], report_row["status"], report_row["part_id"], report_row["part_id"]),
     ).fetchall()
     entries = conn.execute(
         """
@@ -1866,7 +1377,7 @@ def report_with_entries(conn, report_row):
                pe.updated_at AS project_updated_at,
                u.name, u.role AS member_role, p.project_name
         FROM report_entries re
-        JOIN users u ON u.user_id = re.user_id
+        JOIN members u ON u.user_id = re.user_id
         JOIN project_entry pe ON pe.entry_id = re.entry_id
         JOIN project p ON p.project_id = pe.project_id
         WHERE re.report_id = ?
@@ -1916,7 +1427,7 @@ def create_weekly_report(conn, team_id: str, start_date: date, end_date: date, s
         existing = conn.execute(
             """
             SELECT * FROM reports
-            WHERE team_id = ? AND start_date = ? AND end_date = ? AND part_id IS ?
+            WHERE team_id = ? AND start_date = ? AND end_date = ? AND part_id IS NOT DISTINCT FROM ?
             ORDER BY created_at DESC
             LIMIT 1
             """,
@@ -1935,8 +1446,8 @@ def create_weekly_report(conn, team_id: str, start_date: date, end_date: date, s
     )
     users = conn.execute(
         """
-        SELECT user_id FROM users
-        WHERE team_id = ? AND role != 'L' AND (part_id IS ? OR ? = 0)
+        SELECT user_id FROM members
+        WHERE team_id = ? AND is_active=1 AND (part_id IS NOT DISTINCT FROM ? OR ? = 0)
         ORDER BY sort_order ASC, created_at ASC, name
         """,
         (team_id, part_id, int(bool(team["parts_enabled"]))),
@@ -1954,9 +1465,9 @@ def create_weekly_report(conn, team_id: str, start_date: date, end_date: date, s
 
 def remember_report_period(conn, report):
     conn.execute(
-        """INSERT OR IGNORE INTO report_schedule_runs
+        """INSERT INTO report_schedule_runs
            (team_id, part_key, start_date, end_date, report_id, recorded_at)
-           VALUES (?, ?, ?, ?, ?, ?)""",
+           VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING""",
         (report["team_id"], report["part_id"] or "", report["start_date"], report["end_date"],
          report["report_id"], datetime.utcnow().isoformat()),
     )
@@ -1967,8 +1478,8 @@ def create_due_weekly_reports(now_kst=None):
     created_reports = []
     created_periods = {}
     with get_conn() as conn:
-        conn.execute("BEGIN IMMEDIATE")
-        teams = conn.execute("SELECT * FROM teams ORDER BY created_at ASC").fetchall()
+        conn.execute("SELECT pg_advisory_xact_lock(hashtextextended('wiareport:write',0))")
+        teams = conn.execute("SELECT * FROM teams WHERE platform_team_id IS NOT NULL ORDER BY created_at ASC").fetchall()
         schedule_scopes = [(team, None) for team in teams]
         for team in teams:
             if team["parts_enabled"]:
@@ -1978,6 +1489,8 @@ def create_due_weekly_reports(now_kst=None):
             if not period:
                 continue
             start_date, end_date = period
+            workspace = conn.execute("SELECT * FROM teams WHERE team_id=?", (team["team_id"],)).fetchone()
+            platform_auth.sync_members(conn.conn, workspace)
             consumed = conn.execute(
                 "SELECT 1 FROM report_schedule_runs WHERE team_id=? AND part_key=? AND start_date=?",
                 (team["team_id"], part_id or "", str(start_date)),
@@ -2002,11 +1515,11 @@ def ensure_report_user_entries(conn, report_id: str, user_id: str):
         raise HTTPException(status_code=404, detail="Report not found")
     team = ensure_team(conn, report["team_id"])
     user = conn.execute(
-        "SELECT * FROM users WHERE user_id = ? AND team_id = ? AND "
-        "(part_id IS ? OR ? = 0 OR EXISTS (SELECT 1 FROM report_entries WHERE report_id=? AND user_id=users.user_id))",
+        "SELECT * FROM members WHERE user_id = ? AND team_id = ? AND "
+        "(part_id IS NOT DISTINCT FROM ? OR ? = 0 OR EXISTS (SELECT 1 FROM report_entries WHERE report_id=? AND user_id=members.user_id))",
         (user_id, report["team_id"], report["part_id"], int(bool(team["parts_enabled"])), report_id),
     ).fetchone()
-    if not user or user["role"] == "L":
+    if not user:
         raise HTTPException(status_code=404, detail="Report member not found")
     now = datetime.utcnow().isoformat()
     entry = conn.execute(
@@ -2027,10 +1540,10 @@ def ensure_report_user_entries(conn, report_id: str, user_id: str):
     ensure_other_work_project(conn, report["team_id"], user_id)
     projects = conn.execute(
         """
-        SELECT DISTINCT p.project_id, p.project_name
+        SELECT p.project_id, p.project_name
         FROM project p
         JOIN project_members pm ON pm.project_id = p.project_id
-        WHERE p.team_id = ? AND p.status = 'in_progress' AND pm.user_id = ? AND (p.part_id IS ? OR ? = 0)
+        WHERE p.team_id = ? AND p.status = 'in_progress' AND pm.user_id = ? AND (p.part_id IS NOT DISTINCT FROM ? OR ? = 0)
         ORDER BY CASE WHEN p.project_name = ? THEN 1 ELSE 0 END, p.created_at DESC, p.project_name
         """,
         (report["team_id"], user_id, user["part_id"], int(bool(team["parts_enabled"])), OTHER_WORK_PROJECT_NAME),
@@ -2054,7 +1567,7 @@ def ensure_report_user_entries(conn, report_id: str, user_id: str):
 def ensure_report_entry(conn, entry_id: str):
     row = conn.execute(
         """
-        SELECT re.*, r.team_id
+        SELECT re.*, r.team_id, r.status AS report_status
         FROM report_entries re
         JOIN reports r ON r.report_id = re.report_id
         WHERE re.entry_id = ?
@@ -2151,53 +1664,11 @@ def health():
     return {"status": "ok"}
 
 
-@app.get("/api/teams")
-@app.get("/api/teams/", include_in_schema=False)
-def list_teams(authorization: str | None = Header(default=None)):
+@app.get('/api/teams')
+def list_teams():
+    platform_auth.require_actor(admin_only=True)
     with get_conn() as conn:
-        credential_security.require_manager(conn, authorization, admin_only=True)
-        rows = conn.execute(
-            """
-            SELECT team_id, department, login_id, account_role, must_change_password, created_at
-            FROM teams
-            ORDER BY created_at DESC, department, login_id
-            """
-        ).fetchall()
-        return [{**dict(row), "must_change_password": bool(row["must_change_password"])} for row in rows]
-
-
-@app.post("/api/teams", status_code=201)
-def create_team(payload: TeamIn, authorization: str | None = Header(default=None)):
-    now = datetime.utcnow().isoformat()
-    team_id = str(uuid.uuid4())
-    login_id = payload.login_id.strip()
-    account_role = "admin" if login_id == ADMIN_LOGIN_ID else payload.account_role
-    with get_conn() as conn:
-        credential_security.require_manager(conn, authorization, admin_only=True)
-        if conn.execute("SELECT team_id FROM teams WHERE login_id=?", (login_id,)).fetchone():
-            raise HTTPException(409, "이미 사용 중인 ID입니다")
-        temporary_password, expires_at = credential_security.new_initial_password()
-        conn.execute(
-            "INSERT INTO teams (team_id, department, login_id, password_hash, account_role, must_change_password, password_expires_at, created_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?)",
-            (team_id, payload.department.strip(), login_id, hash_password(temporary_password), account_role, expires_at, now),
-        )
-        team = public_team(conn.execute("SELECT * FROM teams WHERE team_id=?", (team_id,)).fetchone())
-        return team
-
-
-@app.put("/api/teams/{team_id}/password/reset")
-def reset_team_password(team_id: str, authorization: str | None = Header(default=None)):
-    with get_conn() as conn:
-        actor = credential_security.require_manager(conn, authorization, admin_only=True)
-        if actor['team_id'] == team_id:
-            raise HTTPException(409, "현재 로그인한 계정은 비밀번호 변경 기능을 이용하세요.")
-        if not conn.execute("SELECT team_id FROM teams WHERE team_id=?", (team_id,)).fetchone():
-            raise HTTPException(404, "Team not found")
-        temporary_password, expires_at = credential_security.new_initial_password()
-        conn.execute("UPDATE teams SET password_hash=?, must_change_password=1, password_expires_at=? WHERE team_id=?", (hash_password(temporary_password), expires_at, team_id))
-        credential_security.close_team_sessions(conn, team_id)
-        team = public_team(conn.execute("SELECT * FROM teams WHERE team_id=?", (team_id,)).fetchone())
-        return team
+        return [dict(r) for r in conn.execute('SELECT team_id,department,platform_team_id FROM teams ORDER BY department')]
 
 
 def _period_cutoff(period: str) -> str | None:
@@ -2225,7 +1696,7 @@ def admin_overview(period: str = "7"):
         online_team_ids = {
             row["team_id"]
             for row in conn.execute(
-                "SELECT DISTINCT team_id FROM login_sessions WHERE ended_at = '' AND last_seen_at >= ?",
+                "SELECT DISTINCT team_id FROM user_activity WHERE last_seen_at >= CAST(? AS TIMESTAMPTZ)",
                 (online_cutoff,),
             ).fetchall()
         }
@@ -2270,14 +1741,14 @@ def admin_overview(period: str = "7"):
             }
             for row in conn.execute(
                 """
-                SELECT re.updated_at, re.status, t.department, t.login_id, u.name,
+                SELECT re.updated_at, re.status, t.department, t.department AS login_id, u.name,
                        r.start_date, r.end_date,
                        (
                            SELECT COUNT(*) FROM project_entry pe
                            WHERE pe.entry_id = re.entry_id AND pe.is_excluded = 0
                        ) AS project_count
                 FROM report_entries re
-                JOIN users u ON u.user_id = re.user_id
+                JOIN members u ON u.user_id = re.user_id
                 JOIN reports r ON r.report_id = re.report_id
                 JOIN teams t ON t.team_id = r.team_id
                 WHERE re.updated_at != '' AND re.status != 'absent' AND re.updated_at >= ?
@@ -2302,12 +1773,12 @@ def admin_overview(period: str = "7"):
             }
             for row in conn.execute(
                 """
-                SELECT t.team_id, t.department, t.login_id,
+                SELECT t.team_id, t.department, t.department AS login_id,
                        COUNT(u.user_id) AS total,
                        COALESCE(SUM(CASE WHEN u.created_at >= ? THEN 1 ELSE 0 END), 0) AS recent
                 FROM teams t
-                LEFT JOIN users u ON u.team_id = t.team_id
-                GROUP BY t.team_id, t.department, t.login_id
+                LEFT JOIN members u ON u.team_id = t.team_id
+                GROUP BY t.team_id, t.department, t.department
                 ORDER BY total DESC, t.department
                 """,
                 (since,),
@@ -2326,14 +1797,14 @@ def admin_overview(period: str = "7"):
             }
             for row in conn.execute(
                 """
-                SELECT t.team_id, t.department, t.login_id,
+                SELECT t.team_id, t.department, t.department AS login_id,
                        COUNT(p.project_id) AS total,
                        COALESCE(SUM(CASE WHEN p.status = 'in_progress' THEN 1 ELSE 0 END), 0) AS in_progress,
                        COALESCE(SUM(CASE WHEN p.status = 'done' THEN 1 ELSE 0 END), 0) AS done,
                        COALESCE(SUM(CASE WHEN p.created_at >= ? THEN 1 ELSE 0 END), 0) AS recent
                 FROM teams t
                 LEFT JOIN project p ON p.team_id = t.team_id
-                GROUP BY t.team_id, t.department, t.login_id
+                GROUP BY t.team_id, t.department, t.department
                 ORDER BY total DESC, t.department
                 """,
                 (since,),
@@ -2352,13 +1823,13 @@ def admin_overview(period: str = "7"):
             }
             for row in conn.execute(
                 """
-                SELECT t.team_id, t.department, t.login_id, t.account_role,
-                       COUNT(s.session_id) AS login_count,
-                       MAX(s.login_at) AS last_login_at
+                SELECT t.team_id, t.department, t.department AS login_id, 'user' AS account_role,
+                       COUNT(s.platform_user_id) AS login_count,
+                       MAX(s.last_seen_at)::text AS last_login_at
                 FROM teams t
-                LEFT JOIN login_sessions s
-                       ON s.team_id = t.team_id AND s.login_at >= ?
-                GROUP BY t.team_id, t.department, t.login_id, t.account_role
+                LEFT JOIN user_activity s
+                       ON s.team_id = t.team_id AND s.last_seen_at >= COALESCE(NULLIF(?,'')::timestamptz,'-infinity'::timestamptz)
+                GROUP BY t.team_id, t.department
                 ORDER BY login_count DESC, t.department
                 """,
                 (since,),
@@ -2376,14 +1847,14 @@ def admin_overview(period: str = "7"):
             }
             for row in conn.execute(
                 """
-                SELECT t.team_id, t.department, t.login_id,
+                SELECT t.team_id, t.department, t.department AS login_id,
                        COUNT(r.report_id) AS done_report_count,
                        MAX(r.created_at) AS last_completed_at,
                        (
-                           SELECT rr.start_date || " ~ " || rr.end_date
+                           SELECT rr.start_date || ' ~ ' || rr.end_date
                            FROM reports rr
                            WHERE rr.team_id = t.team_id
-                             AND rr.status = "done"
+                             AND rr.status = 'done'
                              AND EXISTS (SELECT 1 FROM report_entries e WHERE e.report_id = rr.report_id)
                            ORDER BY rr.created_at DESC, rr.start_date DESC
                            LIMIT 1
@@ -2391,9 +1862,9 @@ def admin_overview(period: str = "7"):
                 FROM teams t
                 LEFT JOIN reports r
                        ON r.team_id = t.team_id
-                      AND r.status = "done"
+                      AND r.status = 'done'
                       AND EXISTS (SELECT 1 FROM report_entries e WHERE e.report_id = r.report_id)
-                GROUP BY t.team_id, t.department, t.login_id
+                GROUP BY t.team_id, t.department, t.department
                 ORDER BY done_report_count DESC, t.department
                 """
             ).fetchall()
@@ -2409,13 +1880,13 @@ def admin_overview(period: str = "7"):
             }
             for row in conn.execute(
                 """
-                SELECT t.team_id, t.department, t.login_id,
+                SELECT t.team_id, t.department, t.department AS login_id,
                        COUNT(m.milestone_id) AS milestone_count
                 FROM teams t
                 LEFT JOIN project p ON p.team_id = t.team_id
                 LEFT JOIN milestones m
                        ON m.project_id = p.project_id AND m.created_at >= ?
-                GROUP BY t.team_id, t.department, t.login_id
+                GROUP BY t.team_id, t.department, t.department
                 ORDER BY milestone_count DESC, t.department
                 """,
                 (since,),
@@ -2431,11 +1902,11 @@ def admin_overview(period: str = "7"):
             }
             for row in conn.execute(
                 """
-                SELECT t.team_id, t.department, t.login_id,
+                SELECT t.team_id, t.department, t.department AS login_id,
                        COUNT(e.event_id) AS event_count
                 FROM teams t
                 LEFT JOIN team_events e ON e.team_id = t.team_id AND e.created_at >= ?
-                GROUP BY t.team_id, t.department, t.login_id
+                GROUP BY t.team_id, t.department, t.department
                 ORDER BY event_count DESC, t.department
                 """,
                 (since,),
@@ -2457,93 +1928,24 @@ def admin_overview(period: str = "7"):
     }
 
 
-@app.delete("/api/teams/{team_id}", status_code=204)
-def delete_team(team_id: str, authorization: str | None = Header(default=None)):
-    with get_conn() as conn:
-        actor = credential_security.require_manager(conn, authorization, admin_only=True)
-        if actor["team_id"] == team_id:
-            raise HTTPException(409, "현재 로그인한 계정은 제거할 수 없습니다.")
-        row = conn.execute("SELECT * FROM teams WHERE team_id = ?", (team_id,)).fetchone()
-        if not row:
-            raise HTTPException(status_code=404, detail="Team not found")
-        if row["login_id"] == ADMIN_LOGIN_ID:
-            raise HTTPException(status_code=422, detail="관리자 계정은 삭제할 수 없습니다")
-        report_ids = [
-            item["report_id"]
-            for item in conn.execute("SELECT report_id FROM reports WHERE team_id = ?", (team_id,)).fetchall()
-        ]
-        conn.execute("DELETE FROM teams WHERE team_id = ?", (team_id,))
-    for report_id in report_ids:
-        shutil.rmtree(WORKSPACE_PATH / report_id, ignore_errors=True)
-    return None
-
-
-@app.post("/api/auth/login")
-def login(payload: LoginIn):
-    with get_conn() as conn:
-        conn.execute("BEGIN IMMEDIATE")
-        row = conn.execute("SELECT * FROM teams WHERE login_id=?", (payload.login_id.strip(),)).fetchone()
-        if not row or not verify_password(payload.password, row["password_hash"]):
-            raise HTTPException(401, "ID 또는 비밀번호가 올바르지 않습니다. 임시 비밀번호는 관리자에게 초기화를 요청하세요.")
-        credential_security.check_temporary_password(row)
-        if row['must_change_password']:
-            if payload.new_password is None:
-                raise HTTPException(428, "임시 비밀번호가 확인되었습니다. 새 비밀번호를 설정하세요.")
-            credential_security.validate_new_password(payload.new_password, payload.password)
-            conn.execute("UPDATE teams SET password_hash=?, must_change_password=0, password_expires_at=NULL WHERE team_id=?", (hash_password(payload.new_password), row['team_id']))
-            credential_security.close_team_sessions(conn, row['team_id'])
-            row = conn.execute("SELECT * FROM teams WHERE team_id=?", (row['team_id'],)).fetchone()
-        now = datetime.utcnow().isoformat()
-        session_id = str(uuid.uuid4())
-        conn.execute("INSERT INTO login_sessions (session_id, team_id, login_at, last_seen_at, ended_at) VALUES (?, ?, ?, ?, '')", (session_id, row['team_id'], now, now))
-        return {**public_team(row), "session_id": session_id}
-
-
-@app.get("/api/auth/me")
+@app.get('/api/auth/me')
 def current_identity(request: Request):
-    return {**request.state.actor, "session_id": request.headers['authorization'][7:].strip()}
+    return request.state.actor
 
 
-@app.post("/api/auth/heartbeat")
-def session_heartbeat(payload: SessionIn, request: Request):
-    if payload.session_id != request.headers["authorization"][7:].strip():
-        raise HTTPException(403, "다른 사용자의 세션은 변경할 수 없습니다.")
-    now = datetime.utcnow().isoformat()
+@app.post('/api/auth/heartbeat')
+def session_heartbeat(request: Request):
+    return {'ok': True}
+
+
+@app.post('/api/auth/logout')
+def logout(request: Request):
+    token=request.cookies.get(platform_auth.COOKIE, '')
     with get_conn() as conn:
-        cursor = conn.execute(
-            "UPDATE login_sessions SET last_seen_at = ? WHERE session_id = ? AND ended_at = ''",
-            (now, payload.session_id),
-        )
-        return {"ok": cursor.rowcount > 0}
-
-
-@app.post("/api/auth/logout")
-def logout(payload: SessionIn, request: Request):
-    if payload.session_id != request.headers["authorization"][7:].strip():
-        raise HTTPException(403, "다른 사용자의 세션은 변경할 수 없습니다.")
-    now = datetime.utcnow().isoformat()
-    with get_conn() as conn:
-        conn.execute(
-            "UPDATE login_sessions SET ended_at = ?, last_seen_at = ? WHERE session_id = ? AND ended_at = ''",
-            (now, now, payload.session_id),
-        )
-    return {"ok": True}
-
-
-@app.post("/api/auth/change-password")
-def change_password(payload: PasswordChangeIn, authorization: str | None = Header(default=None)):
-    credential_security.validate_new_password(payload.new_password, payload.current_password)
-    with get_conn() as conn:
-        conn.execute("BEGIN IMMEDIATE")
-        actor = credential_security.require_manager(conn, authorization)
-        if actor['team_id'] != payload.team_id:
-            raise HTTPException(403, "본인 계정의 비밀번호만 변경할 수 있습니다.")
-        if not verify_password(payload.current_password, actor['password_hash']):
-            raise HTTPException(401, "현재 비밀번호가 올바르지 않습니다")
-        conn.execute("UPDATE teams SET password_hash=?, must_change_password=0, password_expires_at=NULL WHERE team_id=?", (hash_password(payload.new_password), payload.team_id))
-        session_id = authorization[7:].strip()
-        conn.execute("UPDATE login_sessions SET ended_at=? WHERE team_id=? AND session_id!=? AND ended_at=''", (datetime.utcnow().isoformat(), payload.team_id, session_id))
-        return public_team(conn.execute("SELECT * FROM teams WHERE team_id=?", (payload.team_id,)).fetchone())
+        conn.execute('DELETE FROM platform.sessions WHERE token_hash=?', (hashlib.sha256(token.encode()).hexdigest(),))
+    response=JSONResponse({'ok':True})
+    response.delete_cookie(platform_auth.COOKIE,path='/',secure=True,httponly=True,samesite='strict')
+    return response
 
 
 @app.get("/api/teams/{team_id}/users")
@@ -2552,73 +1954,13 @@ def list_team_users(team_id: str):
         ensure_team(conn, team_id)
         rows = conn.execute(
             """
-            SELECT * FROM users
-            WHERE team_id = ? AND part_visible(team_id, part_id)
+            SELECT * FROM members
+            WHERE team_id = ? AND is_active=1 AND part_visible(team_id, part_id)
             ORDER BY sort_order ASC, created_at ASC, name
             """,
             (team_id,),
         ).fetchall()
         return [public_user(row) for row in rows]
-
-
-@app.post("/api/teams/{team_id}/users", status_code=201)
-def create_team_user(team_id: str, payload: MemberIn, authorization: str | None = Header(default=None)):
-    now = datetime.utcnow().isoformat()
-    user_id = str(uuid.uuid4())
-    with get_conn() as conn:
-        credential_security.require_manager(conn, authorization, team_id=team_id)
-        temporary_password, expires_at = credential_security.new_initial_password()
-        ensure_team(conn, team_id)
-        next_order = conn.execute(
-            "SELECT COALESCE(MAX(sort_order) + 1, 0) AS next_order FROM users WHERE team_id = ?",
-            (team_id,),
-        ).fetchone()["next_order"]
-        cursor = conn.execute(
-            """
-            INSERT INTO users (user_id, team_id, name, role, password_hash, must_change_password, sort_order, created_at)
-            VALUES (?, ?, ?, ?, ?, 1, ?, ?)
-            """,
-            (
-                user_id,
-                team_id,
-                payload.name.strip(),
-                payload.role,
-                hash_password(temporary_password),
-                next_order,
-                now,
-            ),
-        )
-        conn.execute("UPDATE users SET part_id=? WHERE user_id=?", (part_support.selected_part(), user_id))
-        conn.execute("UPDATE users SET password_expires_at=? WHERE user_id=?", (expires_at, user_id))
-        row = conn.execute("SELECT * FROM users WHERE rowid = ?", (cursor.lastrowid,)).fetchone()
-        return public_user(row)
-
-
-@app.put("/api/teams/{team_id}/users/order")
-def reorder_team_users(team_id: str, payload: MemberOrderIn):
-    with get_conn() as conn:
-        ensure_team(conn, team_id)
-        rows = conn.execute(
-            "SELECT user_id FROM users WHERE team_id = ? AND part_visible(team_id, part_id) ORDER BY sort_order ASC, created_at ASC, name",
-            (team_id,),
-        ).fetchall()
-        existing_ids = [row["user_id"] for row in rows]
-        if len(payload.user_ids) != len(existing_ids) or set(payload.user_ids) != set(existing_ids):
-            raise HTTPException(status_code=422, detail="멤버 목록이 현재 팀 구성과 일치하지 않습니다")
-        for index, user_id in enumerate(payload.user_ids):
-            conn.execute(
-                "UPDATE users SET sort_order = ? WHERE team_id = ? AND part_visible(team_id, part_id) AND user_id = ?",
-                (index, team_id, user_id),
-            )
-        updated = conn.execute(
-            """
-            SELECT * FROM users
-            WHERE team_id = ? AND part_visible(team_id, part_id)
-            ORDER BY sort_order ASC, created_at ASC, name
-            """,
-            (team_id,),
-        ).fetchall()
-        return [public_user(row) for row in updated]
 
 
 @app.get("/api/teams/{team_id}/events")
@@ -2648,7 +1990,7 @@ def create_team_event(team_id: str, payload: TeamEventIn):
         ensure_team(conn, team_id)
         for user_id in member_ids:
             user = conn.execute(
-                "SELECT user_id FROM users WHERE user_id = ? AND team_id = ? AND part_visible(team_id, part_id)",
+                "SELECT user_id FROM members WHERE user_id = ? AND team_id = ? AND part_visible(team_id, part_id)",
                 (user_id, team_id),
             ).fetchone()
             if not user:
@@ -2674,7 +2016,7 @@ def create_team_event(team_id: str, payload: TeamEventIn):
                 (event_id, user_id),
             )
         conn.execute("UPDATE team_events SET part_id=? WHERE event_id=?", (part_support.selected_part(), event_id))
-        row = conn.execute("SELECT * FROM team_events WHERE rowid = ?", (cursor.lastrowid,)).fetchone()
+        row = conn.execute("SELECT * FROM team_events WHERE event_id = ?", (event_id,)).fetchone()
         return team_event_with_members(conn, row)
 
 
@@ -2690,7 +2032,7 @@ def update_team_event(event_id: str, payload: TeamEventIn):
             raise HTTPException(status_code=404, detail="Event not found")
         for user_id in member_ids:
             user = conn.execute(
-                "SELECT user_id FROM users WHERE user_id = ? AND team_id = ? AND part_visible(team_id, part_id)",
+                "SELECT user_id FROM members WHERE user_id = ? AND team_id = ? AND part_visible(team_id, part_id)",
                 (user_id, existing["team_id"]),
             ).fetchone()
             if not user:
@@ -2747,7 +2089,7 @@ def list_team_projects(team_id: str):
 @app.put("/api/teams/{team_id}/team-projects/order")
 def reorder_team_projects(team_id: str, payload: ProjectOrderIn):
     with get_conn() as conn:
-        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("SELECT pg_advisory_xact_lock(hashtextextended('wiareport:write',0))")
         ensure_team(conn, team_id)
         rows = conn.execute(
             "SELECT project_id FROM project WHERE team_id=? AND part_visible(team_id,part_id) AND project_name!=? "
@@ -2778,11 +2120,11 @@ def create_team_project(team_id: str, payload: TeamProjectIn):
             INSERT INTO project (project_id, team_id, project_name, status, created_at, completed_at)
             VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (project_id, team_id, payload.project_name.strip(), payload.status, now, now if payload.status == "done" else None),
+            (project_id, team_id, payload.project_name.strip(), payload.status, now, now if payload.status == 'done' else None),
         )
         for member in payload.members:
             user = conn.execute(
-                "SELECT user_id FROM users WHERE user_id = ? AND team_id = ? AND part_visible(team_id, part_id)",
+                "SELECT user_id FROM members WHERE user_id = ? AND team_id = ? AND part_visible(team_id, part_id)",
                 (member.user_id, team_id),
             ).fetchone()
             if not user:
@@ -2791,16 +2133,16 @@ def create_team_project(team_id: str, payload: TeamProjectIn):
                 "INSERT INTO project_members (project_id, user_id, role) VALUES (?, ?, ?)",
                 (project_id, member.user_id, member.role),
             )
-        conn.execute("UPDATE project SET part_id=?,sort_order=(SELECT COALESCE(MAX(sort_order)+1,0) FROM project WHERE team_id=? AND part_id IS ? AND project_id!=?) WHERE project_id=?",
+        conn.execute("UPDATE project SET part_id=?,sort_order=(SELECT COALESCE(MAX(sort_order)+1,0) FROM project WHERE team_id=? AND part_id IS NOT DISTINCT FROM ? AND project_id!=?) WHERE project_id=?",
                      (part_support.selected_part(), team_id, part_support.selected_part(), project_id, project_id))
-        row = conn.execute("SELECT * FROM project WHERE rowid = ?", (cursor.lastrowid,)).fetchone()
+        row = conn.execute("SELECT * FROM project WHERE project_id = ?", (project_id,)).fetchone()
         return project_with_members(conn, row)
 
 
 def project_completion_time(project, next_status: str):
-    if next_status != "done":
+    if next_status != 'done':
         return None
-    if project["status"] == "done":
+    if project["status"] == 'done':
         return project["completed_at"]
     return datetime.utcnow().isoformat()
 
@@ -2831,7 +2173,7 @@ def update_team_project(project_id: str, payload: TeamProjectIn):
         conn.execute("DELETE FROM project_members WHERE project_id = ?", (project_id,))
         for member in payload.members:
             user = conn.execute(
-                "SELECT user_id,part_visible(team_id,part_id) AS in_part FROM users WHERE user_id = ? AND team_id = ?",
+                "SELECT user_id,part_visible(team_id,part_id) AS in_part FROM members WHERE user_id = ? AND team_id = ?",
                 (member.user_id, project["team_id"]),
             ).fetchone()
             if not user or (not user["in_part"] and member.user_id not in existing_user_ids):
@@ -2854,7 +2196,7 @@ def set_team_project_members(project_id: str, payload: ProjectMembersIn):
         normalized = {}
         for member in payload.members:
             user = conn.execute(
-                "SELECT user_id,part_visible(team_id,part_id) AS in_part FROM users WHERE user_id = ? AND team_id = ?",
+                "SELECT user_id,part_visible(team_id,part_id) AS in_part FROM members WHERE user_id = ? AND team_id = ?",
                 (member.user_id, project["team_id"]),
             ).fetchone()
             if not user or (not user["in_part"] and member.user_id not in existing_user_ids):
@@ -2877,40 +2219,6 @@ def delete_team_project(project_id: str):
             raise HTTPException(status_code=404, detail="Project not found")
 
 
-@app.put("/api/users/{user_id}/role")
-def set_user_role(user_id: str, payload: MemberRoleIn):
-    with get_conn() as conn:
-        existing = conn.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)).fetchone()
-        if not existing:
-            raise HTTPException(status_code=404, detail="User not found")
-        conn.execute("UPDATE users SET role = ? WHERE user_id = ?", (payload.role, user_id))
-        row = conn.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)).fetchone()
-        return public_user(row)
-
-
-@app.put("/api/users/{user_id}/password")
-def set_user_password(user_id: str, payload: MemberPasswordIn, authorization: str | None = Header(default=None)):
-    credential_security.validate_new_password(payload.password)
-    with get_conn() as conn:
-        actor = credential_security.require_manager(conn, authorization)
-        existing = conn.execute("SELECT * FROM users WHERE user_id=?", (user_id,)).fetchone()
-        if not existing:
-            raise HTTPException(404, "User not found")
-        credential_security.require_manager(conn, authorization, team_id=existing['team_id'])
-        conn.execute("UPDATE users SET password_hash=?, must_change_password=0, password_expires_at=NULL WHERE user_id=?", (hash_password(payload.password), user_id))
-        return public_user(conn.execute("SELECT * FROM users WHERE user_id=?", (user_id,)).fetchone())
-
-
-@app.delete("/api/users/{user_id}", status_code=204)
-def delete_user(user_id: str):
-    with get_conn() as conn:
-        cursor = conn.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
-        if cursor.rowcount == 0:
-            raise HTTPException(status_code=404, detail="User not found")
-
-
-
-
 @app.get("/api/teams/{team_id}/reports/archive")
 def list_report_archive(team_id: str):
     with get_conn() as conn:
@@ -2927,7 +2235,7 @@ def list_report_archive(team_id: str):
 @app.put("/api/reports/{report_id}/reopen")
 def reopen_report(report_id: str):
     with get_conn() as conn:
-        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("SELECT pg_advisory_xact_lock(hashtextextended('wiareport:write',0))")
         report = conn.execute("SELECT * FROM reports WHERE report_id = ?", (report_id,)).fetchone()
         if not report:
             raise HTTPException(status_code=404, detail="Report not found")
@@ -2999,17 +2307,17 @@ def create_report(team_id: str, payload: ReportIn):
 def update_report_period(report_id: str, payload: ReportPeriodIn, authorization: str | None = Header(default=None)):
     ensure_range(payload.start_date, payload.end_date)
     with get_conn() as conn:
-        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("SELECT pg_advisory_xact_lock(hashtextextended('wiareport:write',0))")
         report = conn.execute("SELECT * FROM reports WHERE report_id=? AND part_visible(team_id, part_id)", (report_id,)).fetchone()
         if not report:
             raise HTTPException(404, "Report not found")
-        credential_security.require_manager(conn, authorization, team_id=report["team_id"])
+        platform_auth.require_actor(team_id=report["team_id"])
         if (report["start_date"], report["end_date"]) != (str(payload.expected_start_date), str(payload.expected_end_date)):
             raise HTTPException(409, "보고 기간이 변경되었습니다. 새로고침한 뒤 다시 수정해 주세요.")
         if (report["start_date"], report["end_date"]) == (str(payload.start_date), str(payload.end_date)):
             return report_with_entries(conn, report)
         duplicate = conn.execute(
-            "SELECT 1 FROM reports WHERE team_id=? AND part_id IS ? AND report_id!=? AND start_date=? AND end_date=?",
+            "SELECT 1 FROM reports WHERE team_id=? AND part_id IS NOT DISTINCT FROM ? AND report_id!=? AND start_date=? AND end_date=?",
             (report["team_id"], report["part_id"], report_id, str(payload.start_date), str(payload.end_date)),
         ).fetchone()
         if duplicate:
@@ -3072,7 +2380,7 @@ def complete_report(report_id: str):
             raise HTTPException(status_code=422, detail="완료할 보고 대상이 없습니다")
         if any(row["status"] not in ("done", "absent") for row in entries):
             raise HTTPException(status_code=422, detail="모든 멤버가 작성 완료 또는 부재 상태여야 완료할 수 있습니다")
-        completed_at = report["completed_at"] if report["status"] == "done" else datetime.utcnow().isoformat()
+        completed_at = report["completed_at"] if report["status"] == 'done' else datetime.utcnow().isoformat()
         conn.execute("UPDATE reports SET status = 'done', completed_at = ? WHERE report_id = ?", (completed_at, report_id))
         row = conn.execute("SELECT * FROM reports WHERE report_id = ?", (report_id,)).fetchone()
         return report_with_entries(conn, row)
@@ -3092,7 +2400,7 @@ def delete_report(report_id: str):
     if report_directory.is_symlink() or report_directory.resolve().parent != workspace_root:
         raise HTTPException(status_code=409, detail="Invalid report workspace")
     with get_conn() as conn:
-        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("SELECT pg_advisory_xact_lock(hashtextextended('wiareport:write',0))")
         report = conn.execute("SELECT * FROM reports WHERE report_id = ?", (report_id,)).fetchone()
         if not report:
             raise HTTPException(status_code=404, detail="Report not found")
@@ -3107,8 +2415,6 @@ def delete_report(report_id: str):
         conn.execute("DELETE FROM report_entries WHERE report_id = ?", (report_id,))
         conn.execute("DELETE FROM reports WHERE report_id = ?", (report_id,))
     shutil.rmtree(report_directory, ignore_errors=True)
-
-
 
 
 @app.get("/api/report-images/{image_id:path}")
@@ -3126,7 +2432,7 @@ def get_report_user_html(report_id: str, user_id: str):
         if not report:
             raise HTTPException(status_code=404, detail="Report not found")
         user = conn.execute(
-            "SELECT user_id, team_id, name, role FROM users WHERE user_id = ? AND team_id = ?",
+            "SELECT user_id, team_id, name, role FROM members WHERE user_id = ? AND team_id = ?",
             (user_id, report["team_id"]),
         ).fetchone()
         entry = conn.execute(
@@ -3135,7 +2441,7 @@ def get_report_user_html(report_id: str, user_id: str):
         ).fetchone()
         if not user or not entry:
             raise HTTPException(status_code=404, detail="Report member not found")
-        if entry["status"] != "done":
+        if entry["status"] != 'done':
             raise HTTPException(status_code=422, detail="작성 완료된 멤버만 리포트를 볼 수 있습니다")
         # A completed personal report's updated_at is its last saved completion time.
         # Keep included content and unknown historical completion times unchanged.
@@ -3148,9 +2454,9 @@ def get_report_user_html(report_id: str, user_id: str):
             WHERE pe.entry_id = ?
               AND (
                   pe.is_excluded = 0
-                  OR julianday(p.completed_at) IS NULL
-                  OR julianday(?) IS NULL
-                  OR julianday(p.completed_at) > julianday(?)
+                  OR safe_timestamp(p.completed_at) IS NULL
+                  OR safe_timestamp(?) IS NULL
+                  OR safe_timestamp(p.completed_at) > safe_timestamp(?)
               )
             ORDER BY CASE WHEN p.project_name = ? THEN 1 ELSE 0 END, pe.sort_order, p.created_at DESC, p.project_name
             """,
@@ -3162,7 +2468,9 @@ def get_report_user_html(report_id: str, user_id: str):
 @app.put("/api/reports/{report_id}/users/{user_id}/absence")
 def toggle_report_user_absence(report_id: str, user_id: str):
     with get_conn() as conn:
+        platform_auth.require_owner(conn,user_id)
         report = ensure_report_user_entries(conn, report_id, user_id)
+        if report["status"] == "done": raise HTTPException(409,"완료된 보고는 작성할 수 없습니다.")
         entry = conn.execute(
             "SELECT * FROM report_entries WHERE report_id = ? AND user_id = ?",
             (report_id, user_id),
@@ -3191,33 +2499,27 @@ def toggle_report_user_absence(report_id: str, user_id: str):
         return report_with_entries(conn, row)
 
 
-@app.post("/api/reports/{report_id}/users/{user_id}/authorize")
-def authorize_report_user(report_id: str, user_id: str, payload: ReportEntryAuthIn):
+@app.post('/api/reports/{report_id}/users/{user_id}/authorize')
+def authorize_report_user(report_id: str, user_id: str):
     with get_conn() as conn:
-        conn.execute("BEGIN IMMEDIATE")
-        report = ensure_report_user_entries(conn, report_id, user_id)
-        user = conn.execute("SELECT * FROM users WHERE user_id=?", (user_id,)).fetchone()
-        if not user or not verify_password(payload.password, user['password_hash']):
-            raise HTTPException(401, "비밀번호가 올바르지 않습니다. 임시 비밀번호는 관리자에게 초기화를 요청하세요.")
-        credential_security.check_temporary_password(user)
-        entry = conn.execute("SELECT status FROM report_entries WHERE report_id=? AND user_id=?", (report_id, user_id)).fetchone()
-        if entry and entry['status'] == 'absent':
-            raise HTTPException(422, "부재 상태에서는 보고를 작성할 수 없습니다")
-        if user['must_change_password']:
-            if payload.new_password is None:
-                raise HTTPException(428, "임시 비밀번호가 확인되었습니다. 새 비밀번호를 설정하세요.")
-            credential_security.validate_new_password(payload.new_password, payload.password)
-            conn.execute("UPDATE users SET password_hash=?, must_change_password=0, password_expires_at=NULL WHERE user_id=?", (hash_password(payload.new_password), user_id))
-        return {"report_id": report['report_id'], "user_id": user_id, "projects": list_entry_projects(conn, report_id, user_id)}
+        platform_auth.require_owner(conn,user_id)
+        conn.execute('SELECT pg_advisory_xact_lock(hashtextextended(?,0))',(report_id+':'+user_id,))
+        report=ensure_report_user_entries(conn,report_id,user_id)
+        if report['status']=='done': raise HTTPException(409,'완료된 보고는 작성할 수 없습니다.')
+        entry=conn.execute('SELECT status FROM report_entries WHERE report_id=? AND user_id=?',(report_id,user_id)).fetchone()
+        if entry and entry['status']=='absent':raise HTTPException(422,'부재 상태에서는 보고를 작성할 수 없습니다.')
+        return {'report_id':report_id,'user_id':user_id,'projects':list_entry_projects(conn,report_id,user_id)}
 
 
 @app.put("/api/report-entries/{entry_id}/project-order")
 def reorder_report_projects(entry_id: str, payload: ProjectOrderIn):
     with get_conn() as conn:
-        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("SELECT pg_advisory_xact_lock(hashtextextended('wiareport:write',0))")
         entry = ensure_report_entry(conn, entry_id)
+        platform_auth.require_owner(conn,entry["user_id"])
+        if entry["report_status"] == "done": raise HTTPException(409,"완료된 보고는 작성할 수 없습니다.")
         report = conn.execute("SELECT status FROM reports WHERE report_id=?", (entry["report_id"],)).fetchone()
-        if entry["status"] == "absent" or report["status"] == "done":
+        if entry["status"] == "absent" or report["status"] == 'done':
             raise HTTPException(409, "작성 가능한 보고를 다시 열어 순서를 변경하세요.")
         rows = conn.execute(
             "SELECT pe.project_id,pe.sort_order FROM project_entry pe JOIN project p ON p.project_id=pe.project_id "
@@ -3245,6 +2547,8 @@ def reorder_report_projects(entry_id: str, payload: ProjectOrderIn):
 def save_project_entry(entry_id: str, project_id: str, payload: ReportEntryIn):
     with get_conn() as conn:
         entry = ensure_report_entry(conn, entry_id)
+        platform_auth.require_owner(conn,entry["user_id"])
+        if entry["report_status"] == "done": raise HTTPException(409,"완료된 보고는 작성할 수 없습니다.")
         if entry["status"] == "absent":
             raise HTTPException(status_code=422, detail="부재 상태에서는 보고를 저장할 수 없습니다")
         project_entry = ensure_entry_project(conn, entry, project_id)
@@ -3286,6 +2590,8 @@ def save_project_entry(entry_id: str, project_id: str, payload: ReportEntryIn):
 def update_project_entry_exclusion(entry_id: str, project_id: str, payload: ProjectEntryStatusIn):
     with get_conn() as conn:
         entry = ensure_report_entry(conn, entry_id)
+        platform_auth.require_owner(conn,entry["user_id"])
+        if entry["report_status"] == "done": raise HTTPException(409,"완료된 보고는 작성할 수 없습니다.")
         if entry["status"] == "absent":
             raise HTTPException(status_code=422, detail="부재 상태에서는 과제 제외를 변경할 수 없습니다")
         project_entry = ensure_entry_project(conn, entry, project_id)
@@ -3359,12 +2665,12 @@ def get_project_progress_history(project_id: str, include_hidden: bool = False):
             JOIN project_entry pe ON pe.entry_id = pp.entry_id AND pe.project_id = pp.project_id
             JOIN report_entries re ON re.entry_id = pp.entry_id
             JOIN reports r ON r.report_id = re.report_id
-            JOIN users u ON u.user_id = re.user_id
+            JOIN members u ON u.user_id = re.user_id
             WHERE pp.project_id = ?
               AND r.team_id = ?
               AND pe.is_excluded = 0
               AND pp.status = 'done'
-              AND (? OR pp.is_history_hidden = 0)
+              AND (? = 1 OR pp.is_history_hidden = 0)
             ORDER BY r.end_date DESC, r.start_date DESC, u.sort_order ASC, pp.progress_index ASC
             """,
             (project_id, project["team_id"], 1 if include_hidden else 0),
@@ -3453,7 +2759,7 @@ def get_project_upcoming_next_plans(project_id: str):
             JOIN project_entry pe ON pe.entry_id = pp.entry_id AND pe.project_id = pp.project_id
             JOIN report_entries re ON re.entry_id = pp.entry_id
             JOIN reports r ON r.report_id = re.report_id
-            JOIN users u ON u.user_id = re.user_id
+            JOIN members u ON u.user_id = re.user_id
             WHERE pp.project_id = ?
               AND r.team_id = ?
               AND pe.is_excluded = 0
@@ -3529,7 +2835,7 @@ def get_project_issue_management(project_id: str):
             JOIN project_entry pe ON pe.entry_id = pi.entry_id AND pe.project_id = pi.project_id
             JOIN report_entries re ON re.entry_id = pi.entry_id
             JOIN reports r ON r.report_id = re.report_id
-            JOIN users u ON u.user_id = re.user_id
+            JOIN members u ON u.user_id = re.user_id
             WHERE pi.project_id = ?
               AND r.team_id = ?
               AND pe.is_excluded = 0
@@ -3675,7 +2981,7 @@ def get_project_html_report(report_id: str, project_id: str):
                 pe.next_plan,
                 pe.updated_at
             FROM report_entries re
-            JOIN users u ON u.user_id = re.user_id
+            JOIN members u ON u.user_id = re.user_id
             JOIN project_entry pe ON pe.entry_id = re.entry_id
             WHERE re.report_id = ?
               AND pe.project_id = ?
@@ -3695,7 +3001,7 @@ def get_project_html_report(report_id: str, project_id: str):
 
 
 @app.get("/api/teams/{team_id}/timeline-projects")
-def list_team_timeline_projects(team_id: str):
+def list_team_timeline_projects(team_id: str, all_projects: bool = False):
     with get_conn() as conn:
         ensure_team(conn, team_id)
         rows = conn.execute(
@@ -3706,11 +3012,11 @@ def list_team_timeline_projects(team_id: str):
             FROM project p
             LEFT JOIN milestones m ON m.project_id = p.project_id
             LEFT JOIN epics e ON e.milestone_id = m.milestone_id
-            WHERE p.team_id = ? AND part_visible(p.team_id, p.part_id) AND p.status = 'in_progress' AND p.project_name != ?
+            WHERE p.team_id = ? AND part_visible(p.team_id, p.part_id) AND p.status = 'in_progress' AND p.project_name != ? AND (? = 1 OR EXISTS (SELECT 1 FROM project_members mine WHERE mine.project_id=p.project_id AND mine.user_id=?))
             GROUP BY p.project_id
             ORDER BY p.sort_order, p.created_at DESC, p.project_name
             """,
-            (team_id, OTHER_WORK_PROJECT_NAME),
+            (team_id, OTHER_WORK_PROJECT_NAME, int(all_projects), platform_auth.require_actor()["member_id"]),
         ).fetchall()
         return [public_timeline_project(row) for row in rows]
 
@@ -3779,7 +3085,7 @@ def get_milestone(milestone_id: str):
     with get_conn() as conn:
         milestone = ensure_milestone(conn, milestone_id)
         epics = conn.execute(
-            "SELECT * FROM epics WHERE milestone_id = ? ORDER BY sort_order, start_date, created_at, rowid",
+            "SELECT * FROM epics WHERE milestone_id = ? ORDER BY sort_order, start_date, created_at, epic_id",
             (milestone_id,),
         ).fetchall()
         return public_milestone(milestone, [public_epic(row) for row in epics])
@@ -3812,7 +3118,7 @@ def delete_milestone(milestone_id: str):
 @app.put("/api/milestones/{milestone_id}/epics/order")
 def reorder_epics(milestone_id: str, payload: EpicOrderIn):
     with get_conn() as conn:
-        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("SELECT pg_advisory_xact_lock(hashtextextended('wiareport:write',0))")
         ensure_milestone(conn, milestone_id)
         current_ids = {row["epic_id"] for row in conn.execute(
             "SELECT epic_id FROM epics WHERE milestone_id = ?", (milestone_id,)
@@ -3832,7 +3138,7 @@ def create_epic(milestone_id: str, payload: EpicIn):
     now = datetime.utcnow().isoformat()
     epic_id = str(uuid.uuid4())
     with get_conn() as conn:
-        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("SELECT pg_advisory_xact_lock(hashtextextended('wiareport:write',0))")
         ensure_epic_inside_milestone(conn, milestone_id, payload)
         next_order = conn.execute(
             "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM epics WHERE milestone_id = ?", (milestone_id,)
@@ -3898,40 +3204,29 @@ def delete_epic(epic_id: str):
 part_support.install(app, get_conn, public_team)
 
 
-@app.put("/api/users/{user_id}/password/reset")
-def reset_member_password(user_id: str, authorization: str | None = Header(default=None)):
-    with get_conn() as conn:
-        credential_security.require_manager(conn, authorization)
-        row = conn.execute("SELECT * FROM users WHERE user_id=?", (user_id,)).fetchone()
-        if not row:
-            raise HTTPException(404, "User not found")
-        credential_security.require_manager(conn, authorization, team_id=row['team_id'])
-        temporary_password, expires_at = credential_security.new_initial_password()
-        conn.execute("UPDATE users SET password_hash=?, must_change_password=1, password_expires_at=? WHERE user_id=?", (hash_password(temporary_password), expires_at, user_id))
-        member = public_user(conn.execute("SELECT * FROM users WHERE user_id=?", (user_id,)).fetchone())
-        return member
+def require_request_session(authorization=None, admin_only=False):
+    return platform_auth.require_actor(admin_only=admin_only)
 
 
-def require_request_session(authorization, admin_only=False):
-    """Resolve the current session and role from server-side records on every request."""
-    with get_conn() as conn:
-        return public_team(credential_security.require_manager(conn, authorization, admin_only=admin_only))
-
-
-@app.middleware("http")
-async def credential_no_store(request, call_next):
-    # Only login and liveness are public; all business APIs resolve server identity.
-    path = request.url.path.rstrip('/')
-    if path.startswith('/api/') and path not in ('/api/auth/login', '/api/health'):
-        try:
-            request.state.actor = await run_in_threadpool(
-                require_request_session, request.headers.get('authorization'),
-                path == '/api/admin' or path.startswith('/api/admin/'))
-        except HTTPException as exc:
-            response = JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
-            response.headers['Cache-Control'] = 'no-store'
-            return response
-    response = await call_next(request)
-    if request.url.path.startswith('/api/'):
-        response.headers['Cache-Control'] = 'no-store'
+@app.middleware('http')
+async def platform_session_middleware(request, call_next):
+    path=request.url.path.rstrip('/')
+    token=None
+    try:
+        if path.startswith('/api/') and path!='/api/health':
+            # Shared cookie only: old bearer sessions and client identity hints cannot authenticate.
+            who=await run_in_threadpool(platform_auth.resolve,request.cookies.get(platform_auth.COOKIE))
+            token=actor.set(who);request.state.actor=who
+            if path.startswith('/api/admin'):platform_auth.require_actor(admin_only=True)
+            if request.method not in ('GET','HEAD','OPTIONS'):
+                from urllib.parse import urlsplit
+                origin=request.headers.get('origin')
+                if request.headers.get('x-wia-request')!='1' or (origin and urlsplit(origin).netloc!=request.headers.get('host')):
+                    raise HTTPException(403,'허용되지 않은 요청입니다.')
+        response=await call_next(request)
+    except HTTPException as exc:
+        response=JSONResponse(status_code=exc.status_code,content={'detail':exc.detail})
+    finally:
+        if token is not None:actor.reset(token)
+    if path.startswith('/api/'):response.headers['Cache-Control']='no-store'
     return response

@@ -14,7 +14,7 @@ const allowedHosts = ['axforwork.wia.co.kr', 'dev-axforwork.wia.co.kr'];
 const proxy = {
   '/api': {
     target,
-    changeOrigin: true,
+    changeOrigin: false,
   },
 };
 

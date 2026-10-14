@@ -15,9 +15,10 @@ const SERVICE_PREFIX = window.location.pathname === '/wiareport' || window.locat
 const API_BASE = import.meta.env.VITE_API_BASE ?? SERVICE_PREFIX;
 // Only server responses populate this identity. Stored profile fields are never trusted.
 let verifiedTeam = null;
-function storedSession() {
-  try { return JSON.parse(localStorage.getItem('wiareport_team') || 'null')?.session_id || ''; }
-  catch { return ''; }
+const PLATFORM_ORIGIN = 'https://axforwork.wia.co.kr';
+function platformLogin(profile = false) {
+  const next = '/wiareport/agent' + window.location.search;
+  window.location.replace(PLATFORM_ORIGIN + '/login?' + new URLSearchParams({ next, ...(profile ? { profile: 'complete' } : {}) }));
 }
 
 
@@ -29,7 +30,7 @@ function AuthenticatedImage({ src, alt, ...props }) {
     let active = true, objectUrl;
     const controller = new AbortController();
     setLoaded(null);
-    fetch(src, { headers: { Authorization: `Bearer ${verifiedTeam?.session_id || ''}` }, signal: controller.signal })
+    fetch(src, { credentials: 'include', signal: controller.signal })
       .then((response) => { if (!response.ok) throw new Error('이미지를 불러올 수 없습니다.'); return response.blob(); })
       .then((blob) => { if (active) { objectUrl = URL.createObjectURL(blob); setLoaded({ src, objectUrl }); } })
       .catch(() => {});
@@ -261,21 +262,22 @@ async function request(path, options = {}) {
   let partHeaders = {};
   try {
     const team = verifiedTeam;
-    const sessionId = team?.session_id || storedSession();
-    if (sessionId) partHeaders.Authorization = `Bearer ${sessionId}`;
     if (team?.team_id && !path.startsWith('/api/auth/')) {
       partHeaders = { ...partHeaders, 'X-Wia-Team': team.team_id, 'X-Wia-Part': localStorage.getItem('wiareport_part_' + team.team_id) || '' };
     }
   } catch {}
   const res = await fetch(`${API_BASE}${path}`, {
     ...options,
-    headers: { 'Content-Type': 'application/json', ...partHeaders, ...(options.headers || {}) },
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json', 'X-Wia-Request': '1', ...partHeaders, ...(options.headers || {}) },
   });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
+    if (res.status === 401) platformLogin();
+    if (body.detail?.code === 'profile_required') platformLogin(true);
     const detail = Array.isArray(body.detail)
       ? body.detail.map((item) => item.msg || JSON.stringify(item)).join(', ')
-      : body.detail;
+      : (body.detail?.message || body.detail);
     const error = new Error(detail || `Request failed: ${res.status}`);
     error.status = res.status;
     if (res.status === 401 && !path.startsWith("/api/auth/login") && !path.endsWith("/authorize")) window.dispatchEvent(new Event("wiareport-session-expired"));
@@ -297,9 +299,10 @@ function App() {
 }
 
 function TeamWorkspace() {
-  const [activePage, setActivePage] = useState(() => sessionStorage.getItem('wiareport_scope_page') || 'team-status');
-  const [activeTeamTab, setActiveTeamTab] = useState('members');
+  const [activePage, setActivePage] = useState(() => { const saved = sessionStorage.getItem('wiareport_scope_page'); return ['member-management', 'accounts'].includes(saved) ? 'part-management' : saved || 'team-status'; });
+  const [activeTeamTab, setActiveTeamTab] = useState('tasks');
   const [projects, setProjects] = useState([]);
+  const [showAllProjects, setShowAllProjects] = useState(false);
   const [selectedProjectId, setSelectedProjectId] = useState(null);
   const [milestones, setMilestones] = useState([]);
   const [teams, setTeams] = useState([]);
@@ -310,11 +313,11 @@ function TeamWorkspace() {
   useEffect(() => {
     let active = true;
     verifiedTeam = null;
-    if (!storedSession()) { setSessionReady(true); return; }
+    localStorage.removeItem('wiareport_team');
     request('/api/auth/me').then((team) => {
-      if (active) { verifiedTeam = team; setCurrentTeam(team); }
-    }).catch(() => {
-      if (active) { verifiedTeam = null; localStorage.removeItem('wiareport_team'); }
+      if (active) { if (team.team_id && team.member_part_id && localStorage.getItem('wiareport_part_' + team.team_id) === null) localStorage.setItem('wiareport_part_' + team.team_id, team.member_part_id); verifiedTeam = team; setCurrentTeam(team); }
+    }).catch((err) => {
+      if (active) { verifiedTeam = null; setError(err.message); }
     }).finally(() => { if (active) setSessionReady(true); });
     return () => { active = false; };
   }, []);
@@ -416,31 +419,15 @@ function TeamWorkspace() {
   const selectedTeamProject = teamProjects.find((project) => project.project_id === selectedProjectId) || null;
   const isAdminAccount = currentTeam?.account_role === 'admin';
 
-  // Keep the server-side session warm so 접속 중 reflects real presence.
   useEffect(() => {
-    const sessionId = currentTeam?.session_id;
-    if (!sessionId) return undefined;
-    const ping = () => {
-      request('/api/auth/heartbeat', {
-        method: 'POST',
-        body: JSON.stringify({ session_id: sessionId }),
-      }).catch(() => {});
-    };
-    ping();
-    const timer = setInterval(ping, 60_000);
+    if (!currentTeam) return;
+    const timer = setInterval(() => request('/api/auth/heartbeat', {method: 'POST'}).catch(() => {}), 60_000);
     return () => clearInterval(timer);
-  }, [currentTeam?.session_id]);
-
-  useEffect(() => {
-    if (!isAdminAccount || activePage !== 'admin-overview') return undefined;
-    loadOverview(overviewPeriod);
-    const timer = setInterval(() => loadOverview(overviewPeriod), 60_000);
-    return () => clearInterval(timer);
-  }, [isAdminAccount, activePage, overviewPeriod]);
+  }, [currentTeam?.actor_user_id]);
 
   useEffect(() => {
     if (isAdminAccount && activePage !== 'accounts' && activePage !== 'admin-overview') {
-      setActivePage('accounts');
+      setActivePage('admin-overview');
       return;
     }
     if (!isAdminAccount && (activePage === 'accounts' || activePage === 'admin-overview')) {
@@ -454,7 +441,7 @@ function TeamWorkspace() {
       setSelectedProjectId(null);
       return null;
     }
-    const list = await request(`/api/teams/${teamId}/timeline-projects`);
+    const list = await request(`/api/teams/${teamId}/timeline-projects?all_projects=${activePage !== 'tasks' || showAllProjects}`);
     setProjects(list);
     const fallbackId = list[0]?.id || null;
     const currentStillExists = selectedProjectId && list.some((project) => project.id === selectedProjectId);
@@ -463,6 +450,10 @@ function TeamWorkspace() {
     if (!id) setMilestones([]);
     return id;
   }
+
+  useEffect(() => {
+    if (currentTeam && !isAdminAccount) loadProjects(undefined).then(loadMilestones).catch(err => setError(err.message));
+  }, [showAllProjects, activePage, currentTeam?.team_id]);
 
   async function loadMilestones(projectId) {
     if (!projectId) {
@@ -475,7 +466,7 @@ function TeamWorkspace() {
   }
 
   async function loadTeams() {
-    if (!currentTeam?.session_id || !isAdminAccount) {
+    if (!currentTeam?.actor_user_id || !isAdminAccount) {
       setTeams([]);
       return;
     }
@@ -561,12 +552,12 @@ function TeamWorkspace() {
   useEffect(() => {
     let active = true;
     setTeams([]);
-    if (currentTeam?.session_id && isAdminAccount) {
+    if (currentTeam?.actor_user_id && isAdminAccount) {
       request('/api/teams').then((list) => { if (active) setTeams(list); })
         .catch((err) => { if (active) setError(err.message); });
     }
     return () => { active = false; };
-  }, [currentTeam?.session_id, isAdminAccount]);
+  }, [currentTeam?.actor_user_id, isAdminAccount]);
 
   useEffect(() => {
     if (!selectedProjectId) return;
@@ -591,109 +582,11 @@ function TeamWorkspace() {
     ]).catch((err) => setError(err.message));
   }, [currentTeam?.team_id]);
 
-  async function login(event) {
-    event.preventDefault();
-    const form = event.currentTarget;
-    const fields = Object.fromEntries(new FormData(form));
-    const password = loginNeedsChange ? fields.current_password : fields.password;
-    if (isLoggingIn || !loginDraft.login_id.trim() || !password) return;
-    if (loginNeedsChange && fields.new_password.length < 12) {
-      setError('새 비밀번호는 12자 이상이어야 합니다.');
-      return;
-    }
-    if (loginNeedsChange && fields.new_password !== fields.confirm_password) {
-      setError('새 비밀번호 확인이 일치하지 않습니다');
-      return;
-    }
-    const payload = loginNeedsChange
-      ? { login_id: loginDraft.login_id.trim(), password, new_password: fields.new_password }
-      : { login_id: loginDraft.login_id.trim(), password };
-    setIsLoggingIn(true);
-    setError('');
-    try {
-      const team = await request('/api/auth/login', { method: 'POST', body: JSON.stringify(payload) });
-      verifiedTeam = team;
-      localStorage.setItem('wiareport_team', JSON.stringify(team));
-      setCurrentTeam(team);
-      setLoginDraft(emptyFormFields('login_id'));
-      form.reset();
-      setLoginNeedsChange(false);
-    } catch (err) {
-      if (err.status === 428) {
-        setLoginNeedsChange(true);
-      } else {
-        setError(err.message);
-      }
-    } finally {
-      setIsLoggingIn(false);
-    }
+  async function logout() {
+    try { await request('/api/auth/logout', {method:'POST'}); platformLogin(); }
+    catch (err) { setError(err.message); }
   }
 
-  function logout() {
-    const sessionId = currentTeam?.session_id;
-    if (sessionId) {
-      request('/api/auth/logout', {
-        method: 'POST',
-        body: JSON.stringify({ session_id: sessionId }),
-      }).catch(() => {});
-    }
-    verifiedTeam = null;
-    localStorage.removeItem('wiareport_team');
-    setLoginNeedsChange(false);
-    setCurrentTeam(null);
-  }
-
-  async function submitAccountUpdate(event) {
-    event.preventDefault();
-    const form = event.currentTarget;
-    const fields = Object.fromEntries(new FormData(form));
-    if (!currentTeam?.team_id) {
-      setError('로그인 정보가 올바르지 않습니다. 다시 로그인하세요');
-      logout();
-      return;
-    }
-    if (!fields.new_password.trim()) {
-      setError('새 비밀번호를 입력하세요');
-      return;
-    }
-    if (fields.new_password !== fields.confirm_password) {
-      setError('새 비밀번호 확인이 일치하지 않습니다');
-      return;
-    }
-    try {
-      const team = await request('/api/auth/change-password', {
-        method: 'POST',
-        body: JSON.stringify({
-          team_id: currentTeam.team_id,
-          current_password: fields.current_password,
-          new_password: fields.new_password,
-        }),
-      });
-      setCurrentTeam((prev) => ({ ...team, session_id: prev?.session_id }));
-      setIsAccountUpdateOpen(false);
-      setError('');
-    } catch (err) {
-      setError(err.message);
-    }
-  }
-
-  async function createTeam() {
-    if (!teamDraft.department.trim() || !teamDraft.login_id.trim()) return;
-    try {
-      await request('/api/teams', {
-        method: 'POST',
-        body: JSON.stringify({
-          department: teamDraft.department.trim(),
-          login_id: teamDraft.login_id.trim(),
-          account_role: teamDraft.account_role || 'user',
-        }),
-      });
-      setTeamDraft({ department: '', login_id: '', account_role: 'user' });
-      await loadTeams();
-    } catch (err) {
-      setError(err.message);
-    }
-  }
 
   async function loadOverview(period = overviewPeriod) {
     setOverviewLoading(true);
@@ -708,50 +601,8 @@ function TeamWorkspace() {
     }
   }
 
-  async function resetTeamAccess(teamId) {
-    const team = teams.find((item) => item.team_id === teamId);
-    if (!window.confirm(`${team ? team.login_id : '해당'} 계정의 비밀번호를 지정된 초기 비밀번호로 초기화할까요? 기존 비밀번호와 로그인은 만료됩니다.`)) return;
-    try {
-      await request(`/api/teams/${teamId}/password/reset`, { method: 'PUT' });
-      await loadTeams();
-      if (currentTeam?.team_id === teamId) {
-        setCurrentTeam((prev) => (prev ? { ...prev, must_change_password: true } : prev));
-      }
-      setError('');
-    } catch (err) {
-      setError(err.message);
-    }
-  }
 
-  async function deleteTeam(teamId) {
-    const team = teams.find((item) => item.team_id === teamId);
-    if (currentTeam?.team_id === teamId) {
-      setError('현재 로그인한 계정은 제거할 수 없습니다');
-      return;
-    }
-    if (!window.confirm(`${team ? team.department + ' (' + team.login_id + ')' : '해당'} 계정을 제거할까요? 소속 멤버와 보고 데이터가 함께 삭제됩니다.`)) return;
-    try {
-      await request(`/api/teams/${teamId}`, { method: 'DELETE' });
-      await loadTeams();
-      setError('');
-    } catch (err) {
-      setError(err.message);
-    }
-  }
 
-  async function createMember() {
-    if (!currentTeam?.team_id || !memberDraft.name.trim()) return;
-    try {
-      await request(`/api/teams/${currentTeam.team_id}/users`, {
-        method: 'POST',
-        body: JSON.stringify({ name: memberDraft.name.trim(), role: memberDraft.role }),
-      });
-      setMemberDraft({ name: '', role: 'M' });
-      await loadMembers(currentTeam.team_id);
-    } catch (err) {
-      setError(err.message);
-    }
-  }
 
   async function createTeamProject() {
     if (!currentTeam?.team_id || !teamProjectDraft.project_name.trim() || !teamProjectDraft.leaderId) return;
@@ -852,84 +703,10 @@ function TeamWorkspace() {
     }
   }
 
-  async function deleteMember(userId) {
-    try {
-      await request(`/api/users/${userId}`, { method: 'DELETE' });
-      await loadMembers(currentTeam.team_id);
-    } catch (err) {
-      setError(err.message);
-    }
-  }
 
-  async function updateMemberRole(userId, role) {
-    if (!currentTeam?.team_id) return;
-    const previousMembers = members;
-    setMembers((prev) => prev.map((member) => (member.user_id === userId ? { ...member, role } : member)));
-    try {
-      await request(`/api/users/${userId}/role`, {
-        method: 'PUT',
-        body: JSON.stringify({ role }),
-      });
-      await Promise.all([
-        loadMembers(currentTeam.team_id),
-        loadTeamProjects(currentTeam.team_id),
-      ]);
-      setError('');
-    } catch (err) {
-      setMembers(previousMembers);
-      setError(err.message);
-    }
-  }
 
-  async function saveMemberAccess(userId, event) {
-    event.preventDefault();
-    const form = event.currentTarget;
-    const password = new FormData(form).get('password') || '';
-    if (!password.trim()) {
-      setError('설정할 비밀번호를 입력하세요');
-      return;
-    }
-    try {
-      await request(`/api/users/${userId}/password`, {
-        method: 'PUT',
-        body: JSON.stringify({ password }),
-      });
-      form.reset();
-      await loadMembers(currentTeam.team_id);
-    } catch (err) {
-      setError(err.message);
-    }
-  }
 
-  async function resetMemberAccess(userId, event) {
-    const form = event.currentTarget.closest('.member-row')?.querySelector('.member-password-box');
-    if (!window.confirm(`비밀번호를 지정된 초기 비밀번호로 초기화할까요? 기존 비밀번호는 만료됩니다.`)) return;
-    try {
-      await request(`/api/users/${userId}/password/reset`, { method: 'PUT' });
-      form?.reset();
-      await loadMembers(currentTeam.team_id);
-    } catch (err) {
-      setError(err.message);
-    }
-  }
 
-  async function reorderMembers(nextMembers) {
-    if (!currentTeam?.team_id) return;
-    const previousMembers = members;
-    setMembers(nextMembers);
-    try {
-      const savedMembers = await request(`/api/teams/${currentTeam.team_id}/users/order`, {
-        method: 'PUT',
-        body: JSON.stringify({ user_ids: nextMembers.map((member) => member.user_id) }),
-      });
-      setMembers(savedMembers);
-      setError('');
-    } catch (err) {
-      setMembers(previousMembers);
-      setError(err.message);
-      await loadMembers(currentTeam.team_id).catch(() => {});
-    }
-  }
 
   async function createMilestone() {
     if (!selectedProjectId || !milestoneDraft.title.trim()) {
@@ -1161,45 +938,18 @@ function TeamWorkspace() {
     }
   }
 
-  function openEntryAuthorization(report, entry) {
-    setAuthorizationTarget({ ...entry, report_id: report.report_id, report_period: `${report.start_date} ~ ${report.end_date}` });
-    entryFormRef.current?.reset();
-    setWeeklyNeedsChange(false);
-    setError('');
-  }
-
-  async function authorizeWeeklyEntry(event) {
-    event.preventDefault();
-    const fields = Object.fromEntries(new FormData(event.currentTarget));
-    const weeklyPasswordDraft = fields.password || '';
-    const weeklyActivationDraft = { password: fields.new_password || '', confirm: fields.confirm_password || '' };
-    if (!authorizationTarget || !weeklyPasswordDraft || !authorizationTarget.report_id) {
-      setError('비밀번호를 입력하세요');
-      return;
-    }
-    if (weeklyNeedsChange && (weeklyActivationDraft.password.length < 12 || weeklyActivationDraft.password !== weeklyActivationDraft.confirm)) {
-      setError('12자 이상의 새 비밀번호를 동일하게 두 번 입력하세요.');
-      return;
-    }
+  async function openEntryAuthorization(report, entry) {
+    if (entry.user_id !== currentTeam?.member_id) return;
     try {
-      const result = await request(`/api/reports/${authorizationTarget.report_id}/users/${authorizationTarget.user_id}/authorize`, {
-        method: 'POST',
-        body: JSON.stringify({ password: weeklyPasswordDraft, ...(weeklyNeedsChange ? { new_password: weeklyActivationDraft.password } : {}) }),
-      });
+      const result = await request(`/api/reports/${report.report_id}/users/${entry.user_id}/authorize`, {method:'POST'});
       const nextProjects = result.projects || [];
-      const firstProject = nextProjects.find((project) => !project.is_excluded && project.project_name !== OTHER_WORK_PROJECT_NAME) || nextProjects.find((project) => !project.is_excluded) || null;
+      const first = nextProjects.find(p => !p.is_excluded && p.project_name !== OTHER_WORK_PROJECT_NAME) || nextProjects.find(p => !p.is_excluded) || null;
       setWeeklyEntryProjects(nextProjects);
-      setSelectedWeeklyEntryId(firstProject?.project_id || '');
-      setWeeklyWritingEntry(authorizationTarget);
-      setWeeklyEntryDraft(firstProject ? weeklyDraftFromProject(firstProject) : emptyWeeklyEntryDraft());
-      setAuthorizationTarget(null);
-      entryFormRef.current?.reset();
-      setWeeklyNeedsChange(false);
+      setSelectedWeeklyEntryId(first?.project_id || '');
+      setWeeklyWritingEntry({...entry,report_id:report.report_id,report_period:`${report.start_date} ~ ${report.end_date}`});
+      setWeeklyEntryDraft(first ? weeklyDraftFromProject(first) : emptyWeeklyEntryDraft());
       setError('');
-    } catch (err) {
-      if (err.status === 428) setWeeklyNeedsChange(true);
-      setError(err.message);
-    }
+    } catch (err) { setError(err.message); }
   }
 
   async function reorderWeeklyProjects(entryId, projectIds, expectedIds) {
@@ -1271,29 +1021,7 @@ function TeamWorkspace() {
   }
 
   if (!sessionReady) return <div className="empty">로그인 정보를 확인하고 있습니다.</div>;
-  if (!currentTeam) {
-    return (
-      <>
-        <LoginPage
-          loginFormRef={loginFormRef}
-          loginDraft={loginDraft}
-          setLoginDraft={setLoginDraft}
-          onLogin={login}
-          error={loginNeedsChange ? '' : error}
-          isLoggingIn={isLoggingIn}
-        />
-        {loginNeedsChange && (
-          <AccountUpdateDialog
-            loginFormRef={loginFormRef}
-            onSubmitAccountUpdate={login}
-            required
-            error={error}
-            submitting={isLoggingIn}
-          />
-        )}
-      </>
-    );
-  }
+  if (!currentTeam) return <div className="empty" role="status">{error || '통합 로그인으로 이동하고 있습니다.'}<button type="button" onClick={() => platformLogin()}>통합 로그인</button></div>;
 
   return (
     <main className="app-shell">
@@ -1311,11 +1039,9 @@ function TeamWorkspace() {
           <button className={`side-tab${activePage === 'tasks' ? ' active' : ''}`} type="button" onClick={() => setActivePage('tasks')}>과제 현황</button>
           <button className={`side-tab${activePage === 'weekly-report' ? ' active' : ''}`} type="button" onClick={() => setActivePage('weekly-report')}>주간 보고 작성</button>
           <button className={`side-tab${activePage === 'weekly-lounge' ? ' active' : ''}`} type="button" onClick={() => setActivePage('weekly-lounge')}>주간 보고 라운지</button>
-          <button className={'side-tab' + (activePage === 'member-management' ? ' active' : '')} type="button" onClick={() => setActivePage('member-management')}>멤버 관리</button>
           <button className={'side-tab' + (activePage === 'project-management' ? ' active' : '')} type="button" onClick={() => setActivePage('project-management')}>과제 관리</button>
           <button className={'side-tab' + (activePage === 'part-management' ? ' active' : '')} type="button" onClick={() => setActivePage('part-management')}>파트 관리</button>
           </>}
-          {isAdminAccount && <button className={`side-tab${activePage === 'accounts' ? ' active' : ''}`} type="button" onClick={() => setActivePage('accounts')}>계정 관리</button>}
           {isAdminAccount && <button className={`side-tab${activePage === 'admin-overview' ? ' active' : ''}`} type="button" onClick={() => setActivePage('admin-overview')}>운영 현황</button>}
         </nav>
 
@@ -1340,9 +1066,9 @@ function TeamWorkspace() {
           <div className="avatar">{currentTeam.department.slice(0, 1)}</div>
           <div className="side-user-info">
             <b>{currentTeam.department}</b>
-            <span>{currentTeam.login_id}</span>
+            <span>{currentTeam.full_name}</span>
           </div>
-          <button className="side-logout" type="button" onClick={() => setIsAccountUpdateOpen(true)} aria-label="비밀번호 변경" title="비밀번호 변경"><KeyRound size={16} /></button>
+          <a className="side-logout" href={PLATFORM_ORIGIN} title="AX for Works로 돌아가기"><ExternalLink size={16}/></a>
           <button className="side-logout" type="button" onClick={logout} aria-label="로그아웃"><LogOut size={16} /></button>
         </div>
       </aside>
@@ -1367,6 +1093,7 @@ function TeamWorkspace() {
                 <h1>과제 현황</h1>
               </div>
               <div className="project-toolbar" aria-label="과제 선택">
+                <label style={{display:'flex',alignItems:'center',gap:8,fontSize:14,whiteSpace:'nowrap'}}><input type="checkbox" checked={showAllProjects} onChange={e => setShowAllProjects(e.target.checked)} style={{width:16,height:16}}/>전체 과제 보기</label>
                 <div className="project-toolbar-meta">
                   <span>진행중 과제</span>
                   <b>{projects.length}개</b>
@@ -1406,6 +1133,7 @@ function TeamWorkspace() {
         )}
         {!isAdminAccount && activePage === 'weekly-report' && (
           <WeeklyReportPage
+            currentMemberId={currentTeam.member_id}
             completedWeeklyReports={completedWeeklyReports}
             onReopenWeeklyReport={reopenWeeklyReport}
             members={members}
@@ -1433,7 +1161,6 @@ function TeamWorkspace() {
             authorizationTarget={authorizationTarget}
             entryFormRef={entryFormRef}
             weeklyNeedsChange={weeklyNeedsChange}
-            onAuthorizeWeeklyEntry={authorizeWeeklyEntry}
             setAuthorizationTarget={setAuthorizationTarget}
             weeklyWritingEntry={weeklyWritingEntry}
             onReorderWeeklyProjects={reorderWeeklyProjects}
@@ -1449,9 +1176,9 @@ function TeamWorkspace() {
           />
         )}
         {!isAdminAccount && activePage === 'weekly-lounge' && <WeeklyReportLoungePage currentTeam={currentTeam} />}
-        {!isAdminAccount && (activePage === 'member-management' || activePage === 'project-management') && (
+        {!isAdminAccount && activePage === 'project-management' && (
           <TeamManagementPage
-            activeTeamTab={activePage === 'member-management' ? 'members' : 'tasks'}
+            activeTeamTab="tasks"
             showTabs={false}
             setActiveTeamTab={setActiveTeamTab}
             currentTeam={currentTeam}
@@ -1467,18 +1194,12 @@ function TeamWorkspace() {
             setProjectAssignmentDrafts={setProjectAssignmentDrafts}
             memberDraft={memberDraft}
             setMemberDraft={setMemberDraft}
-            onCreateMember={createMember}
             onCreateTeamProject={createTeamProject}
             onEditTeamProject={openTeamProjectEditor}
             onSaveProjectMembers={saveProjectMembers}
             onUpdateTeamProjectStatus={updateTeamProjectStatus}
             onDeleteTeamProject={deleteTeamProject}
-            onDeleteMember={deleteMember}
-            onUpdateMemberRole={updateMemberRole}
-            onSaveMemberAccess={saveMemberAccess}
-            onResetMemberAccess={resetMemberAccess}
             onReorderProjects={reorderProjects}
-            onReorderMembers={reorderMembers}
             draggingMemberId={draggingMemberId}
             setDraggingMemberId={setDraggingMemberId}
           />
@@ -1492,19 +1213,9 @@ function TeamWorkspace() {
             onRefresh={() => loadOverview(overviewPeriod)}
           />
         )}
-        {isAdminAccount && activePage === 'accounts' && (
-          <AccountManagementPage teams={teams} currentTeamId={currentTeam?.team_id} teamDraft={teamDraft} setTeamDraft={setTeamDraft} onCreateTeam={createTeam} onResetTeamAccess={resetTeamAccess} onDeleteTeam={deleteTeam} />
-        )}
+
       </section>
 
-      {(currentTeam.must_change_password || isAccountUpdateOpen) ? (
-        <AccountUpdateDialog
-          onSubmitAccountUpdate={submitAccountUpdate}
-          onClose={() => setIsAccountUpdateOpen(false)}
-          required={Boolean(currentTeam.must_change_password)}
-          error={error}
-        />
-      ) : null}
       {isUsageGuideOpen && <UsageGuideModal onClose={() => setIsUsageGuideOpen(false)} />}
     </main>
   );
@@ -1527,12 +1238,12 @@ function UsageGuideModal({ onClose }) {
 
           <ol>
             <li>
-              <h3>멤버 비밀번호 설정</h3>
-              <p><strong>멤버 관리</strong>에서 멤버를 추가한 뒤 초기 비밀번호 상태를 확인합니다.</p>
+              <h3>통합 계정과 파트 배정</h3>
+              <p>AX for Works에 로그인하면 통합 계정의 소속 팀으로 연결됩니다.</p>
               <ul>
-                <li>관리자가 발급한 계정별 임시 비밀번호로 접속한 뒤 12자 이상의 새 비밀번호를 설정합니다. 임시 비밀번호는 24시간 동안 유효합니다.</li>
-                <li>멤버가 처음 접속하면 개인 비밀번호로 변경해야 합니다.</li>
-                <li>필요하면 멤버 관리 화면에서 비밀번호를 초기화하거나 직접 설정합니다.</li>
+                <li>팀 멤버는 통합 계정의 현재 팀 소속을 기준으로 자동 반영됩니다.</li>
+                <li><strong>파트 관리</strong>에서 팀 멤버와 과제를 파트별로 배정합니다.</li>
+                <li>계정 정보와 비밀번호는 AX for Works에서 관리합니다.</li>
               </ul>
             </li>
             <li>
@@ -1553,7 +1264,7 @@ function UsageGuideModal({ onClose }) {
             </li>
             <li>
               <h3>과제 마일스톤 계획 생성</h3>
-              <p><strong>과제 현황</strong>에서 과제를 선택하고 마일스톤과 Work를 추가합니다.</p>
+              <p><strong>과제 현황</strong>에는 내가 참여한 과제가 먼저 표시됩니다. <strong>전체 과제 보기</strong>를 선택하면 현재 팀·파트의 모든 과제를 볼 수 있습니다.</p>
               <ul>
                 <li>마일스톤은 과제의 큰 기간 계획입니다.</li>
                 <li>Work는 마일스톤 안에서 추적할 세부 작업입니다.</li>
@@ -1569,7 +1280,7 @@ function UsageGuideModal({ onClose }) {
             </li>
             <li>
               <h3>개인별 주간 보고 작성</h3>
-              <p>각 멤버 카드에서 비밀번호 확인 후, 먼저 이번 주에 실제로 진행한 정규 과제를 선택합니다. 선택한 과제만 작성 화면 왼쪽 목록에 배치되고, 과제를 하나씩 눌러 주간 내용을 입력합니다.</p>
+              <p>내 이름의 카드에서 <strong>작성</strong>을 누른 뒤, 먼저 이번 주에 실제로 진행한 정규 과제를 선택합니다. 선택한 과제만 작성 화면 왼쪽 목록에 배치되고, 과제를 하나씩 눌러 주간 내용을 입력합니다.</p>
               <ul>
                 <li>내가 참여 멤버로 지정된 진행 중 과제가 선택 화면에 자동으로 표시됩니다.</li>
                 <li>작성 중에도 <strong>과제 다시 선택</strong>을 눌러 이번 주 작성 대상 과제를 언제든지 다시 고를 수 있습니다.</li>
@@ -1630,7 +1341,7 @@ function TeamStatusPage({ currentTeam, members, projects, teamProjects, weeklyRe
           <div className="team-status-avatar">{currentTeam.department.slice(0, 1)}</div>
           <div>
             <strong>{currentTeam.department}</strong>
-            <span>{currentTeam.login_id}</span>
+            <span>{currentTeam.full_name}</span>
           </div>
         </div>
       </section>
@@ -2147,6 +1858,7 @@ function TeamCalendar({ currentTeam, members }) {
 }
 
 function WeeklyReportPage({
+  currentMemberId,
   completedWeeklyReports,
   onReopenWeeklyReport,
   members,
@@ -2483,8 +2195,8 @@ function WeeklyReportPage({
                       <span className={`weekly-status-pill ${member.status || 'pending'}`}>{member.status === 'done' ? '작성 완료' : member.status === 'progress' ? '작성중' : member.status === 'absent' ? '부재' : '대기'}</span>
                     </div>
                     <div className="weekly-card-actions three">
-                      <button className={`weekly-card-btn${member.status === 'absent' ? ' active' : ''}`} type="button" onClick={() => onToggleWeeklyAbsence(weeklyReport, member)}>부재</button>
-                      <button className="weekly-card-btn primary" type="button" disabled={member.status === 'absent'} onClick={() => onOpenEntryAuthorization(weeklyReport, member)}>작성</button>
+                      <button className={`weekly-card-btn${member.status === 'absent' ? ' active' : ''}`} type="button" disabled={member.user_id !== currentMemberId} onClick={() => onToggleWeeklyAbsence(weeklyReport, member)}>부재</button>
+                      <button className="weekly-card-btn primary" type="button" disabled={member.status === 'absent' || member.user_id !== currentMemberId} title={member.user_id === currentMemberId ? '내 주간보고 작성' : '본인만 작성할 수 있습니다'} onClick={() => onOpenEntryAuthorization(weeklyReport, member)}>작성</button>
                       <button className="weekly-card-btn report" type="button" disabled={member.status !== 'done'} title={member.status === 'done' ? '작성 리포트를 봅니다' : '작성 완료 후 리포트를 볼 수 있습니다'} onClick={() => onOpenWeeklyReportPreview(weeklyReport, member)}>리포트</button>
                     </div>
                   </article>
@@ -2706,32 +2418,6 @@ function WeeklyReportPage({
           </div>
         </div>
       )}
-
-      {authorizationTarget && (
-        <div className="modal-backdrop" role="presentation">
-          <form ref={entryFormRef} onSubmit={onAuthorizeWeeklyEntry} noValidate className="weekly-report-modal compact-modal" role="dialog" aria-modal="true" aria-labelledby="weekly-password-title">
-            <div className="project-modal-head">
-              <div>
-                <h2 id="weekly-password-title">비밀번호 확인</h2>
-                <p>{authorizationTarget?.report_period ? `${authorizationTarget.report_period} · ` : ''}{activeEntryName} 보고 작성을 시작합니다.</p>
-              </div>
-              <button className="icon-btn" type="button" onClick={() => setAuthorizationTarget(null)} aria-label="닫기"><X size={16} /></button>
-            </div>
-            <input type="password" placeholder="멤버 비밀번호" name="password" autoComplete="current-password" autoFocus />
-            {weeklyNeedsChange && <>
-              <p>임시 비밀번호를 대신할 새 비밀번호를 설정하세요.</p>
-              <input type="password" autoComplete="new-password" placeholder="새 비밀번호 (12자 이상)" minLength={12} name="new_password" />
-              <input type="password" autoComplete="new-password" placeholder="새 비밀번호 확인" name="confirm_password" />
-            </>}
-
-            <div className="project-modal-actions">
-              <button className="mt-btn" type="button" onClick={() => setAuthorizationTarget(null)}>취소</button>
-              <button className="mt-btn primary" type="submit">확인</button>
-            </div>
-          </form>
-        </div>
-      )}
-
 
       {weeklyReportPreview && (
         <div className="modal-backdrop" role="presentation">
@@ -3202,153 +2888,9 @@ function ProjectMemberPanel({ project, teamProject }) {
   );
 }
 
-function LoginPage({ loginFormRef, loginDraft, setLoginDraft, onLogin, error, isLoggingIn }) {
-  return (
-    <main className="login-shell">
-      <section className="login-panel">
-        <div className="login-brand">
-          <div className="wia-mark">WIA</div>
-          <div>
-            <b>WiaReport</b>
-            <p>프로젝트 마일스톤과 팀 계정을 한 곳에서 관리합니다.</p>
-          </div>
-        </div>
-        <div className="login-card">
-          <div className="login-card-head">
-            <span>TEAM ACCESS</span>
-            <h1>로그인</h1>
-            <p>부여받은 팀 ID와 비밀번호로 접속하세요.</p>
-          </div>
-          {error && <div className="login-error">{error}</div>}
-          <form ref={loginFormRef} onSubmit={onLogin} noValidate>
-          <label className="login-field">
-            <span>ID</span>
-            <input value={loginDraft.login_id} onChange={(e) => setLoginDraft({ ...loginDraft, login_id: e.target.value })} autoFocus />
-          </label>
-          <label className="login-field">
-            <span>비밀번호</span>
-            <input type="password" name="password" autoComplete="current-password" />
-          </label>
-          <button className="primary-btn login-submit" type="submit" disabled={isLoggingIn}><KeyRound size={15} />로그인</button>
-          </form>
-
-          <p className="login-help">계정 발급은 관리자에게 문의하세요.</p>
-          <a className="login-intro-return" href="https://axforwork.wia.co.kr/wiareport/">WiaReport 소개로 돌아가기</a>
-        </div>
-      </section>
-    </main>
-  );
+function TeamManagementPage(props) {
+  return <section><div className="page-head"><div><h1>과제 관리</h1><p>{props.currentTeam.department} 팀의 과제와 참여 멤버를 관리합니다.</p></div></div><ProjectManagementBoard {...props}/></section>;
 }
-
-
-function TeamManagementPage({ activeTeamTab, setActiveTeamTab, showTabs = true, currentTeam, members, teamProjects, teamProjectDraft, setTeamProjectDraft, isProjectModalOpen, setIsProjectModalOpen, editingTeamProjectId, setEditingTeamProjectId, projectAssignmentDrafts, setProjectAssignmentDrafts, memberDraft, setMemberDraft, onCreateMember, onCreateTeamProject, onEditTeamProject, onSaveProjectMembers, onUpdateTeamProjectStatus, onDeleteTeamProject, onDeleteMember, onUpdateMemberRole, onSaveMemberAccess, onResetMemberAccess, onReorderProjects, onReorderMembers, draggingMemberId, setDraggingMemberId }) {
-  const pageTitle = activeTeamTab === 'members' ? '멤버 관리' : '과제 관리';
-  const pageDescription = activeTeamTab === 'members'
-    ? currentTeam.department + ' 팀의 멤버와 비밀번호를 관리합니다'
-    : currentTeam.department + ' 팀의 과제 기준 정보와 참여자를 관리합니다';
-
-  return (
-    <>
-      <div className="page-head">
-        <div>
-          <h1>{pageTitle}</h1>
-          <p>{pageDescription}</p>
-        </div>
-      </div>
-
-      {showTabs && <div className="subtab-row">
-        <button className={`subtab${activeTeamTab === 'members' ? ' active' : ''}`} type="button" onClick={() => setActiveTeamTab('members')}><Users size={15} />멤버 관리</button>
-        <button className={`subtab${activeTeamTab === 'tasks' ? ' active' : ''}`} type="button" onClick={() => setActiveTeamTab('tasks')}><ClipboardList size={15} />과제 관리</button>
-      </div>}
-
-      {activeTeamTab === 'members' ? (
-        <section className="account-card">
-          <div className="member-guide">
-            <strong>초기 비밀번호는 관리자에게 확인하세요</strong>
-            <span>임시 비밀번호는 24시간 동안 유효하며, 처음 보고를 작성할 때 새 비밀번호를 설정합니다.</span>
-          </div>
-          <div className="member-form">
-            <input placeholder="이름" value={memberDraft.name} onChange={(e) => setMemberDraft({ ...memberDraft, name: e.target.value })} onKeyDown={(e) => e.key === 'Enter' && onCreateMember()} />
-            <select value={memberDraft.role} onChange={(e) => setMemberDraft({ ...memberDraft, role: e.target.value })}>
-              <option value="L">리더</option>
-              <option value="CM">책임매니저</option>
-              <option value="M">매니저</option>
-            </select>
-            <button className="mt-btn primary" type="button" onClick={onCreateMember}><Plus size={15} />멤버 추가</button>
-          </div>
-          <div className="member-table">
-            <div className="member-table-head"><span>이름</span><span>직급</span><span style={{ gridColumn: '3 / -1' }}>비밀번호 상태/관리</span></div>
-            {members.map((member) => (
-              <div
-                className={`member-row${draggingMemberId === member.user_id ? ' dragging' : ''}`}
-                key={member.user_id}
-                draggable
-                onDragStart={(event) => {
-                  setDraggingMemberId(member.user_id);
-                  event.dataTransfer.effectAllowed = 'move';
-                  event.dataTransfer.setData('text/plain', member.user_id);
-                }}
-                onDragOver={(event) => {
-                  event.preventDefault();
-                  event.dataTransfer.dropEffect = 'move';
-                }}
-                onDrop={(event) => {
-                  event.preventDefault();
-                  const sourceId = event.dataTransfer.getData('text/plain') || draggingMemberId;
-                  if (!sourceId || sourceId === member.user_id) return;
-                  const fromIndex = members.findIndex((item) => item.user_id === sourceId);
-                  const toIndex = members.findIndex((item) => item.user_id === member.user_id);
-                  if (fromIndex < 0 || toIndex < 0) return;
-                  const nextMembers = [...members];
-                  const [movedMember] = nextMembers.splice(fromIndex, 1);
-                  nextMembers.splice(toIndex, 0, movedMember);
-                  onReorderMembers(nextMembers);
-                }}
-                onDragEnd={() => setDraggingMemberId(null)}
-              >
-                <strong className="member-name"><GripVertical className="member-drag-icon" size={15} aria-hidden="true" />{member.name}</strong>
-                <select className="member-role-select" value={member.role} onChange={(event) => onUpdateMemberRole(member.user_id, event.target.value)} onMouseDown={(event) => event.stopPropagation()}>
-                  <option value="L">리더</option>
-                  <option value="CM">책임매니저</option>
-                  <option value="M">매니저</option>
-                </select>
-                <form className="member-password-box" onSubmit={(event) => onSaveMemberAccess(member.user_id, event)} noValidate>
-                  <span className={`password-state${member.must_change_password ? ' initial' : ''}`}>{member.must_change_password ? '비밀번호 설정 필요' : '비밀번호 설정 완료'}</span>
-                    {member.must_change_password ? <>
-                      <input type="password" placeholder="새 비밀번호" aria-label={`${member.name} 새 비밀번호`} name="password" autoComplete="new-password" />
-                      <button className="mt-btn sm" type="submit">설정</button>
-                    </> : null}
-                </form>
-                <div className="member-management-actions">
-                    <button className="mt-btn sm" type="button" onClick={(event) => onResetMemberAccess(member.user_id, event)}>초기화</button>
-                <button className="mt-btn danger sm" type="button" onClick={() => onDeleteMember(member.user_id)}><Trash2 size={13} />제거</button>
-                </div>
-              </div>
-            ))}
-            {members.length === 0 && <div className="empty">등록된 멤버가 없습니다</div>}
-          </div>
-        </section>
-      ) : (
-        <ProjectManagementBoard
-          onReorderProjects={onReorderProjects}
-          members={members}
-          teamProjects={teamProjects}
-          teamProjectDraft={teamProjectDraft}
-          setTeamProjectDraft={setTeamProjectDraft}
-          isProjectModalOpen={isProjectModalOpen}
-          setIsProjectModalOpen={setIsProjectModalOpen}
-          editingTeamProjectId={editingTeamProjectId}
-          setEditingTeamProjectId={setEditingTeamProjectId}
-          onCreateTeamProject={onCreateTeamProject}
-          onEditTeamProject={onEditTeamProject}
-          onUpdateTeamProjectStatus={onUpdateTeamProjectStatus}
-          onDeleteTeamProject={onDeleteTeamProject}
-        />
-      )}
-    </>
-  );
-}
-
 
 function ProjectManagementBoard({ onReorderProjects, members, teamProjects, teamProjectDraft, setTeamProjectDraft, isProjectModalOpen, setIsProjectModalOpen, editingTeamProjectId, setEditingTeamProjectId, onCreateTeamProject, onEditTeamProject, onUpdateTeamProjectStatus, onDeleteTeamProject }) {
   const order = useProjectOrder(teamProjects, onReorderProjects);
@@ -3580,7 +3122,7 @@ function AdminOverviewPage({ overview, loading, period, setPeriod, onRefresh }) 
         <div>
           <h1>운영 현황</h1>
           <p>
-            전체 계정의 사용 현황을 집계합니다
+            팀별 업무와 서비스 활동 현황을 집계합니다
             {overview && ` · ${formatUtcStamp(overview.generated_at)} 기준`}
           </p>
         </div>
@@ -3612,9 +3154,9 @@ function AdminOverviewPage({ overview, loading, period, setPeriod, onRefresh }) 
             <OverviewStat
               tone="live"
               icon={<Wifi size={18} />}
-              label="접속 중인 계정"
+              label="활동 중인 팀"
               value={summary.online_accounts}
-              hint={`전체 ${summary.total_accounts}개 계정 · 최근 ${overview.online_window_minutes}분 활동 기준`}
+              hint={`전체 ${summary.total_accounts}개 팀 · 최근 ${overview.online_window_minutes}분 활동 기준`}
             />
             <OverviewStat
               icon={<FileText size={18} />}
@@ -3702,12 +3244,12 @@ function AdminOverviewPage({ overview, loading, period, setPeriod, onRefresh }) 
             />
 
             <OverviewRankTable
-              title="계정별 접속 사용"
-              subtitle={`${scopeHint} 내 로그인 횟수`}
+              title="팀별 활동 멤버"
+              subtitle={`${scopeHint} 내 활동한 멤버 수`}
               columns={[
-                { key: 'team', label: '계정', width: 'minmax(0, 1fr)' },
+                { key: 'team', label: '팀', width: 'minmax(0, 1fr)' },
                 { key: 'last', label: '최근 접속', width: '92px' },
-                { key: 'count', label: '접속 수', width: '68px', align: 'right' },
+                { key: 'count', label: '멤버 수', width: '68px', align: 'right' },
               ]}
               rows={overview.account_logins}
               renderRow={(row) => (
@@ -3723,10 +3265,10 @@ function AdminOverviewPage({ overview, loading, period, setPeriod, onRefresh }) 
             />
 
             <OverviewRankTable
-              title="계정별 완료된 보고"
+              title="팀별 완료된 보고"
               subtitle="전체 완료 처리된 주간보고"
               columns={[
-                { key: "team", label: "계정", width: "minmax(0, 1fr)" },
+                { key: "team", label: "팀", width: "minmax(0, 1fr)" },
                 { key: "last", label: "최근 완료 보고", width: "minmax(130px, 1.1fr)" },
                 { key: "count", label: "완료", width: "68px", align: "right" },
               ]}
@@ -3741,10 +3283,10 @@ function AdminOverviewPage({ overview, loading, period, setPeriod, onRefresh }) 
             />
 
             <OverviewRankTable
-              title="계정별 마일스톤 수"
+              title="팀별 마일스톤 수"
               subtitle={`${scopeHint} 내 생성된 마일스톤`}
               columns={[
-                { key: 'team', label: '계정', width: 'minmax(0, 1fr)' },
+                { key: 'team', label: '팀', width: 'minmax(0, 1fr)' },
                 { key: 'count', label: '마일스톤', width: '88px', align: 'right' },
               ]}
               rows={overview.account_milestones}
@@ -3757,10 +3299,10 @@ function AdminOverviewPage({ overview, loading, period, setPeriod, onRefresh }) 
             />
 
             <OverviewRankTable
-              title="계정별 팀일정 작성 수"
+              title="팀별 일정 작성 수"
               subtitle={`${scopeHint} 내 등록된 팀 일정`}
               columns={[
-                { key: 'team', label: '계정', width: 'minmax(0, 1fr)' },
+                { key: 'team', label: '팀', width: 'minmax(0, 1fr)' },
                 { key: 'count', label: '일정', width: '88px', align: 'right' },
               ]}
               rows={overview.account_events}
@@ -3778,86 +3320,6 @@ function AdminOverviewPage({ overview, loading, period, setPeriod, onRefresh }) 
   );
 }
 
-
-function AccountManagementPage({ teams, currentTeamId, teamDraft, setTeamDraft, onCreateTeam, onResetTeamAccess, onDeleteTeam }) {
-  return (
-    <>
-      <div className="page-head">
-        <div>
-          <h1>계정 관리</h1>
-          <p>팀 계정은 지정된 초기 비밀번호로 생성되며, 최초 로그인 시 변경해야 합니다</p>
-        </div>
-      </div>
-
-      <section className="account-card">
-        <div className="account-form team-form">
-          <input placeholder="소속" value={teamDraft.department} onChange={(e) => setTeamDraft({ ...teamDraft, department: e.target.value })} />
-          <input placeholder="ID" value={teamDraft.login_id} onChange={(e) => setTeamDraft({ ...teamDraft, login_id: e.target.value })} onKeyDown={(e) => e.key === 'Enter' && onCreateTeam()} />
-          <select value={teamDraft.account_role} onChange={(e) => setTeamDraft({ ...teamDraft, account_role: e.target.value })}>
-            <option value="user">일반 사용자</option>
-            <option value="admin">관리자</option>
-          </select>
-          <button className="mt-btn primary" type="button" onClick={onCreateTeam}><Plus size={15} />계정 부여</button>
-        </div>
-      </section>
-
-      <section className="account-card">
-        <div className="account-table team-table">
-          <div className="account-table-head">
-            <span>소속</span><span>ID</span><span>권한</span><span>Team ID</span><span>상태</span><span>관리</span>
-          </div>
-          {teams.map((team) => {
-            const isAdminTeam = team.account_role === 'admin';
-            const isSelf = team.team_id === currentTeamId;
-            const isProtected = team.login_id === 'admin' || isSelf;
-            const protectedReason = isSelf ? '현재 로그인한 계정은 제거할 수 없습니다' : '관리자 계정은 제거할 수 없습니다';
-            return (
-              <div className="account-row" key={team.team_id}>
-                <strong>{team.department}</strong>
-                <span>{team.login_id}</span>
-                <span className={`account-role-tag${isAdminTeam ? ' admin' : ''}`}>{isAdminTeam ? '관리자' : '일반 사용자'}</span>
-                <code>{team.team_id}</code>
-                <span className={`password-state${team.must_change_password ? ' initial' : ''}`}>{team.must_change_password ? '초기 비밀번호' : '변경 완료'}</span>
-                <div className="account-row-actions">
-                  <button className="mt-btn sm" type="button" disabled={isSelf} title={isSelf ? "현재 계정은 비밀번호 변경을 이용하세요" : undefined} onClick={() => onResetTeamAccess(team.team_id)}>초기화</button>
-                  <button className="mt-btn danger sm" type="button" disabled={isProtected} title={isProtected ? protectedReason : undefined} onClick={() => onDeleteTeam(team.team_id)}><Trash2 size={13} />제거</button>
-                </div>
-              </div>
-            );
-          })}
-          {teams.length === 0 && <div className="empty">등록된 팀 계정이 없습니다</div>}
-        </div>
-      </section>
-    </>
-  );
-}
-
-
-function AccountUpdateDialog({ loginFormRef, onSubmitAccountUpdate, onClose, required = false, error = '', submitting = false }) {
-  const formRef = useRef(null);
-  useEffect(() => {
-    if (required && loginFormRef?.current && formRef.current) {
-      formRef.current.elements.namedItem('current_password').value = loginFormRef.current.elements.namedItem('password').value;
-    }
-  }, [required, loginFormRef]);
-  return (
-    <div className="modal-backdrop" role="presentation">
-      <form ref={formRef} onSubmit={onSubmitAccountUpdate} noValidate className="password-modal" role="dialog" aria-modal="true" aria-labelledby="password-change-title">
-        <div>
-          <h2 id="password-change-title">비밀번호 변경</h2>
-          <p>{required ? '초기 비밀번호를 사용 중입니다. 계속하려면 새 비밀번호로 변경하세요.' : '현재 비밀번호를 확인하고 12자 이상의 새 비밀번호로 변경하세요.'}</p>
-        </div>
-        <input type="password" placeholder="현재 비밀번호" name="current_password" autoComplete="current-password" />
-        <input type="password" placeholder="새 비밀번호" name="new_password" autoComplete="new-password" />
-        <input type="password" placeholder="새 비밀번호 확인" name="confirm_password" autoComplete="new-password" />
-        <p>새 비밀번호는 12자 이상으로 입력하세요.</p>
-        {error && <div className="login-error" role="alert">{error}</div>}
-        <button className="mt-btn primary" type="submit" disabled={submitting}>{submitting ? '변경 중' : '변경'}</button>
-        {!required && onClose && <button className="mt-btn" type="button" onClick={onClose}>취소</button>}
-      </form>
-    </div>
-  );
-}
 
 function ProjectProgressHistory({ project }) {
   const [history, setHistory] = useState([]);

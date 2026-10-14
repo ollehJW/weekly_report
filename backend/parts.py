@@ -1,7 +1,7 @@
 """Part configuration and request-scoped partition checks."""
 from contextvars import ContextVar
 from datetime import datetime
-import sqlite3
+import psycopg
 import uuid
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -17,35 +17,6 @@ def visible(team_id, part_id):
 def selected_part():
     return scope.get()[1] if scope.get()[2] else None
 
-def init_parts(conn):
-    if "parts_enabled" not in [r["name"] for r in conn.execute("PRAGMA table_info(teams)")]:
-        conn.execute("ALTER TABLE teams ADD COLUMN parts_enabled INTEGER NOT NULL DEFAULT 0")
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS parts (
-            part_id TEXT PRIMARY KEY,
-            team_id TEXT NOT NULL REFERENCES teams(team_id) ON DELETE CASCADE,
-            name TEXT NOT NULL,
-            created_at TEXT NOT NULL,
-            report_schedule_enabled INTEGER NOT NULL DEFAULT 0,
-            report_schedule_weekday INTEGER NOT NULL DEFAULT 4,
-            report_schedule_time TEXT NOT NULL DEFAULT '17:00',
-            report_schedule_interval_days INTEGER NOT NULL DEFAULT 7,
-            UNIQUE(team_id, name)
-        )
-    """)
-    for table in ("users", "project", "team_events", "reports"):
-        if "part_id" not in [r["name"] for r in conn.execute(f"PRAGMA table_info({table})")]:
-            conn.execute(f"ALTER TABLE {table} ADD COLUMN part_id TEXT REFERENCES parts(part_id)")
-        conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_team_part ON {table}(team_id, part_id)")
-
-    if "sort_order" not in [r["name"] for r in conn.execute("PRAGMA table_info(project)")]:
-        conn.execute("ALTER TABLE project ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0")
-        positions = {}
-        for row in conn.execute("SELECT project_id,team_id,part_id FROM project ORDER BY CASE status WHEN 'in_progress' THEN 0 ELSE 1 END,created_at DESC,project_name,project_id").fetchall():
-            key = (row["team_id"], row["part_id"])
-            position = positions.get(key, 0)
-            conn.execute("UPDATE project SET sort_order=? WHERE project_id=?", (position, row["project_id"]))
-            positions[key] = position + 1
 
 class PartsEnabledIn(BaseModel):
     enabled: bool
@@ -61,7 +32,7 @@ class PartMemberMoveIn(BaseModel):
 
 def install(app, get_conn, public_team):
     def resource(conn, kind, key):
-        direct = {"users": ("users", "user_id"), "team-projects": ("project", "project_id"),
+        direct = {"users": ("members", "user_id"), "team-projects": ("project", "project_id"),
                   "projects": ("project", "project_id"), "team-events": ("team_events", "event_id"),
                   "reports": ("reports", "report_id")}
         if kind in direct:
@@ -169,13 +140,13 @@ def install(app, get_conn, public_team):
 
     def board_members(conn, team_id):
         return [dict(row) for row in conn.execute(
-            "SELECT user_id,name,role,part_id FROM users WHERE team_id=? ORDER BY sort_order,created_at,name,user_id",
+            "SELECT user_id,name,role,part_id FROM members WHERE team_id=? AND is_active=1 ORDER BY sort_order,created_at,name,user_id",
             (team_id,),
         )]
 
     def place_item(conn, table, key, team_id, item_id, part_id, before_id):
-        label = "name" if table == "users" else "project_name"
-        rows = conn.execute(f"SELECT {key} FROM {table} WHERE team_id=? AND part_id IS ? ORDER BY sort_order,created_at,{label},{key}", (team_id, part_id)).fetchall()
+        label = "name" if table == "members" else "project_name"
+        rows = conn.execute(f"SELECT {key} FROM {table} WHERE team_id=? AND part_id IS NOT DISTINCT FROM ? ORDER BY sort_order,created_at,{label},{key}", (team_id, part_id)).fetchall()
         ids = [row[0] for row in rows if row[0] != item_id]
         if before_id == item_id:
             return
@@ -196,11 +167,11 @@ def install(app, get_conn, public_team):
     @app.put("/api/teams/{team_id}/parts/members/{user_id}")
     def move_part_member(team_id: str, user_id: str, payload: PartMemberMoveIn, request: Request):
         with get_conn() as conn:
-            conn.execute("BEGIN IMMEDIATE")
+            conn.execute("SELECT pg_advisory_xact_lock(hashtextextended('wiareport:write',0))")
             team = check_board_team(conn, team_id, request)
             if not team["parts_enabled"]:
                 raise HTTPException(409, "파트 사용이 꺼졌습니다. 새로고침 후 다시 시도하세요.")
-            user = conn.execute("SELECT * FROM users WHERE team_id=? AND user_id=?", (team_id, user_id)).fetchone()
+            user = conn.execute("SELECT * FROM members WHERE team_id=? AND user_id=? AND is_active=1", (team_id, user_id)).fetchone()
             if not user:
                 raise HTTPException(404, "팀에서 멤버를 찾을 수 없습니다.")
             if payload.part_id is not None and not conn.execute(
@@ -214,17 +185,13 @@ def install(app, get_conn, public_team):
             if payload.before_id == user_id and user["part_id"] != payload.part_id:
                 raise HTTPException(409, "이동 위치가 올바르지 않습니다.")
             # Only affiliation and display order change; all assignment/history links survive.
-            place_item(conn, "users", "user_id", team_id, user_id, payload.part_id, payload.before_id)
+            place_item(conn, "members", "user_id", team_id, user_id, payload.part_id, payload.before_id)
             return board_members(conn, team_id)
 
     def board_projects(conn, team_id):
         rows = conn.execute("""
             SELECT p.project_id,p.project_name,p.part_id,
-                   COALESCE((SELECT GROUP_CONCAT(name, ', ') FROM (
-                       SELECT u.name FROM project_members pm JOIN users u ON u.user_id=pm.user_id
-                       WHERE pm.project_id=p.project_id AND pm.role='L' AND u.team_id=p.team_id
-                       ORDER BY u.sort_order,u.name,u.user_id
-                   )), '') AS leader_name
+                   COALESCE((SELECT string_agg(u.name, ', ' ORDER BY u.sort_order,u.name,u.user_id) FROM project_members pm JOIN members u ON u.user_id=pm.user_id WHERE pm.project_id=p.project_id AND pm.role='L' AND u.team_id=p.team_id), '') AS leader_name
             FROM project p WHERE p.team_id=? AND p.project_name != '기타 업무 (교육/출장 등)' ORDER BY p.sort_order,p.created_at,p.project_name,p.project_id
         """, (team_id,)).fetchall()
         return [dict(row) for row in rows]
@@ -238,7 +205,7 @@ def install(app, get_conn, public_team):
     @app.put("/api/teams/{team_id}/parts/projects/{project_id}")
     def move_part_project(team_id: str, project_id: str, payload: PartMemberMoveIn, request: Request):
         with get_conn() as conn:
-            conn.execute("BEGIN IMMEDIATE")
+            conn.execute("SELECT pg_advisory_xact_lock(hashtextextended('wiareport:write',0))")
             team = check_board_team(conn, team_id, request)
             if not team["parts_enabled"]:
                 raise HTTPException(409, "파트 사용이 꺼졌습니다. 새로고침 후 다시 시도하세요.")
@@ -282,7 +249,7 @@ def install(app, get_conn, public_team):
             try:
                 conn.execute("INSERT INTO parts(part_id,team_id,name,created_at) VALUES(?,?,?,?)",
                              (str(uuid.uuid4()), team_id, name, datetime.utcnow().isoformat()))
-            except sqlite3.IntegrityError:
+            except psycopg.IntegrityError:
                 raise HTTPException(409, "같은 이름의 파트가 이미 있습니다.")
         return list_parts(team_id)
 
@@ -294,7 +261,7 @@ def install(app, get_conn, public_team):
         with get_conn() as conn:
             try:
                 result = conn.execute("UPDATE parts SET name=? WHERE part_id=? AND team_id=?", (name, part_id, team_id))
-            except sqlite3.IntegrityError:
+            except psycopg.IntegrityError:
                 raise HTTPException(409, "같은 이름의 파트가 이미 있습니다.")
             if not result.rowcount:
                 raise HTTPException(404, "Part not found")
@@ -303,10 +270,10 @@ def install(app, get_conn, public_team):
     @app.delete("/api/teams/{team_id}/parts/{part_id}", status_code=204)
     def delete_part(team_id: str, part_id: str):
         with get_conn() as conn:
-            conn.execute("BEGIN IMMEDIATE")
+            conn.execute("SELECT pg_advisory_xact_lock(hashtextextended('wiareport:write',0))")
             if not conn.execute("SELECT part_id FROM parts WHERE part_id=? AND team_id=?", (part_id, team_id)).fetchone():
                 raise HTTPException(404, "Part not found")
-            for table in ("users", "project", "reports", "team_events"):
+            for table in ("members", "project", "reports", "team_events"):
                 if conn.execute(f"SELECT 1 FROM {table} WHERE part_id=? LIMIT 1", (part_id,)).fetchone():
                     raise HTTPException(409, "데이터가 있는 파트는 삭제할 수 없습니다. 파트 사용을 끄면 팀 전체로 볼 수 있습니다.")
             conn.execute("DELETE FROM parts WHERE part_id=?", (part_id,))

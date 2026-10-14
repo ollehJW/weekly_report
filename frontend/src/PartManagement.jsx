@@ -189,7 +189,7 @@ function PartAssignmentBoard({ teamId, request, onMembersChanged, config, onTogg
     {error && <p className="parts-error" role="alert">{error}</p>}
     {config.enabled && <section className="parts-catalog" aria-label="파트 구성 관리">
       <div className="parts-catalog-head">
-        <div><h2>우리 팀의 파트 <span>{config.parts.length}개</span></h2><p>파트를 먼저 구성한 뒤, 아래에서 멤버와 과제를 배정하세요.</p></div>
+        <div><h2>우리 팀의 파트 <span>{config.parts.length}개</span></h2><p>통합 계정의 팀 멤버를 불러옵니다. 파트를 구성한 뒤 멤버와 과제를 배정하세요.</p></div>
         <form className="parts-create" onSubmit={(e) => { e.preventDefault(); if (name.trim()) run(async () => { await onCreate(name.trim()); setName(''); }); }}>
           <input aria-label="새 파트 이름" placeholder="새 파트 이름" maxLength={80} value={name} disabled={busy || !!drag} onChange={(e) => setName(e.target.value)} />
           <button className="mt-btn primary" type="submit" disabled={busy || !!drag || !name.trim()}><Plus size={15} />파트 추가</button>

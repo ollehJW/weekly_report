@@ -1,12 +1,12 @@
 # WiaReport introduction
 - Introduction: https://axforwork.wia.co.kr/wiareport/
-- Existing team-login app: https://axforwork.wia.co.kr/wiareport/agent
+- Shared-login app: https://axforwork.wia.co.kr/wiareport/agent
 - PDF guide: /wiareport/media/WIAReport_Guide.pdf (public download from introduction).
 - Runtime PDF: /data/wiareport/media/WIAReport_Guide.pdf. Place it before building; do not commit the binary.
-- Existing in-app guide remains available at /wiareport/agent?guide=1 after team login.
+- Existing in-app guide remains available at /wiareport/agent?guide=1 after AX for Works login.
 - Frontend HTTPS 1003, backend HTTP 127.0.0.1:1013 remain unchanged.
 - Gateway strips /wiareport and forwards to https://axforwork.wia.co.kr:31003.
-- Gateway require_login is false until platform SSO migration; backend team authentication remains enforced.
+- Introduction remains public. The application resolves the AX cookie against platform.sessions; anonymous application visitors are redirected to the central login.
 - Runtime video: /data/wiareport/media/WiaReport_intro.mp4. Symlink frontend/public/media to that directory before building. Media and credentials must not be committed.
 - Favicon matches AX for Works. Relative Vite assets support both gateway and direct-port service URLs.
 - Build: npm run build. Restart the existing Vite preview process only when its configuration changes.

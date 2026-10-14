@@ -30,3 +30,7 @@ frontend/certs/
 
 # Runtime media is provisioned under /data/wiareport/media.
 frontend/public/media
+
+# Private PostgreSQL runtime configuration.
+/config.yaml
+/database.env

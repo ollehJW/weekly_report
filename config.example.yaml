@@ -1,0 +1,16 @@
+# 복사해서 config.yaml로 사용하세요. 운영 서버에 맞춰 연결 정보를 변경합니다.
+# config.yaml과 database.env는 Git에 커밋하지 않습니다.
+# database.env는 config.yaml의 실제 파일과 같은 폴더에 보관합니다.
+# database.env: AX_DB_PASSWORD=비밀번호
+# 환경변수 WIAREPORT_DB_CONFIG로 config.yaml의 위치를 지정할 수도 있습니다.
+database:
+  host: 127.0.0.1
+  port: 5432
+  name: wia_platform
+  user: wia_platform_admin
+  schema: wiareport  # 업무 데이터. 계정·세션은 같은 DB의 platform 스키마를 참조합니다.
+  password_env: AX_DB_PASSWORD
+  sslmode: prefer
+
+auth:
+  platform_origin: https://axforwork.wia.co.kr
