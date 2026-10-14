@@ -45,9 +45,9 @@ export default function Introduction() {
         </article>)}</div>
       </section>
       <section className="intro-guide">
-        <div className="intro-guide-icon"><ClipboardList size={35}/><span>QUICK GUIDE</span></div>
-        <div className="intro-guide-copy"><span className="intro-eyebrow">QUICK START GUIDE</span><h2>처음이라면, 가이드와 함께.</h2><p>팀 설정부터 과제 등록, 주간보고 작성과 완료까지.<br/>서비스 안의 사용 가이드에서 단계별 이용 방법을 확인하세요.</p></div>
-        <a className="intro-guide-download" href={SERVICE + '/agent?guide=1'}>사용 가이드 보기<ArrowUpRight size={16}/></a>
+        <div className="intro-guide-icon"><ClipboardList size={35}/><span>PDF GUIDE</span></div>
+        <div className="intro-guide-copy"><span className="intro-eyebrow">QUICK START GUIDE</span><h2>처음이라면, 가이드와 함께.</h2><p>팀 설정부터 과제 등록, 주간보고 작성과 완료까지.<br/>PDF 가이드에서 단계별 이용 방법을 확인하세요.</p></div>
+        <a className="intro-guide-download" href={SERVICE + '/media/WIAReport_Guide.pdf'} download="WIAReport_Guide.pdf">PDF 가이드 다운로드<FileText size={16}/></a>
       </section>
     </main>
     <footer className="intro-footer"><span><b>HYUNDAI WIA</b><i/>WiaReport</span><p>Connect your work. Move forward together.</p></footer>

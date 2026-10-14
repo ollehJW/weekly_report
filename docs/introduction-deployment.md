@@ -1,7 +1,9 @@
 # WiaReport introduction
 - Introduction: https://axforwork.wia.co.kr/wiareport/
 - Existing team-login app: https://axforwork.wia.co.kr/wiareport/agent
-- Guide link: /wiareport/agent?guide=1 (opens after existing team login).
+- PDF guide: /wiareport/media/WIAReport_Guide.pdf (public download from introduction).
+- Runtime PDF: /data/wiareport/media/WIAReport_Guide.pdf. Place it before building; do not commit the binary.
+- Existing in-app guide remains available at /wiareport/agent?guide=1 after team login.
 - Frontend HTTPS 1003, backend HTTP 127.0.0.1:1013 remain unchanged.
 - Gateway strips /wiareport and forwards to https://axforwork.wia.co.kr:31003.
 - Gateway require_login is false until platform SSO migration; backend team authentication remains enforced.
