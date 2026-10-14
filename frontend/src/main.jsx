@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Plus, Trash2, AudioWaveform, User, ChevronRight, Pencil, Save, X, KeyRound, LogOut, Users, ClipboardList, GripVertical, HelpCircle, Check, FileText, Link2, ImagePlus, AlertTriangle, History, ExternalLink, CalendarClock, Clock, CalendarRange, Zap, Wifi } from 'lucide-react';
 import './styles.css';
+import Introduction from './Introduction.jsx';
 import { emptyFormFields } from './formFields.mjs';
 import PartManagement from './PartManagement.jsx';
 import { useProjectOrder } from './useProjectOrder.js';
@@ -10,7 +11,8 @@ import { buildTimelineAxis } from './timelineAxis.mjs';
 
 // 기본값은 같은 출처(''). vite 가 /api 를 백엔드로 프록시한다(vite.config.js).
 // 백엔드를 다른 주소로 직접 호출해야 하면 VITE_API_BASE 로 절대주소를 넣는다.
-const API_BASE = import.meta.env.VITE_API_BASE ?? '';
+const SERVICE_PREFIX = window.location.pathname === '/wiareport' || window.location.pathname.startsWith('/wiareport/') ? '/wiareport' : '';
+const API_BASE = import.meta.env.VITE_API_BASE ?? SERVICE_PREFIX;
 // Only server responses populate this identity. Stored profile fields are never trusted.
 let verifiedTeam = null;
 function storedSession() {
@@ -392,7 +394,7 @@ function TeamWorkspace() {
   const [loginDraft, setLoginDraft] = useState(emptyFormFields('login_id'));
   const loginFormRef = useRef(null);
   const entryFormRef = useRef(null);
-  const [isUsageGuideOpen, setIsUsageGuideOpen] = useState(false);
+  const [isUsageGuideOpen, setIsUsageGuideOpen] = useState(() => new URLSearchParams(window.location.search).get('guide') === '1');
   const [isAccountUpdateOpen, setIsAccountUpdateOpen] = useState(false);
   const [loginNeedsChange, setLoginNeedsChange] = useState(false);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
@@ -3231,6 +3233,7 @@ function LoginPage({ loginFormRef, loginDraft, setLoginDraft, onLogin, error, is
           </form>
 
           <p className="login-help">계정 발급은 관리자에게 문의하세요.</p>
+          <a className="login-intro-return" href="https://axforwork.wia.co.kr/wiareport/">WiaReport 소개로 돌아가기</a>
         </div>
       </section>
     </main>
@@ -4913,4 +4916,12 @@ function ProjectTimeline({
   );
 }
 
-createRoot(document.getElementById('root')).render(<App />);
+// Normalize the service route so relative build assets also work after refresh.
+const servicePath = window.location.pathname.slice(SERVICE_PREFIX.length) || '/';
+if (servicePath === '/agent/') {
+  window.location.replace(SERVICE_PREFIX + '/agent' + window.location.search + window.location.hash);
+} else {
+  const isIntroduction = servicePath === '/';
+  document.title = isIntroduction ? 'WiaReport · 서비스 소개' : 'WiaReport · 주간보고';
+  createRoot(document.getElementById('root')).render(isIntroduction ? <Introduction /> : <App />);
+}

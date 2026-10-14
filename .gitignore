@@ -10,7 +10,7 @@ __pycache__/
 .env.*
 !.env.example
 frontend/node_modules/
-frontend/dist/
+frontend/dist
 frontend/.vite/
 .DS_Store
 *_test.py
@@ -27,3 +27,6 @@ backups/
 
 # TLS private material is provisioned outside Git.
 frontend/certs/
+
+# Runtime media is provisioned under /data/wiareport/media.
+frontend/public/media

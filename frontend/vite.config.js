@@ -34,11 +34,30 @@ function transportSecurity() {
   };
 }
 
+// Keep relative assets valid when the service URL has a trailing slash.
+function canonicalAgentRoute() {
+  const middleware = (req, res, next) => {
+    const url = new URL(req.url, 'http://localhost');
+    if (url.pathname === '/agent/') {
+      res.writeHead(308, { Location: '/agent' + url.search });
+      res.end();
+      return;
+    }
+    next();
+  };
+  return {
+    name: 'canonical-agent-route',
+    configureServer(server) { server.middlewares.use(middleware); },
+    configurePreviewServer(server) { server.middlewares.use(middleware); },
+  };
+}
+
 export default defineConfig(({ command }) => {
   // Missing TLS material must never silently enable plaintext HTTP.
   const https = command === 'serve' ? transportSecurity() : undefined;
   return {
-  plugins: [react()],
+  base: './',
+  plugins: [canonicalAgentRoute(), react()],
   server: { host: '0.0.0.0', port, proxy, allowedHosts, https },
   preview: { host: '0.0.0.0', port, proxy, allowedHosts, https },
   };
