@@ -63,4 +63,6 @@ def require_owner(conn, user_id):
     member = conn.execute('SELECT * FROM members WHERE user_id=?', (user_id,)).fetchone()
     if not member or member['platform_user_id'] != who['actor_user_id'] or member['team_id'] != who['team_id'] or not member['is_active']:
         raise HTTPException(403, '본인의 주간보고만 작성할 수 있습니다.')
+    if not member['report_enabled']:
+        raise HTTPException(403, '주간 보고 작성 대상에서 제외된 멤버입니다.')
     return member

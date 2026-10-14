@@ -47,3 +47,12 @@ Rollback before accepting PostgreSQL writes: stop the new backend, restore the b
 After migration, the 46 unmapped historical member records were removed at the user's request. Their 245 report-entry records, four project-entry records, one progress record and assignment links were archived first in `/data/wiareport/backups/unmapped-members-20261014.json` (private). Project records, event records, report periods and attachment files were retained. This is a post-migration cleanup; use the current PostgreSQL data when moving the service again.
 
 The desktop shell now follows WiaMeet: a 224px sidebar, top breadcrumb, upper-right platform return link and consistent white page headings. The Task Status controls occupy a separate single-row toolbar, verified at 1100, 1280, 1440 and 1920px widths.
+
+
+### 팀별 주간 보고 대상 설정
+- 주간 보고 작성 → 멤버 관리에서 팀 전체의 작성 대상을 선택합니다. 파트 배정 및 통합 계정 자체는 변경하지 않습니다.
+- `members.report_enabled`(기본 TRUE)에 저장합니다. 시작 시 기존 스키마에 열을 추가하며, 로그인 및 스케줄러의 멤버 동기화는 이 값을 유지합니다. 신규 팀원은 기본 포함됩니다.
+- 진행 중인 보고의 대상과 완료 조건, 수동/자동 개설에 적용합니다. 제외된 멤버는 작성 API에서도 차단합니다. 기존 작성 데이터 및 완료된 보고 이력은 삭제하지 않습니다.
+- 팀원 누구나 팀 설정을 관리할 수 있습니다. 다른 팀 접근은 차단하며 동시 편집 시 409로 재확인을 요청합니다.
+- `python -m unittest tests.test_report_members -v`: 임시 격리 스키마에서 저장, 재동기화, 충돌, 권한, 완료 조건, 이력 보존, 수동/자동 개설을 검증하고 정리합니다. 플랫폼에 5분 만료의 검증용 세션을 만들고 종료 시 제거합니다.
+- 네비게이션바의 사용 가이드 버튼은 제거했습니다.

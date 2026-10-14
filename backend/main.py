@@ -79,6 +79,7 @@ def init_db():
     with get_conn() as conn:
         if not conn.execute("SELECT to_regclass(?) AS name", (configuration()["database"].get("schema","wiareport")+".report_entries",)).fetchone()['name']:
             raise RuntimeError('Initialize WiaReport PostgreSQL schema before starting the service')
+        conn.execute('ALTER TABLE members ADD COLUMN IF NOT EXISTS report_enabled BOOLEAN NOT NULL DEFAULT TRUE')
 
 
 def normalize_project_issue_item(item):
@@ -1364,10 +1365,10 @@ def report_with_entries(conn, report_row):
         SELECT u.user_id, u.name, u.role, re.entry_id, COALESCE(re.status, 'pending') AS report_status
         FROM members u
         LEFT JOIN report_entries re ON re.user_id = u.user_id AND re.report_id = ?
-        WHERE u.team_id = ? AND ((u.is_active=1 AND ? = 'in_progress') OR re.entry_id IS NOT NULL) AND (u.part_id IS NOT DISTINCT FROM ? OR re.entry_id IS NOT NULL OR (CAST(? AS TEXT) IS NULL AND (SELECT parts_enabled FROM teams WHERE team_id=u.team_id)=0))
+        WHERE u.team_id = ? AND ((? = 'in_progress' AND u.is_active=1 AND u.report_enabled) OR (? != 'in_progress' AND re.entry_id IS NOT NULL)) AND (u.part_id IS NOT DISTINCT FROM ? OR re.entry_id IS NOT NULL OR (CAST(? AS TEXT) IS NULL AND (SELECT parts_enabled FROM teams WHERE team_id=u.team_id)=0))
         ORDER BY u.sort_order ASC, u.created_at ASC, u.name
         """,
-        (report_row["report_id"], report_row["team_id"], report_row["status"], report_row["part_id"], report_row["part_id"]),
+        (report_row["report_id"], report_row["team_id"], report_row["status"], report_row["status"], report_row["part_id"], report_row["part_id"]),
     ).fetchall()
     entries = conn.execute(
         """
@@ -1447,7 +1448,7 @@ def create_weekly_report(conn, team_id: str, start_date: date, end_date: date, s
     users = conn.execute(
         """
         SELECT user_id FROM members
-        WHERE team_id = ? AND is_active=1 AND (part_id IS NOT DISTINCT FROM ? OR ? = 0)
+        WHERE team_id = ? AND is_active=1 AND report_enabled AND (part_id IS NOT DISTINCT FROM ? OR ? = 0)
         ORDER BY sort_order ASC, created_at ASC, name
         """,
         (team_id, part_id, int(bool(team["parts_enabled"]))),
@@ -2375,7 +2376,7 @@ def complete_report(report_id: str):
         report = conn.execute("SELECT * FROM reports WHERE report_id = ?", (report_id,)).fetchone()
         if not report:
             raise HTTPException(status_code=404, detail="Report not found")
-        entries = conn.execute("SELECT status FROM report_entries WHERE report_id = ?", (report_id,)).fetchall()
+        entries = report_with_entries(conn, report)["members"]
         if not entries:
             raise HTTPException(status_code=422, detail="완료할 보고 대상이 없습니다")
         if any(row["status"] not in ("done", "absent") for row in entries):
@@ -3230,3 +3231,46 @@ async def platform_session_middleware(request, call_next):
         if token is not None:actor.reset(token)
     if path.startswith('/api/'):response.headers['Cache-Control']='no-store'
     return response
+
+
+class ReportMembersIn(BaseModel):
+    enabled_ids: list[str]
+    expected_enabled_ids: list[str]
+    expected_member_ids: list[str]
+
+
+def report_members(conn, team_id):
+    return [dict(row) for row in conn.execute("""
+        SELECT m.user_id,m.name,m.report_enabled,COALESCE(r.name,'') AS position,
+               COALESCE(p.name,'미지정') AS part_name
+        FROM members m JOIN platform.users u ON u.user_id=m.platform_user_id
+        LEFT JOIN platform.roles r ON r.role_id=u.role_id
+        LEFT JOIN parts p ON p.part_id=m.part_id
+        WHERE m.team_id=? AND m.is_active=1 ORDER BY m.sort_order,m.name,m.user_id
+    """, (team_id,)).fetchall()]
+
+
+@app.get('/api/teams/{team_id}/report-members')
+def get_report_members(team_id: str):
+    platform_auth.require_actor(team_id=team_id)
+    with get_conn() as conn:
+        ensure_team(conn, team_id)
+        return report_members(conn, team_id)
+
+
+@app.put('/api/teams/{team_id}/report-members')
+def set_report_members(team_id: str, payload: ReportMembersIn):
+    platform_auth.require_actor(team_id=team_id)
+    with get_conn() as conn:
+        ensure_team(conn, team_id)
+        conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(?,0))", ('wiareport:team:'+team_id,))
+        rows=report_members(conn, team_id)
+        ids={r['user_id'] for r in rows}
+        enabled={r['user_id'] for r in rows if r['report_enabled']}
+        if ids != set(payload.expected_member_ids) or enabled != set(payload.expected_enabled_ids):
+            raise HTTPException(409, '멤버 설정이 변경되었습니다. 창을 다시 열어 확인해 주세요.')
+        if not set(payload.enabled_ids).issubset(ids):
+            raise HTTPException(422, '현재 팀의 멤버만 선택할 수 있습니다.')
+        conn.executemany('UPDATE members SET report_enabled=? WHERE team_id=? AND user_id=?',
+                         [(r['user_id'] in payload.enabled_ids,team_id,r['user_id']) for r in rows])
+        return report_members(conn, team_id)

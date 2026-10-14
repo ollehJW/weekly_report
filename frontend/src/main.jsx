@@ -1,3 +1,4 @@
+import ReportMembersDialog from './ReportMembersDialog';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { LayoutDashboard, FolderKanban, Library, ChartNoAxesCombined, ArrowLeft, Plus, Trash2, AudioWaveform, User, ChevronRight, Pencil, Save, X, KeyRound, LogOut, Users, ClipboardList, GripVertical, HelpCircle, Check, FileText, Link2, ImagePlus, AlertTriangle, History, ExternalLink, CalendarClock, Clock, CalendarRange, Zap, Wifi } from 'lucide-react';
@@ -1058,11 +1059,6 @@ function TeamWorkspace() {
           </span>
         </label>}
 
-        <button className="side-help" type="button" onClick={() => setIsUsageGuideOpen(true)}>
-          <HelpCircle size={16} />
-          <span>사용 가이드</span>
-        </button>
-
         <div className="side-user">
           <div className="avatar">{currentTeam.department.slice(0, 1)}</div>
           <div className="side-user-info">
@@ -1137,6 +1133,8 @@ function TeamWorkspace() {
         )}
         {!isAdminAccount && activePage === 'weekly-report' && (
           <WeeklyReportPage
+            teamId={currentTeam.team_id}
+            onMembersSaved={loadWeeklyReport}
             currentMemberId={currentTeam.member_id}
             completedWeeklyReports={completedWeeklyReports}
             onReopenWeeklyReport={reopenWeeklyReport}
@@ -1857,6 +1855,7 @@ function TeamCalendar({ currentTeam, members }) {
 }
 
 function WeeklyReportPage({
+  teamId, onMembersSaved,
   currentMemberId,
   completedWeeklyReports,
   onReopenWeeklyReport,
@@ -1899,6 +1898,7 @@ function WeeklyReportPage({
   onUpdateWeeklyEntryStatus,
   onCloseWeeklyEntryModal,
 }) {
+  const [membersOpen, setMembersOpen] = useState(false);
   const activeEntryName = authorizationTarget ? `${authorizationTarget.name} ${authorizationTarget.role}` : '';
   const writingEntryName = weeklyWritingEntry ? `${weeklyWritingEntry.name} ${weeklyWritingEntry.role}` : '';
   const [isWeeklyProjectPickerOpen, setIsWeeklyProjectPickerOpen] = useState(false);
@@ -2164,11 +2164,13 @@ function WeeklyReportPage({
           <span className="report-eyebrow">WEEKLY REPORT</span><h1>주간 보고 작성</h1><p>한 주의 진행 업무와 이슈, 다음 계획을 내 보고에 정리하세요.</p>
         </div>
         <div className="weekly-page-actions">
+          <button className="weekly-schedule-btn" type="button" onClick={() => setMembersOpen(true)}><Users size={16} />멤버 관리</button>
           <button className="weekly-schedule-btn" type="button" onClick={() => setIsWeeklyScheduleModalOpen(true)}><CalendarClock size={16} />개설 스케쥴링</button>
           <button className="weekly-open-btn" type="button" onClick={() => setIsWeeklyReportModalOpen(true)}><Plus size={16} />새 보고 주간 개설</button>
         </div>
       </div>
 
+      {membersOpen && <ReportMembersDialog teamId={teamId} request={request} onClose={() => setMembersOpen(false)} onSaved={onMembersSaved} />}
       {hasWeeklyReports ? (
         weeklyReports.map((weeklyReport, index) => {
           const reportMembers = weeklyReport?.members || [];
