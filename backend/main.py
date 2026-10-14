@@ -2469,9 +2469,18 @@ def get_report_user_html(report_id: str, user_id: str):
 @app.put("/api/reports/{report_id}/users/{user_id}/absence")
 def toggle_report_user_absence(report_id: str, user_id: str):
     with get_conn() as conn:
-        platform_auth.require_owner(conn,user_id)
+        report = conn.execute("SELECT * FROM reports WHERE report_id=? FOR UPDATE", (report_id,)).fetchone()
+        if not report:
+            raise HTTPException(404, "Report not found")
+        who = platform_auth.require_actor(team_id=report["team_id"])
+        if who["team_id"] != report["team_id"]:
+            raise HTTPException(403, "같은 팀의 주간보고만 부재 처리할 수 있습니다.")
+        member = conn.execute("SELECT * FROM members WHERE user_id=? AND team_id=?", (user_id, report["team_id"])).fetchone()
+        if not member or not member["is_active"] or not member["report_enabled"]:
+            raise HTTPException(403, "현재 주간보고 작성 대상 멤버만 부재 처리할 수 있습니다.")
+        if report["status"] == "done":
+            raise HTTPException(409,"완료된 보고의 부재 상태는 변경할 수 없습니다.")
         report = ensure_report_user_entries(conn, report_id, user_id)
-        if report["status"] == "done": raise HTTPException(409,"완료된 보고는 작성할 수 없습니다.")
         entry = conn.execute(
             "SELECT * FROM report_entries WHERE report_id = ? AND user_id = ?",
             (report_id, user_id),

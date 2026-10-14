@@ -2191,7 +2191,7 @@ function WeeklyReportPage({
                       <span className={`weekly-status-pill ${member.status || 'pending'}`}>{member.status === 'done' ? '작성 완료' : member.status === 'progress' ? '작성중' : member.status === 'absent' ? '부재' : '대기'}</span>
                     </div>
                     <div className="weekly-card-actions three">
-                      <button className={`weekly-card-btn${member.status === 'absent' ? ' active' : ''}`} type="button" disabled={member.user_id !== currentMemberId} onClick={() => onToggleWeeklyAbsence(weeklyReport, member)}>부재</button>
+                      <button className={`weekly-card-btn${member.status === 'absent' ? ' active' : ''}`} type="button" title={member.status === 'absent' ? '같은 팀 멤버의 부재를 해제합니다' : '같은 팀 멤버를 부재 처리합니다'} onClick={() => onToggleWeeklyAbsence(weeklyReport, member)}>부재</button>
                       <button className="weekly-card-btn primary" type="button" disabled={member.status === 'absent' || member.user_id !== currentMemberId} title={member.user_id === currentMemberId ? '내 주간보고 작성' : '본인만 작성할 수 있습니다'} onClick={() => onOpenEntryAuthorization(weeklyReport, member)}>작성</button>
                       <button className="weekly-card-btn report" type="button" disabled={member.status !== 'done'} title={member.status === 'done' ? '작성 리포트를 봅니다' : '작성 완료 후 리포트를 볼 수 있습니다'} onClick={() => onOpenWeeklyReportPreview(weeklyReport, member)}>리포트</button>
                     </div>

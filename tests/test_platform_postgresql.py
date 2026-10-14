@@ -76,7 +76,8 @@ class PlatformMigrationTests(unittest.TestCase):
         self.req('PUT',f'/api/report-entries/{peid}/projects/{pid}',content,expected=403)
         self.req('PUT',f'/api/report-entries/{peid}/projects/{pid}/exclusion',{'is_excluded':True},expected=403)
         self.req('PUT',f'/api/report-entries/{peid}/project-order',{'project_ids':[],'expected_ids':[]},expected=403)
-        self.req('PUT',f'/api/reports/{rid}/users/{peer}/absence',expected=403)
+        self.req('PUT',f'/api/reports/{rid}/users/{peer}/absence')
+        self.req('PUT',f'/api/reports/{rid}/users/{peer}/absence')
         self.req('PUT',f'/api/report-entries/{eid}/projects/{pid}',content)
         self.req('GET',f'/api/reports/{rid}/users/{me}/html-report')
         for suffix in ['progress-history','upcoming-next-plans','issue-management','weekly-reports']:

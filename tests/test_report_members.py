@@ -27,14 +27,22 @@ class ReportMembersTests(unittest.TestCase):
             who=req('GET','/api/auth/me');url=f"/api/teams/{who['team_id']}/report-members"
             rows=req('GET',url);me=who['member_id'];peer=next(x['user_id'] for x in rows if x['user_id']!=me)
             report=req('POST',f"/api/teams/{who['team_id']}/reports",{'start_date':'2099-01-01','end_date':'2099-01-07'},201)
+            # Teammates can mark/unmark absence, but cannot write each other's reports.
+            absent=req('PUT',f"/api/reports/{report['report_id']}/users/{peer}/absence")
+            self.assertEqual(next(m for m in absent['members'] if m['user_id']==peer)['status'],'absent')
+            restored=req('PUT',f"/api/reports/{report['report_id']}/users/{peer}/absence")
+            self.assertNotEqual(next(m for m in restored['members'] if m['user_id']==peer)['status'],'absent')
+            req('POST',f"/api/reports/{report['report_id']}/users/{peer}/authorize",status=403)
             payload={'enabled_ids':[me],'expected_enabled_ids':[x['user_id'] for x in rows],'expected_member_ids':[x['user_id'] for x in rows]}
             req('PUT',url,payload);req('PUT',url,payload,status=409)
+            req('PUT',f"/api/reports/{report['report_id']}/users/{peer}/absence",status=403)
             req('GET','/api/auth/me') # login synchronization must preserve selection
             self.assertEqual([x['user_id'] for x in req('GET',url) if x['report_enabled']],[me])
             active=req('GET',f"/api/teams/{who['team_id']}/reports/active-list")
             self.assertEqual([m['user_id'] for m in active[0]['members']],[me])
             req('PUT',f"/api/reports/{report['report_id']}/users/{me}/absence")
             req('PUT',f"/api/reports/{report['report_id']}/complete") # excluded pending entries do not block
+            req('PUT',f"/api/reports/{report['report_id']}/users/{me}/absence",status=409)
             new=req('POST',f"/api/teams/{who['team_id']}/reports",{'start_date':'2099-01-08','end_date':'2099-01-14'},201)
             self.assertEqual([m['user_id'] for m in new['members']],[me])
             from backend.main import create_due_weekly_reports, KST
@@ -52,6 +60,12 @@ class ReportMembersTests(unittest.TestCase):
             req('GET','/api/teams/another-team/report-members',status=403)
             with connect() as db:
                 self.assertTrue(db.execute('SELECT 1 FROM report_entries WHERE report_id=%s AND user_id=%s',(report['report_id'],peer)).fetchone())
+            from uuid import uuid4
+            other_team=uuid4().hex;other_report=uuid4().hex
+            with connect() as db:
+                db.execute("INSERT INTO teams(team_id,department,created_at,report_schedule_enabled) VALUES(%s,'other',%s,0)",(other_team,datetime.now().isoformat()))
+                db.execute("INSERT INTO reports(report_id,team_id,start_date,end_date,status,created_at) VALUES(%s,%s,'2099-01-01','2099-01-07','in_progress',%s)",(other_report,other_team,datetime.now().isoformat()))
+            req('PUT',f"/api/reports/{other_report}/users/{me}/absence",status=403)
             c.close()
         finally:
             if old is None:os.environ.pop('WIAREPORT_DB_CONFIG',None)
