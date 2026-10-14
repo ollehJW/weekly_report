@@ -1,3 +1,4 @@
+import AXAccount from './AXAccount';
 import ReportMembersDialog from './ReportMembersDialog';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -1059,15 +1060,7 @@ function TeamWorkspace() {
           </span>
         </label>}
 
-        <div className="side-user">
-          <div className="avatar">{currentTeam.department.slice(0, 1)}</div>
-          <div className="side-user-info">
-            <b>{currentTeam.full_name}</b>
-            <span>{currentTeam.department}</span>
-          </div>
-
-          <button className="side-logout" type="button" onClick={logout} aria-label="로그아웃"><LogOut size={16} /></button>
-        </div>
+        <AXAccount name={currentTeam.full_name} team={currentTeam.department} admin={isAdminAccount} onLogout={logout}/>
       </aside>
 
       <div className="report-main">
